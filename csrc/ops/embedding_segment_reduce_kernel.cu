@@ -260,7 +260,8 @@ __global__ void segment_reduce_backward_kernel_rocm(
     // Load gradient (4 floats vectorized)
     float4 g_vec;
     if constexpr (mode == ReduceMode::TILE) {
-      g_vec = *reinterpret_cast<const float4*>(grad_output + input_idx * D + dp);
+      g_vec =
+            *reinterpret_cast<const float4*>(grad_output + input_idx * D + dp);
     } else {
       g_vec = *reinterpret_cast<const float4*>(grad_output + seg * D + dp);
     }
@@ -339,9 +340,9 @@ void segment_reduce_forward_kernel_launcher(
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
 #ifdef __HIP_PLATFORM_AMD__
-#define LAUNCH_BACKWARD_KERNEL_ROCM(scalar_t, offset_t, mode,        \
+#define LAUNCH_BACKWARD_KERNEL_ROCM(scalar_t, offset_t, mode,                  \
                                               use_weight)                      \
-  segment_reduce_backward_kernel_rocm<scalar_t, offset_t, mode, use_weight>         \
+  segment_reduce_backward_kernel_rocm<scalar_t, offset_t, mode, use_weight>    \
       <<<grid_size, block_size, 0, stream>>>(                                  \
           grad_output, weight, reverse_indices, segment_ids, weight_sums,      \
           offsets, grad_unique_emb, B, S, D);                                  \
@@ -403,24 +404,24 @@ void segment_reduce_backward_kernel_launcher(
 
     // Precompute segment IDs
     compute_segment_ids_kernel<offset_t>
-        <<<S - 1, 256, 0, stream>>>(offsets, segment_ids, B, S);
+        <<<S - 1, block_size, 0, stream>>>(offsets, segment_ids, B, S);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 
     // Precompute weight sums for MEAN mode with weights
     if constexpr (mode == ReduceMode::MEAN) {
       if (use_weight) {
-        int64_t ws_grid = (S - 1 + 255) / 256;
+        int64_t ws_grid = (S - 1 + block_size - 1) / block_size;
         compute_weight_sums_kernel<scalar_t, offset_t>
-            <<<ws_grid, 256, 0, stream>>>(weight, offsets, weight_sums, S);
+          <<<ws_grid, block_size, 0, stream>>>(weight, offsets, weight_sums, S);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       }
     }
 
     // Launch high-occupancy kernel
     if (use_weight) {
-      LAUNCH_HIGH_OCCUPANCY_BACKWARD_KERNEL(scalar_t, offset_t, mode, true)
+      LAUNCH_BACKWARD_KERNEL_ROCM(scalar_t, offset_t, mode, true)
     } else {
-      LAUNCH_HIGH_OCCUPANCY_BACKWARD_KERNEL(scalar_t, offset_t, mode, false)
+      LAUNCH_BACKWARD_KERNEL_ROCM(scalar_t, offset_t, mode, false)
     }
 
     // Free temporary buffers
