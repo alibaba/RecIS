@@ -113,48 +113,6 @@ __global__ void segment_reduce_forward_kernel(
   }
 }
 
-//=============================================================================
-// Helper kernel: Compute segment IDs for each input element
-//=============================================================================
-template <typename offset_t>
-__global__ void compute_segment_ids_kernel(
-    const offset_t* __restrict__ offsets, int32_t* __restrict__ segment_ids,
-    int64_t B, int64_t S) {
-  // Each block handles one segment and fills segment IDs
-  int64_t seg = blockIdx.x;
-  if (seg >= S - 1) return;
-
-  offset_t start = offsets[seg];
-  offset_t end = offsets[seg + 1];
-
-  for (offset_t i = start + threadIdx.x; i < end; i += blockDim.x) {
-    segment_ids[i] = seg;
-  }
-}
-
-//=============================================================================
-// Helper kernel: Compute weight sums for each segment (for MEAN mode)
-//=============================================================================
-template <typename scalar_t, typename offset_t>
-__global__ void compute_weight_sums_kernel(
-    const scalar_t* __restrict__ weight, const offset_t* __restrict__ offsets,
-    scalar_t* __restrict__ weight_sums, int64_t S) {
-  int64_t seg = blockIdx.x * blockDim.x + threadIdx.x;
-  if (seg >= S - 1) return;
-
-  offset_t start = offsets[seg];
-  offset_t end = offsets[seg + 1];
-
-  scalar_t sum = 0;
-  for (offset_t i = start; i < end; ++i) {
-    sum += weight[i];
-  }
-  weight_sums[seg] = sum;
-}
-
-//=============================================================================
-// Original: Segment-parallel backward kernel (kept for reference/fallback)
-//=============================================================================
 template <typename scalar_t, typename offset_t, ReduceMode mode,
           bool USE_WEIGHT, int PACK_SIZE>
 __global__ void segment_reduce_backward_kernel(
@@ -238,17 +196,43 @@ __global__ void segment_reduce_backward_kernel(
   }
 }
 
-//=============================================================================
-// Optimized: High-occupancy element-parallel backward kernel
-// Key optimizations:
-// 1. Element-parallel instead of segment-parallel for better load balancing
-// 2. Precomputed segment IDs avoid per-element binary search
-// 3. Larger grid size for better latency hiding on modern GPUs
-// 4. Vectorized loads (float4) for better memory throughput
-//=============================================================================
+#ifdef __HIP_PLATFORM_AMD__
+template <typename offset_t>
+__global__ void compute_segment_ids_kernel(
+    const offset_t* __restrict__ offsets, int32_t* __restrict__ segment_ids,
+    int64_t B, int64_t S) {
+  // Each block handles one segment and fills segment IDs
+  int64_t seg = blockIdx.x;
+  if (seg >= S - 1) return;
+
+  offset_t start = offsets[seg];
+  offset_t end = offsets[seg + 1];
+
+  for (offset_t i = start + threadIdx.x; i < end; i += blockDim.x) {
+    segment_ids[i] = seg;
+  }
+}
+
+template <typename scalar_t, typename offset_t>
+__global__ void compute_weight_sums_kernel(
+    const scalar_t* __restrict__ weight, const offset_t* __restrict__ offsets,
+    scalar_t* __restrict__ weight_sums, int64_t S) {
+  int64_t seg = blockIdx.x * blockDim.x + threadIdx.x;
+  if (seg >= S - 1) return;
+
+  offset_t start = offsets[seg];
+  offset_t end = offsets[seg + 1];
+
+  scalar_t sum = 0;
+  for (offset_t i = start; i < end; ++i) {
+    sum += weight[i];
+  }
+  weight_sums[seg] = sum;
+}
+
 template <typename scalar_t, typename offset_t, ReduceMode mode,
           bool USE_WEIGHT>
-__global__ void high_occupancy_backward_kernel(
+__global__ void segment_reduce_backward_kernel_rocm(
     const scalar_t* __restrict__ grad_output,
     const scalar_t* __restrict__ weight,
     const int64_t* __restrict__ reverse_indices,
@@ -290,7 +274,8 @@ __global__ void high_occupancy_backward_kernel(
       }
     } else {
       if constexpr (mode == ReduceMode::MEAN) {
-        w_base = static_cast<scalar_t>(1) / static_cast<scalar_t>(offsets[seg + 1] - offsets[seg]);
+        w_base = static_cast<scalar_t>(1) /
+                  static_cast<scalar_t>(offsets[seg + 1] - offsets[seg]);
       } else {
         w_base = static_cast<scalar_t>(1);
       }
@@ -304,6 +289,7 @@ __global__ void high_occupancy_backward_kernel(
     atomicAdd(out_ptr + 3, g_vec.w * w_base);
   }
 }
+#endif
 
 #define FORWARD_LAUNCH_KERNEL(scalar_t, offset_t, mode, use_weight, vec_size) \
   segment_reduce_forward_kernel<scalar_t, offset_t, mode, use_weight,         \
@@ -352,13 +338,15 @@ void segment_reduce_forward_kernel_launcher(
           N, S, D);                                                            \
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
-#define LAUNCH_HIGH_OCCUPANCY_BACKWARD_KERNEL(scalar_t, offset_t, mode,        \
+#ifdef __HIP_PLATFORM_AMD__
+#define LAUNCH_BACKWARD_KERNEL_ROCM(scalar_t, offset_t, mode,        \
                                               use_weight)                      \
-  high_occupancy_backward_kernel<scalar_t, offset_t, mode, use_weight>         \
+  segment_reduce_backward_kernel_rocm<scalar_t, offset_t, mode, use_weight>         \
       <<<grid_size, block_size, 0, stream>>>(                                  \
           grad_output, weight, reverse_indices, segment_ids, weight_sums,      \
           offsets, grad_unique_emb, B, S, D);                                  \
   C10_CUDA_KERNEL_LAUNCH_CHECK();
+#endif
 
 template <typename scalar_t, typename offset_t, ReduceMode mode>
 void segment_reduce_backward_kernel_launcher(
@@ -368,6 +356,32 @@ void segment_reduce_backward_kernel_launcher(
   auto stream = at::cuda::getCurrentCUDAStream();
   int sm_count = get_sm_count();
 
+
+#ifndef __HIP_PLATFORM_AMD__
+  int64_t block_size = 256;
+  int64_t block_num = get_sm_count() * 8;
+  block_num = std::min(block_num, S);
+
+  if (D % 4 == 0) {
+    if (use_weight) {
+      LAUNCH_BACKWARD_KERNEL(scalar_t, offset_t, mode, true, 4)
+    } else {
+      LAUNCH_BACKWARD_KERNEL(scalar_t, offset_t, mode, false, 4)
+    }
+  } else if (D % 2 == 0) {
+    if (use_weight) {
+      LAUNCH_BACKWARD_KERNEL(scalar_t, offset_t, mode, true, 2)
+    } else {
+      LAUNCH_BACKWARD_KERNEL(scalar_t, offset_t, mode, false, 2)
+    }
+  } else {
+    if (use_weight) {
+      LAUNCH_BACKWARD_KERNEL(scalar_t, offset_t, mode, true, 1)
+    } else {
+      LAUNCH_BACKWARD_KERNEL(scalar_t, offset_t, mode, false, 1)
+    }
+  }
+#else
   // Use high-occupancy kernel for D % 4 == 0 (most common case)
   // Fall back to original segment-parallel kernel for other cases
   if (D % 4 == 0) {
@@ -434,6 +448,7 @@ void segment_reduce_backward_kernel_launcher(
       }
     }
   }
+#endif
 }
 at::Tensor segment_reduce_forward(at::Tensor unique_emb,
                                   c10::optional<at::Tensor> weight,
