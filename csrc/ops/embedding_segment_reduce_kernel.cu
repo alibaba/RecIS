@@ -217,17 +217,35 @@ template <typename scalar_t, typename offset_t>
 __global__ void compute_weight_sums_kernel(
     const scalar_t* __restrict__ weight, const offset_t* __restrict__ offsets,
     scalar_t* __restrict__ weight_sums, int64_t S) {
-  int64_t seg = blockIdx.x * blockDim.x + threadIdx.x;
+  using BlockReduce = cub::BlockReduce<scalar_t, 256>;
+  __shared__ typename BlockReduce::TempStorage temp_storage;
+
+  // Each block handles one segment
+  int64_t seg = blockIdx.x;
   if (seg >= S - 1) return;
 
   offset_t start = offsets[seg];
   offset_t end = offsets[seg + 1];
+  int64_t length = end - start;
 
-  scalar_t sum = 0;
-  for (offset_t i = start; i < end; ++i) {
-    sum += weight[i];
+  scalar_t weight_sum = 0;
+  // The loop ending condition ensures all threads participate in BlockReduce
+  for (int64_t i = threadIdx.x; i / blockDim.x * blockDim.x < length;
+       i += blockDim.x) {
+    scalar_t w = 0;
+    if (i < length) {
+      w = weight[start + i];
+    }
+    scalar_t res = BlockReduce(temp_storage).Sum(w);
+    if (threadIdx.x == 0) {
+      weight_sum += res;
+    }
+    __syncthreads();
   }
-  weight_sums[seg] = sum;
+
+  if (threadIdx.x == 0) {
+    weight_sums[seg] = weight_sum;
+  }
 }
 
 template <typename scalar_t, typename offset_t, ReduceMode mode,
@@ -383,6 +401,14 @@ void segment_reduce_backward_kernel_launcher(
     }
   }
 #else
+  // Early return if there's no work to do
+  // B == 0: no input elements
+  // S <= 1: no segments (S-1 segments, need at least 1)
+  // D == 0: no embedding dimension
+  if (B == 0 || S <= 1 || D == 0) {
+    return;
+  }
+
   // Use high-occupancy kernel for D % 4 == 0 (most common case)
   // Fall back to original segment-parallel kernel for other cases
   if (D % 4 == 0) {
@@ -410,9 +436,9 @@ void segment_reduce_backward_kernel_launcher(
     // Precompute weight sums for MEAN mode with weights
     if constexpr (mode == ReduceMode::MEAN) {
       if (use_weight) {
-        int64_t ws_grid = (S - 1 + block_size - 1) / block_size;
+        // One block per segment for BlockReduce
         compute_weight_sums_kernel<scalar_t, offset_t>
-          <<<ws_grid, block_size, 0, stream>>>(weight, offsets, weight_sums, S);
+          <<<S - 1, block_size, 0, stream>>>(weight, offsets, weight_sums, S);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       }
     }
