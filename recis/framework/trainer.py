@@ -450,12 +450,12 @@ class Trainer:
         iterator = iter(self.train_dataset)
         self._train_loop_internal(iterator, max_steps, epoch)
 
-    def _evaluate_loop(self, max_steps=None):
+    def _eval_loop(self, max_steps=None):
         self.model.eval()
         iterator = iter(self.eval_dataset)
         self._eval_loop_internal(iterator, max_steps)
 
-    def _train_evaluate_loop(self, train_steps=None, eval_steps=None, epoch=1):
+    def _train_eval_loop(self, train_steps=None, eval_steps=None, epoch=1):
         self._train_loop(train_steps, epoch)
         self._eval_loop(eval_steps)
 
