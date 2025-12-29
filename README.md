@@ -106,10 +106,10 @@ The RecIS framework implements efficient dynamic embeddings (HashTable) through 
 
 ## 📚 Documentation
 
-- [Installation Guide](https://alibaba.github.io/RecIS/installation_en.html)
-- [Quick Start](https://alibaba.github.io/RecIS/quickstart_en.html)
-- [Project Introduction](https://alibaba.github.io/RecIS/introduction_en.html)
-- [FAQ](https://alibaba.github.io/RecIS/faq_en.html)
+- [Installation Guide](https://alibaba.github.io/RecIS/installation.html)
+- [Quick Start](https://alibaba.github.io/RecIS/quickstart.html)
+- [Project Introduction](https://alibaba.github.io/RecIS/introduction.html)
+- [FAQ](https://alibaba.github.io/RecIS/faq.html)
 
 ## 🤝 Support and Feedback
 
