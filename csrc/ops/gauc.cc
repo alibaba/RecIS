@@ -86,19 +86,17 @@ std::tuple<torch::Tensor, torch::Tensor> GaucCalc(torch::Tensor labels,
     auto prediction_ptr = predictions.data_ptr<scalar_t>();
     AT_DISPATCH_INDEX_TYPES(indicators.scalar_type(), "CaucCalc", [&]() {
       auto indicator_ptr = indicators.data_ptr<index_t>();
-      bool first = true;
-      for (size_t begin = 0, end = 0; end < n; ++end) {
-        if (indicator_ptr[end] == indicator_ptr[begin]) continue;
-        if (first) {
-          first = false;
-        } else {
+      size_t begin = 0, end = 0;
+      while (begin < n) {
+        while (end < n && indicator_ptr[end] == indicator_ptr[begin]) ++end;
+        if (end - begin > 1) {
           double auc = 0, click_count = 0;
           if (ComputeGauc<scalar_t>(labels_ptr, prediction_ptr, nullptr,
                                     index.data(), begin, end, ldim, &auc,
                                     &click_count)) {
             if (auc >= 0) {
               auc_values.emplace_back(auc);
-              count_values.emplace_back(end - begin);
+              count_values.emplace_back(click_count);
             }
           }
         }
