@@ -1,5 +1,14 @@
 import collections
 from dataclasses import fields, is_dataclass
+from enum import IntEnum, auto
+
+
+class CompareOp(IntEnum):
+    LT = auto()
+    LE = auto()
+    GT = auto()
+    GE = auto()
+    EQ = auto()
 
 
 def copy_data_to_device(data, device, *args, **kwargs):

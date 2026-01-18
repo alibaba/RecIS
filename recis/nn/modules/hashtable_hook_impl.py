@@ -6,6 +6,7 @@ import torch
 from recis.common.singleton import SingletonMeta
 from recis.nn.hashtable_hook import AdmitHook, FilterHook
 from recis.utils.logger import Logger
+from recis.utils.data_utils import CompareOp
 
 
 logger = Logger(__name__)
@@ -547,6 +548,7 @@ class GlobalStepFilterHookImpl(BaseFilterHookImpl):
             filter_values,
             filter_slot.block_size(),
             self._global_step - self._filter_step,
+            CompareOp.LT,
         )
         return torch.masked_select(ids, mask), torch.masked_select(index, mask)
 
