@@ -241,7 +241,7 @@ Status FillDefaultIfEmptyScalar(const std::string& field_name,
   float default_value;
   if (dense_default.dims() == 0) {
     default_value = dense_default.Scalar<float>();
-  } else {
+  } else if (dense_default.dims() == 1) {
     default_value = *(dense_default.Raw<float>());
   } else {
     return Status::InvalidArgument(
