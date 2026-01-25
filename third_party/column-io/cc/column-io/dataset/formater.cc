@@ -225,6 +225,55 @@ Status FillDefaultIfEmpty(const std::string &field_name,
   return Status::OK();
 }
 
+template <typename DATA_TYPE>
+Status FillDefaultIfEmptyScalar(const std::string& field_name,
+                                const std::shared_ptr<arrow::Array>& input,
+                                const Tensor& dense_default,
+                                std::shared_ptr<arrow::Array>* output) {
+  auto casted_input =
+      std::dynamic_pointer_cast<typename DataTypeToTypes<DATA_TYPE>::ArrowArrayType>(input);
+  if (!casted_input) {
+    return Status::InvalidArgument(
+        "dense column data type not supported, column: ", field_name,
+        ", data type: ", input->type()->ToString());
+  }
+  auto row_count = casted_input->length();
+  float default_value;
+  if (dense_default.dims() == 0) {
+    default_value = dense_default.Scalar<float>();
+  } else {
+    default_value = *(dense_default.Raw<float>());
+  } else {
+    return Status::InvalidArgument(
+        "dense column with default dim not match scalar, field_name: ", field_name);
+  }
+  auto input_data_ptr = casted_input->data()->template GetValues<DATA_TYPE>(1);
+  auto builder = std::make_shared<typename DataTypeToTypes<DATA_TYPE>::ArrowBuilderType>(
+      arrow::default_memory_pool());
+  for (size_t i = 0; i < row_count; ++i) {
+    if (!casted_input->IsNull(i)) {
+      auto &&st = builder->Append(input_data_ptr[i]);
+      if (!st.ok()) {
+        return Status::Internal("fail to append value to arrow array: ",
+                                st.ToString(), ", field_name: ", field_name);
+      }
+    } else {
+      auto &&st = builder->Append(static_cast<DATA_TYPE>(default_value));
+      if (!st.ok()) {
+        return Status::Internal("fail to append value to arrow array: ",
+                                st.ToString(), ", field_name: ", field_name);
+      }
+    }
+  }
+  auto&& st = builder->Finish(output);
+  if (!st.ok()) {
+    return Status::Internal("fail to fill value to arrow array: ",
+                            st.ToString(), ", field_name: ", field_name);
+  }
+
+  return Status::OK();
+}
+
 template <typename LIST_TYPE>
 Status
 FillDenseDefault(std::shared_ptr<arrow::RecordBatch> &data,
@@ -241,30 +290,42 @@ FillDenseDefault(std::shared_ptr<arrow::RecordBatch> &data,
       continue;
     }
 
+    std::shared_ptr<arrow::Array> replaced;
     auto casted_input = std::dynamic_pointer_cast<
         typename ListTypeToTypes<LIST_TYPE>::ListClass>(column);
-    if (!casted_input) {
-      return Status::InvalidArgument(
-          "dense column data type not supported, column: ", field->name(),
-          ", data type: ", column->type()->ToString());
+    if (casted_input) {
+      #define FILL_DEFAULT_FIX_WIDTH(data_type)                                      \
+        case DataTypeToTypes<data_type>::ArrowType: {                                \
+          RETURN_IF_ERROR(FillDefaultIfEmpty<LIST_TYPE, data_type>(                  \
+              field->name(), column, iter->second, &replaced));                      \
+          break;                                                                     \
+        }
+      switch (casted_input->values()->type()->id()) {
+        DECLARE_BY_NUMERIC_TYPES(FILL_DEFAULT_FIX_WIDTH)
+        default: {
+          return Status::InvalidArgument(
+              "dense column data type not supported, column: ", field->name(),
+              ", data type: ", column->type()->ToString());
+        }
+      }
+      #undef FILL_DEFAULT_FIX_WIDTH
+    } else {
+      #define FILL_DEFAULT_SCALAR(data_type)                                         \
+        case DataTypeToTypes<data_type>::ArrowType: {                                \
+          RETURN_IF_ERROR(FillDefaultIfEmptyScalar<data_type>(                       \
+              field->name(), column, iter->second, &replaced));                      \
+          break;                                                                     \
+        }
+      switch (column->type()->id()) {
+        DECLARE_BY_NUMERIC_TYPES(FILL_DEFAULT_SCALAR)
+        default: {
+          return Status::InvalidArgument(
+              "dense column data type not supported, column: ", field->name(),
+              ", data type: ", column->type()->ToString());
+        }
+      }
+      #undef FILL_DEFAULT_SCALAR
     }
-
-#define FILL_DEFAULT_FIX_WIDTH(data_type)                                      \
-  case DataTypeToTypes<data_type>::ArrowType: {                                \
-    RETURN_IF_ERROR(FillDefaultIfEmpty<LIST_TYPE, data_type>(                  \
-        field->name(), column, iter->second, &replaced));                      \
-    break;                                                                     \
-  }
-    std::shared_ptr<arrow::Array> replaced;
-    switch (casted_input->values()->type()->id()) {
-      DECLARE_BY_NUMERIC_TYPES(FILL_DEFAULT_FIX_WIDTH)
-    default: {
-      return Status::InvalidArgument(
-          "dense column data type not supported, column: ", field->name(),
-          ", data type: ", column->type()->ToString());
-    }
-    }
-#undef FILL_DEFAULT_FIX_WIDTH
     arrays.emplace_back(replaced);
   }
   *formated_data =
@@ -413,49 +474,79 @@ public:
   Status ConvertDense(std::string feature, std::shared_ptr<arrow::Array> array,
                       std::vector<std::deque<Tensor>> *out_tensors) {
     feature_ = feature;
-    auto casted_input = std::dynamic_pointer_cast<
-        typename ListTypeToTypes<LIST_TYPE>::ListClass>(array);
-    if (!casted_input) {
-      return Status::InvalidArgument("array not list<numeric>: ", feature_);
-    }
-    if (casted_input->values()->null_count() != 0) {
-      return Status::InvalidArgument(
-          "Not support column with null elements inside: ", feature_);
-    }
-    auto row_count = casted_input->length();
-    if (row_count == 0) {
-      return Status::InvalidArgument("array is empty: ", feature_);
-    }
-    auto dense_dim = casted_input->value_length(0);
-    auto value_count = casted_input->values()->length();
-    if (dense_dim <= 0 || row_count * dense_dim != value_count) {
-      return Status::InvalidArgument(feature_,
-                                     "'s array not dense: ", dense_dim, ", ",
-                                     row_count, ", ", value_count);
-    }
     // copy data to tensor
     Tensor tensor;
     Status st;
-#define COPY_FIX_WIDTH(data_type)                                              \
-  case DataTypeToTypes<data_type>::ArrowType: {                                \
-    tensor = ArrowTensorBuffer::TensorFromArrowBuffer(                         \
-        feature_, casted_input->values()->data()->buffers[VALUE_BUFFER],       \
-        DataTypeToTypes<data_type>::TfType,                                    \
-        TensorShape({size_t(row_count), size_t(dense_dim)}), &st);             \
-    if (!st.ok()) {                                                            \
-      return st;                                                               \
-    }                                                                          \
-    break;                                                                     \
-  }
-    switch (casted_input->values()->type()->id()) {
-      DECLARE_BY_NUMERIC_TYPES(COPY_FIX_WIDTH)
-    default: {
-      return Status::InvalidArgument(
-          feature_, "'s dense column data type not supported, column: ",
-          ", data type: ", array->type()->ToString());
+    auto casted_input = std::dynamic_pointer_cast<
+        typename ListTypeToTypes<LIST_TYPE>::ListClass>(array);
+    if (casted_input) {
+      if (casted_input->values()->null_count() != 0) {
+        return Status::InvalidArgument(
+            "Not support column with null elements inside: ", feature_);
+      }
+      auto row_count = casted_input->length();
+      if (row_count == 0) {
+        return Status::InvalidArgument("array is empty: ", feature_);
+      }
+      auto dense_dim = casted_input->value_length(0);
+      auto value_count = casted_input->values()->length();
+      if (dense_dim <= 0 || row_count * dense_dim != value_count) {
+        return Status::InvalidArgument(feature_,
+                                      "'s array not dense: ", dense_dim, ", ",
+                                      row_count, ", ", value_count);
+      }
+      #define COPY_FIX_WIDTH(data_type)                                              \
+        case DataTypeToTypes<data_type>::ArrowType: {                                \
+          tensor = ArrowTensorBuffer::TensorFromArrowBuffer(                         \
+              feature_, casted_input->values()->data()->buffers[VALUE_BUFFER],       \
+              DataTypeToTypes<data_type>::TfType,                                    \
+              TensorShape({size_t(row_count), size_t(dense_dim)}), &st);             \
+          if (!st.ok()) {                                                            \
+            return st;                                                               \
+          }                                                                          \
+          break;                                                                     \
+        }
+      switch (casted_input->values()->type()->id()) {
+        DECLARE_BY_NUMERIC_TYPES(COPY_FIX_WIDTH)
+        default: {
+          return Status::InvalidArgument(
+              feature_, "'s dense column data type not supported, column: ",
+              ", data type: ", array->type()->ToString());
+        }
+      }
+      #undef COPY_FIX_WIDTH
+    } else {
+      auto row_count = array->length();
+      if (row_count == 0) {
+        return Status::InvalidArgument("array is empty: ", feature_);
+      }
+
+      if (!with_null_ && array->null_count() != 0) {
+        return Status::InvalidArgument(
+            "Not support column with null elements inside: ", feature_);
+      }
+
+      #define COPY_SCALAR(data_type)                                                 \
+        case DataTypeToTypes<data_type>::ArrowType: {                                \
+          tensor = ArrowTensorBuffer::TensorFromArrowBuffer(                         \
+              feature_, array->data()->buffers[VALUE_BUFFER],                        \
+              DataTypeToTypes<data_type>::TfType,                                    \
+              TensorShape({size_t(row_count), 1}), &st);                             \
+          if (!st.ok()) {                                                            \
+            return st;                                                               \
+          }                                                                          \
+          break;                                                                     \
+        }
+      switch (array->type()->id()) {
+        DECLARE_BY_NUMERIC_TYPES(COPY_SCALAR)
+        default: {
+          return Status::InvalidArgument(
+              feature_, "'s dense column data type not supported, column: ",
+              ", data type: ", array->type()->ToString());
+        }
+      }
+      #undef COPY_SCALAR
     }
-    }
-#undef COPY_FIX_WIDTH
 
     out_tensors->resize(1);
     (*out_tensors)[0].emplace_front(tensor);
@@ -700,13 +791,11 @@ public:
       // change dense type
       auto iter = schema_.dense_defaults.find(field->name());
       if (iter != schema_.dense_defaults.end()) {
-        if (field->type()->id() != LIST_TYPE::type_id) {
-          return Status::InvalidArgument(
-              "dense feature ", field->name(),
-              "'s type invalid: ", field->type()->ToString());
-        }
         auto list_type = std::dynamic_pointer_cast<LIST_TYPE>(field->type());
-        field_type = list_type->value_type()->ToString();
+        if (list_type)
+          field_type = list_type->value_type()->ToString();
+        else
+          field_type = field->type()->ToString();
       }
       outputs[field->name()] = field_type;
       picked_columns.insert(field->name());
@@ -841,14 +930,12 @@ public:
 
       // change dense type
       if (iter != schema_.dense_defaults.end()) {
-        if (value_field->type()->id() != LIST_TYPE::type_id) {
-          return Status::InvalidArgument(
-              "dense feature ", field->name(),
-              "'s type invalid: ", field->type()->ToString());
-        }
         auto value_list_type =
             std::dynamic_pointer_cast<LIST_TYPE>(value_field->type());
-        field_type = value_list_type->value_type()->ToString();
+        if (value_list_type)
+          field_type = value_list_type->value_type()->ToString();
+        else
+          field_type = value_field->type()->ToString();
       }
       auto group_idx = schema_.group_idx_map[field->name()];
       if (schema_.output_schema.size() <= group_idx)
@@ -967,7 +1054,7 @@ public:
       for (auto &item : map) {
         std::shared_ptr<arrow::Array> data;
         std::string output_column_name = item.first;
-		auto bucket_iter = schema_.hash_features.find(output_column_name);
+        auto bucket_iter = schema_.hash_features.find(output_column_name);
         int32_t bucket_size = 0;
         std::string hash_type;
         if (bucket_iter != schema_.hash_features.end()) {
