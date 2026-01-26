@@ -13,6 +13,7 @@ from recis.framework.model_bank import (
     ModelBankParser,
     get_update_path,
     load_pt_file,
+    pickle_to_torch,
     show_model_bank_format,
 )
 from recis.info import is_internal_enabled
@@ -583,7 +584,10 @@ class Saver:
             ckpt_dir (str): Directory containing the checkpoint.
             strict (bool): Whether to strictly enforce state dict keys match. Defaults to True.
         """
-        state_dict_loaded = load_pt_file(ckpt_dir, "model")
+        state_dict_loaded, from_pickle = load_pt_file(ckpt_dir, "model")
+        if from_pickle:
+            state_dict_loaded = pickle_to_torch(state_dict_loaded)
+
         if len(state_dict_loaded) == 0:
             logger.warning(f"No dense model found in {ckpt_dir}")
             return set()
@@ -656,7 +660,16 @@ class Saver:
         else:
             logger.info("Skip loading io_state because it is not in model bank config")
 
-        extra_data = load_pt_file(ckpt_dir, "extra")
+        extra_data, from_pickle = load_pt_file(ckpt_dir, "extra")
+        if from_pickle:
+            extra_data = pickle_to_torch(extra_data)
+            if ExtraFields.recis_dense_optim in extra_data:
+                extra_data[ExtraFields.recis_dense_optim]["param_groups"] = (
+                    self._extra_save_dict[ExtraFields.recis_dense_optim].state_dict()[
+                        "param_groups"
+                    ]
+                )
+
         if len(extra_data) == 0:
             logger.warning(f"No extra data found in {ckpt_dir}")
             return

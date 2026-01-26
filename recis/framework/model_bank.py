@@ -1,12 +1,13 @@
 import fnmatch
 import os
+import pickle
 import re
 from copy import deepcopy
 from dataclasses import dataclass, field, fields
 from typing import Any, Dict, Optional, Set
 
+import numpy as np
 import torch
-from safetensors.torch import load_file
 
 from recis.framework.filesystem import get_file_system
 from recis.info import is_internal_enabled
@@ -292,17 +293,32 @@ def get_match_by_pattern(pattern: str, var_list: set[str]):
     raise ValueError(f"Bad pattern: {pattern} couldn't match any variable")
 
 
+def pickle_to_torch(obj):
+    if isinstance(obj, np.ndarray):
+        return torch.from_numpy(obj)
+    if isinstance(obj, np.generic):
+        return torch.tensor(obj)
+    if isinstance(obj, dict):
+        return {k: pickle_to_torch(v) for k, v in obj.items()}
+    return obj
+
+
 def load_pt_file(ckpt_dir: str, file_name: str):
     pt_path = os.path.join(ckpt_dir, file_name + ".pt")
-    safe_path = os.path.join(ckpt_dir, file_name + ".safetensors")
+    pk_path = os.path.join(ckpt_dir, file_name + ".pkl")
     fs = get_file_system(os.path.join(ckpt_dir, "index"))
     data = {}
+    from_pickle = False
     if fs.exists(pt_path):
         with fs.open(pt_path, "rb") as f:
             data = torch.load(f=f)
-    elif fs.exists(safe_path):
-        data = load_file(safe_path)
-    return data
+    elif fs.exists(pk_path):
+        from_pickle = True
+        f = fs.open(pk_path, "rb")
+        buf = f.read()
+        data = pickle.loads(buf, encoding="latin1")
+        f.close()
+    return data, from_pickle
 
 
 def parse_sparse_oname(
@@ -555,17 +571,17 @@ class ModelBankParser:
         sparse_names.update(reader.tensor_names())
 
         if fs.exists(os.path.join(ckpt_path, "model.pt")) or fs.exists(
-            os.path.join(ckpt_path, "model.safetensors")
+            os.path.join(ckpt_path, "model.pkl")
         ):
-            data = load_pt_file(ckpt_path, "model")
+            data, _ = load_pt_file(ckpt_path, "model")
             dense_names.update(data.keys())
         else:
             logger.warning(f"Dense model file not found in {ckpt_path}")
 
         if fs.exists(os.path.join(ckpt_path, "extra.pt")) or fs.exists(
-            os.path.join(ckpt_path, "extra.safetensors")
+            os.path.join(ckpt_path, "extra.pkl")
         ):
-            data = load_pt_file(ckpt_path, "extra")
+            data, _ = load_pt_file(ckpt_path, "extra")
             extra_names.update(data.keys())
             if self._extra_fields.prev_optim in data:
                 extra_names.discard(self._extra_fields.prev_optim)
