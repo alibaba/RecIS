@@ -250,6 +250,19 @@ torch::Tensor Hashtable::InsertLookupIndex(const torch::Tensor &ids) {
 
 torch::Tensor Hashtable::InsertLookupIndexWithIndicator(
     const torch::Tensor &ids, const torch::Tensor &indicator) {
+  {
+    // remove duplicate ids & keep first
+    auto [unique_ids, reverse_index] = torch::_unique(ids, true, true);
+    if (unique_ids.numel() < ids.numel()) {
+      auto copy_indicator = indicator.clone();
+      indicator.fill_(false);
+      auto perm = torch::arange(reverse_index.size(0), ids.options());
+      auto first_indices = torch::empty_like(unique_ids);
+      first_indices.scatter_reduce_(0, reverse_index, perm, "amin", false);
+      indicator.index_fill_(0, first_indices, true);
+      indicator.bitwise_and_(copy_indicator);
+    }
+  }
   torch::Tensor ids_t =
       ids.to(slot_group_->EmbSlot()->TensorOptions().device());
   torch::Tensor indicator_t =
