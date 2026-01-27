@@ -74,6 +74,7 @@ class LakeStreamDataset(DatasetBase):
         dtype=torch.float32,
         device="cpu",
         prefetch_transform=None,
+        user_define_module=None,
     ) -> None:
         """Initialize LakeStreamDataset with configuration parameters.
 
@@ -120,6 +121,7 @@ class LakeStreamDataset(DatasetBase):
             dtype,
             device,
             prefetch_transform,
+            user_define_module,
         )
         self._lake_use_prefetch = lake_use_prefetch
         self._lake_prefetch_thread_num = lake_prefetch_thread_num

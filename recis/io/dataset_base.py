@@ -211,6 +211,7 @@ class DatasetBase(IterableDataset):
         dtype=torch.float32,
         device="cpu",
         prefetch_transform=None,
+        user_define_module=None,
     ) -> None:
         super().__init__()
         self._dataset = None
@@ -259,6 +260,7 @@ class DatasetBase(IterableDataset):
         self.hash_types = []
         self.hash_buckets = []
         self.hash_features = []
+        self._user_define_module = user_define_module
 
     def varlen_feature(self, name, hash_type=None, hash_bucket=0, trans_int8=False):
         """Configure a variable-length (sparse) feature with optional hashing.
@@ -586,27 +588,16 @@ class DatasetBase(IterableDataset):
             prefetch_input_elements=0,
         )
 
-        """
-          self._scene_num <= -1: unused io filter
-          self._scene_num > -1: used io filter
-        """
-        if self._scene_num <= -1:
-            self._dataset = self._dataset.pack(
-                self._batch_size,
-                self._drop_remainder,
-                parallel=self._pack_threads_num,
-                pinned_result=(self._device == "pin"),
-                gpu_result=(self._device == "cuda"),
-            )
-        else:
-            self._dataset = self._dataset.pack(
-                self._batch_size,
-                self._drop_remainder,
-                parallel=self._pack_threads_num,
-                pinned_result=(self._device == "pin"),
-                gpu_result=(self._device == "cuda"),
-                scene_num=self._scene_num,
-            )
+        self._dataset = self._dataset.pack(
+            self._batch_size,
+            self._drop_remainder,
+            parallel=self._pack_threads_num,
+            pinned_result=(self._device == "pin"),
+            gpu_result=(self._device == "cuda"),
+            user_define_module=self._user_define_module,
+            dense_columns=self._dense_column,
+            dense_default_value=self._dense_default_value,
+        )
 
         if self._prefetch:
             self._dataset = self._dataset.prefetch(self._prefetch)

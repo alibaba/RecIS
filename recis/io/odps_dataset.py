@@ -124,6 +124,7 @@ class OdpsDataset(DatasetBase):
         dtype=torch.float32,
         device="cpu",
         prefetch_transform=None,
+        user_define_module=None,
     ) -> None:
         """Initialize OdpsDataset with configuration parameters.
 
@@ -165,6 +166,7 @@ class OdpsDataset(DatasetBase):
             dtype,
             device,
             prefetch_transform,
+            user_define_module,
         )
         self._shuffle = shuffle
         self._table_sizes = []
