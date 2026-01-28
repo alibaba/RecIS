@@ -381,6 +381,51 @@ struct FarmhashFactory {
 
 }  // namespace farmhash
 
+namespace djb2hash {
+__device__ uint64_t djb2_dev(const char* s, size_t len) {
+  uint64_t hash = 5381;
+  for (uint idx = 0; idx < len; ++idx) {
+    int c = static_cast<int>(s[idx]);
+    hash = ((hash << 5) + hash) + c;
+  }
+  return hash;
+}  // end djb2_dev
+
+template <typename scalar_t>
+struct Djb2Factory {
+  __device__ uint64_t operator()(scalar_t* offsets, int8_t* inputs,
+                                 int64_t index) {
+    scalar_t offset = offsets[index];
+    scalar_t len = offsets[index + 1] - offset;
+    char* s = reinterpret_cast<char*>(inputs + offset);
+    return djb2_dev(s, len);
+  }
+};  // end struct
+
+}  // namespace djb2hash
+
+namespace sdbmhash {
+__device__ uint64_t sdbm_dev(const char* s, size_t len) {
+  uint64_t hash = 0;
+  for (uint idx = 0; idx < len; ++idx) {
+    int c = static_cast<int>(s[idx]);
+    hash = c + (hash << 6) + (hash << 16) - hash;
+  }
+  return hash;
+}  // end sdbm_dev
+
+template <typename scalar_t>
+struct SdbmFactory {
+  __device__ uint64_t operator()(scalar_t* offsets, int8_t* inputs,
+                                 int64_t index) {
+    scalar_t offset = offsets[index];
+    scalar_t len = offsets[index + 1] - offset;
+    char* s = reinterpret_cast<char*>(inputs + offset);
+    return sdbm_dev(s, len);
+  }  // end struct
+};  // end struct
+}  // namespace sdbmhash
+
 using namespace recis::cuda;
 template <typename Factory, typename scalar_t>
 __global__ void fused_hash_kernel(int8_t** inputs_ptrs,
@@ -450,6 +495,14 @@ void fused_hash_cuda(const std::vector<torch::Tensor>& inputs,
           fused_hash_launcher(
               d_inputs_ptrs, d_input_offsets_ptrs, d_outputs_ptrs, sizes.data(),
               N, murmurhash::MurmurhashFactory<scalar_t>(), stream);
+        } else if (hash_type == "djb2") {
+          fused_hash_launcher(d_inputs_ptrs, d_input_offsets_ptrs,
+                              d_outputs_ptrs, sizes.data(), N,
+                              djb2hash::Djb2Factory<scalar_t>(), stream);
+        } else if (hash_type == "sdbm") {
+          fused_hash_launcher(d_inputs_ptrs, d_input_offsets_ptrs,
+                              d_outputs_ptrs, sizes.data(), N,
+                              sdbmhash::SdbmFactory<scalar_t>(), stream);
         } else {
           throw std::runtime_error(std::string("Unsupported hash type: ") +
                                    hash_type);

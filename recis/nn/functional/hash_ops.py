@@ -102,3 +102,11 @@ def murmurhash(inputs, splits):
         - All computations are GPU-accelerated for high throughput
     """
     return torch.ops.recis.fused_hash(inputs, splits, "murmur")
+
+
+def djb2hash(inputs, splits):
+    return torch.ops.recis.fused_hash(inputs, splits, "djb2")
+
+
+def sdbmhash(inputs, splits):
+    return torch.ops.recis.fused_hash(inputs, splits, "sdbm")
