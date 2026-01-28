@@ -104,9 +104,55 @@ def murmurhash(inputs, splits):
     return torch.ops.recis.fused_hash(inputs, splits, "murmur")
 
 
-def djb2hash(inputs, splits):
-    return torch.ops.recis.fused_hash(inputs, splits, "djb2")
-
-
 def sdbmhash(inputs, splits):
+    """Apply SDBM hash algorithm to multiple input tensors.
+
+    SDBM is a simple hash function that provides reasonable distribution
+    for general-purpose hashing. This function applies SDBM hash to multiple
+    input tensors with configurable split patterns.
+
+    Args:
+        inputs (List[torch.Tensor]): List of input tensors to be hashed.
+            Each tensor should have dtype int8 and contain byte data to be hashed.
+            All tensors should be on the same device.
+        splits (List[int]): List of split configurations for each input tensor.
+            Each integer specifies how the corresponding input tensor should be
+            split or processed during hashing. The length should match the
+            number of input tensors.
+
+    Returns:
+        List[torch.Tensor]: List of hash result tensors, one for each input tensor.
+
+    Note:
+        - Input tensors must have dtype int8 for proper byte-level hashing
+        - SDBM provides simple and fast hashing for general use cases
+        - All computations are GPU-accelerated for high throughput
+    """
     return torch.ops.recis.fused_hash(inputs, splits, "sdbm")
+
+
+def djb2hash(inputs, splits):
+    """Apply DJB2 hash algorithm to multiple input tensors.
+
+    DJB2 is a simple hash function created by Daniel J. Bernstein that
+    provides good distribution for string hashing. This function applies
+    DJB2 hash to multiple input tensors with configurable split patterns.
+
+    Args:
+        inputs (List[torch.Tensor]): List of input tensors to be hashed.
+            Each tensor should have dtype int8 and contain byte data to be hashed.
+            All tensors should be on the same device.
+        splits (List[int]): List of split configurations for each input tensor.
+            Each integer specifies how the corresponding input tensor should be
+            split or processed during hashing. The length should match the
+            number of input tensors.
+
+    Returns:
+        List[torch.Tensor]: List of hash result tensors, one for each input tensor.
+
+    Note:
+        - Input tensors must have dtype int8 for proper byte-level hashing
+        - DJB2 is particularly effective for string hashing
+        - All computations are GPU-accelerated for high throughput
+    """
+    return torch.ops.recis.fused_hash(inputs, splits, "djb2")

@@ -221,10 +221,10 @@ class ShapeManager:
             elif conf.emb_transform_type == EmbTransformType.LOOKUP:
                 shape.append(conf.embedding_dim)
             elif conf.emb_transform_type == EmbTransformType.MULTIHASH_LOOKUP:
-                _, _, mh_combiner, mh_num = parse_multihash(conf.compress_strategy)
+                _, buckets, mh_combiner, _ = parse_multihash(conf.compress_strategy)
                 real_dim = conf.embedding_dim
                 if mh_combiner == "concat":
-                    real_dim *= mh_num
+                    real_dim *= len(buckets)
                 shape.append(real_dim)
             else:
                 raise RuntimeError(f"Not support emb transform type: {conf}")

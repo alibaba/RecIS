@@ -32,6 +32,7 @@
 #include "ops/hashtable_ops.h"
 #include "ops/ids_encode.h"
 #include "ops/ids_partition.h"
+#include "ops/int64_to_string_int8.h"
 #include "ops/multi_hash.h"
 #include "ops/parse_sample_id.h"
 #include "ops/ragged_tile.h"
@@ -306,6 +307,8 @@ TORCH_LIBRARY(recis, m) {
   m.def("ragged_tile", recis::functional::ragged_tile);
   m.def("ragged_tile_back", recis::functional::ragged_tile_back);
   m.def("calc_ragged_index", recis::functional::calc_ragged_index);
+  m.def("fused_int64_to_string_int8",
+        recis::functional::fused_int64_to_string_int8);
 
   m.class_<recis::monitor::Client>("MonitorClient")
       .def(torch::init([](const std::string& name) {

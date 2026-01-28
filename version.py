@@ -80,7 +80,7 @@ def get_version():
             "Neither CUDA nor ROCm/HIP version found in PyTorch installation"
         )
 
-    version = f"{'.'.join(version)}+{cuda_version}{torch_version}git{get_git_commit()}device{get_device_type()}"
+    version = f"{'.'.join(version)}+{cuda_version}.{torch_version}.git{get_git_commit()}.{get_device_type()}"
     return version
 
 

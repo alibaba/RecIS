@@ -45,7 +45,8 @@ class BlockBuilder(nn.Module):
     def _parse_multihash(self, mh_confs):
         out_confs = {}
         for fea_name, conf in mh_confs.items():
-            prefix, _, combiner, num = parse_multihash(conf)
+            prefix, buckets, combiner, _ = parse_multihash(conf)
+            num = len(buckets)
             sub_names = [get_multihash_name(fea_name, prefix, i) for i in range(num)]
             out_confs[fea_name] = {"sub_name": sub_names, "combiner": combiner}
         return out_confs
@@ -53,6 +54,10 @@ class BlockBuilder(nn.Module):
     def _multihash_combiner(self, mh_inputs, combiner="concat"):
         if combiner == "concat":
             return torch.cat(mh_inputs, dim=-1)
+        elif combiner == "mean":
+            return torch.mean(torch.stack(mh_inputs, dim=0), dim=0)
+        elif combiner == "sum":
+            return torch.sum(torch.stack(mh_inputs, dim=0), dim=0)
         else:
             raise NotImplementedError(
                 f"Multihash combiner only support combiner yet, got: {combiner}"

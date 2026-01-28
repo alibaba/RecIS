@@ -10,6 +10,7 @@ from recis.features.op import (
     Mod,
     SelectField,
     SequenceTruncate,
+    StringMultiHash,
 )
 from recis.fg.fg_parser import EmbTransformType, FGParser, IdTransformType
 from recis.fg.mc_parser import MCParser
@@ -417,7 +418,8 @@ class FG:
                     else FilterHook(**conf.filter_hook),
                 )
             elif conf.emb_transform_type == EmbTransformType.MULTIHASH_LOOKUP:
-                prefix, _, _, mh_num = parse_multihash(conf.compress_strategy)
+                prefix, buckets, _, shared = parse_multihash(conf.compress_strategy)
+                mh_num = len(buckets)
                 device = conf.emb_device or self.emb_default_device
                 device = (
                     torch.device("cuda") if device == "cuda" else torch.device("cpu")
@@ -426,7 +428,12 @@ class FG:
                 for i in range(mh_num):
                     # TODO(yuhuan.zh) enable bucket_emb when hash_bucket_size > 0
                     out_name = get_multihash_name(conf.out_name, prefix, i)
-                    shared_name = get_multihash_shared_name(conf.shared_name, prefix, i)
+                    if shared:
+                        shared_name = conf.shared_name
+                    else:
+                        shared_name = get_multihash_shared_name(
+                            conf.shared_name, prefix, i
+                        )
                     emb_dict[out_name] = EmbeddingOption(
                         embedding_dim=conf.embedding_dim,
                         shared_name=shared_name,
@@ -506,9 +513,14 @@ class FG:
                 IdTransformType.HASH_MULTIHASH,
                 IdTransformType.MOD_MULTIHASH,
             ]:
-                prefix, num_buckets, _, mh_num = parse_multihash(conf.compress_strategy)
-                assert mh_num == 4, "Only support multihash num == 4"
-                fea_conf = fea_conf.add_op(IDMultiHash(num_buckets, prefix))
+                prefix, num_buckets, _, _ = parse_multihash(conf.compress_strategy)
+                if prefix == "mh":
+                    fea_conf = fea_conf.add_op(op=StringMultiHash(num_buckets, prefix))
+                elif prefix == "yx":
+                    fea_conf = fea_conf.add_op(IDMultiHash(num_buckets, prefix))
+                else:
+                    raise NotImplementedError(f"multihash type {prefix} is not support")
+
             feature_confs.append(fea_conf)
         return feature_confs
 

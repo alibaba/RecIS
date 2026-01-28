@@ -6,10 +6,12 @@ import torch
 from torch import nn
 
 from recis.nn.functional.array_ops import bucketize, bucketize_mod
-from recis.nn.functional.fused_ops import fused_multi_hash
+from recis.nn.functional.fused_ops import fused_int64_to_string_int8, fused_multi_hash
 from recis.nn.functional.hash_ops import (
+    djb2hash as djb2hash_gpu,
     farmhash as farmhash_gpu,
     murmurhash as murmurhash_gpu,
+    sdbmhash as sdbmhash_gpu,
 )
 from recis.nn.functional.ragged_ops import (
     feature_cross_ragged,
@@ -618,7 +620,7 @@ class IDMultiHash(_OP):
             )
             return_data = dict()
             for i in range(self.bucket_lens):
-                return_data[f"multi_hash_{i}"] = new_tensors[i]
+                return_data[f"{self.prefix}_{i}"] = new_tensors[i]
             return return_data
 
     def _get_config(self) -> Dict:
@@ -690,4 +692,53 @@ class Hash(_OP):
     def _get_config(self) -> Dict:
         return {
             "hash_type": self.hash_type,
+        }
+
+
+class StringMultiHash(_OP):
+    def __init__(self, num_buckets: List[int], prefix: str = "str_multi_hash"):
+        super().__init__()
+        self.num_buckets = num_buckets
+        self.prefix = prefix
+        self.hash_types = ["farm", "mur", "sdbm", "djb2"]
+        self.bucket_lens = len(self.num_buckets)
+        assert len(self.num_buckets) > 0, "num_buckets must be a list of 4 integers"
+        self.num_buckets = torch.tensor(self.num_buckets, dtype=torch.int64)
+
+    def hash(self, x: torch.Tensor, split: torch.Tensor, hash_type: str):
+        if hash_type == "farm":
+            output = farmhash_gpu([x], [split])
+        elif hash_type in ["mur", "murmur"]:
+            output = murmurhash_gpu([x], [split])
+        elif hash_type == "sdbm":
+            output = sdbmhash_gpu([x], [split])
+        elif hash_type == "djb2":
+            output = djb2hash_gpu([x], [split])
+        else:
+            raise ValueError(f"hash_type {hash_type} not supported")
+        return output[0]
+
+    def forward(self, x: Union[RaggedTensor, torch.Tensor]):
+        if isinstance(x, RaggedTensor):
+            return_data = dict()
+            ids = x.values()
+            str_ids, offsets = fused_int64_to_string_int8([ids])
+            for i in range(self.bucket_lens):
+                new_values = self.hash(str_ids, offsets, self.hash_types[i])
+                new_values = bucketize_mod(new_values, self.num_buckets[i])
+                return_data[f"{self.prefix}_{i}"] = RaggedTensor(
+                    values=new_values,
+                    offsets=x.offsets(),
+                    weight=x.weight(),
+                    dense_shape=x._dense_shape,
+                )
+            return return_data
+
+        else:
+            raise NotImplementedError
+
+    def _get_config(self) -> Dict:
+        return {
+            "num_buckets": self.num_buckets,
+            "hash_types": self.hash_types,
         }

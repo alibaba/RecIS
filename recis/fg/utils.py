@@ -47,10 +47,11 @@ def parse_multihash(mh_conf):
             4 components separated by colons.
     """
     confs = mh_conf.split(":")
-    assert len(confs) == 4, (
-        f"multihash config must be like [prefix:buck1,buck2,buck3,buck4:combiner:num], got {confs}"
-    )
-    return confs[0], list(map(int, confs[1].split(","))), confs[2], int(confs[3])
+    mh_type = confs[0]
+    buckets = [int(x) for x in confs[1].split(",")]
+    combiner = confs[2]
+    shard = int(confs[3]) == 1
+    return mh_type, buckets, combiner, shard
 
 
 def get_multihash_name(ori_name, prefix, index):

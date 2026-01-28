@@ -25,6 +25,7 @@ def run_command(cmd, default="unknown"):
 
 
 def get_git_info():
+    run_command(f"git config --global --add safe.directory {os.getcwd()}")
     git_info = {}
     git_info["branch"] = run_command("git rev-parse --abbrev-ref HEAD")
     git_info["commit_hash"] = run_command("git rev-parse --short HEAD")
