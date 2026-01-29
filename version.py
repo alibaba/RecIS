@@ -67,20 +67,23 @@ def get_git_commit(cwd=None):
 
 def get_version():
     version = get_package_version()
+    framework_version = ""
     torch_version_clean = torch.__version__.split(".git")[0]
     torch_version = f"torch{torch_version_clean.replace('.', '').replace('+', '')}"
 
     if torch.version.cuda is not None:
         cuda_version = f"cuda{torch.version.cuda.replace('.', '')}"
+        framework_version = f"{cuda_version}.{torch_version}"
     elif torch.version.hip is not None:
         # hip version is messy
-        cuda_version = ""
+        torch_version, hip_version = torch_version.split("rocm")
+        framework_version = f"rocm{hip_version}.{torch_version}"
     else:
         raise RuntimeError(
             "Neither CUDA nor ROCm/HIP version found in PyTorch installation"
         )
 
-    version = f"{'.'.join(version)}+{cuda_version}.{torch_version}.git{get_git_commit()}.{get_device_type()}"
+    version = f"{'.'.join(version)}+{framework_version}.git{get_git_commit()}.{get_device_type()}"
     return version
 
 
