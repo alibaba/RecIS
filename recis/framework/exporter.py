@@ -1,5 +1,6 @@
 import json
 import os
+import time
 
 import torch
 
@@ -71,6 +72,7 @@ class Exporter:
         fg_conf_or_path=None,
         mc_conf_or_path=None,
         filter_sparse_opt=False,
+        add_subfolder=False,
     ):
         """Initialize the model exporter with configuration parameters.
 
@@ -112,7 +114,16 @@ class Exporter:
         self.ckpt_dir = ckpt_dir
         if export_dir.startswith("model"):
             assert Mos is not None, "Cannot import mos, check interneal version."
-            export_dir = Mos(export_dir, True).real_physical_path
+            if add_subfolder:
+                export_dir = Mos(export_dir, False).real_physical_path
+            else:
+                export_dir = Mos(export_dir, True).real_physical_path
+
+        # add subfolder for export_dir
+        if add_subfolder and not export_dir.endswith("data"):
+            current_time = time.strftime("%Y%m%d%H%M%S", time.localtime(time.time()))
+            export_dir = os.path.join(export_dir, current_time, "data")
+
         self.export_dir = export_dir
 
         self.dense_optimizer = dense_optimizer
