@@ -588,16 +588,25 @@ class DatasetBase(IterableDataset):
             prefetch_input_elements=0,
         )
 
-        self._dataset = self._dataset.pack(
-            self._batch_size,
-            self._drop_remainder,
-            parallel=self._pack_threads_num,
-            pinned_result=(self._device == "pin"),
-            gpu_result=(self._device == "cuda"),
-            user_define_module=self._user_define_module,
-            dense_columns=self._dense_column,
-            dense_default_value=self._dense_default_value,
-        )
+        if self._user_define_module is None:
+            self._dataset = self._dataset.pack(
+                self._batch_size,
+                self._drop_remainder,
+                parallel=self._pack_threads_num,
+                pinned_result=(self._device == "pin"),
+                gpu_result=(self._device == "cuda")
+            )
+        else:
+            self._dataset = self._dataset.pack(
+                self._batch_size,
+                self._drop_remainder,
+                parallel=self._pack_threads_num,
+                pinned_result=(self._device == "pin"),
+                gpu_result=(self._device == "cuda"),
+                user_define_module=self._user_define_module,
+                dense_columns=self._dense_column,
+                dense_default_value=self._dense_default_value,
+            )
 
         if self._prefetch:
             self._dataset = self._dataset.prefetch(self._prefetch)
