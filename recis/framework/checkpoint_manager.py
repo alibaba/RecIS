@@ -695,7 +695,7 @@ class Saver:
 
             data = extra_data[key]
             if hasattr(value, "load_state_dict"):
-                if hasattr(value, "named_optimizer"):
+                if hasattr(value, "named_optimizer") and value.named_optimizer:
                     value.load_state_dict(data, **dense_optim_args)
                     logger.warning("dense optimizer param group info:")
                     for pg in value.param_groups:

@@ -214,6 +214,9 @@ class Trainer:
             mixed_precision=self.mixed_precision,
             **kwargs,
         )
+        named_optimizer = False
+        if hasattr(self.dense_optimizer, "named_optimizer"):
+            named_optimizer = True
         self.gradient_accumulation_steps = args.gradient_accumulation_steps
         (
             self.model,
@@ -222,6 +225,8 @@ class Trainer:
         ) = self.accelerator.prepare(
             self.model, self.dense_optimizer, self.dense_lr_scheduler
         )
+        if named_optimizer:
+            self.dense_optimizer.named_optimizer = True
         MetricReporter.report_forward(self.model, MODEL_FWD_NAME)
         if self.sparse_optimizer is not None:
             # Set sparse grad accumulation steps to 1 because Accelerator already handles loss scaling when backward
