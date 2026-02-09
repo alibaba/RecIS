@@ -184,21 +184,15 @@ class MBC:
 def maybe_get_latest_version(path, force_sub_version=False):
     ckpt_id = None
     fs = get_file_system(path)
-    if fs.exists(path):
-        if fs.isdir(path):
-            if fs.exists(os.path.join(path, "checkpoint")):
-                content = fs.open(os.path.join(path, "checkpoint"), "r").read()
-                versions = content.split("\n")[::-1]
-                for version in versions:
-                    if len(version) == 0:
-                        continue
-                    ckpt_id = version.strip()
-                    break
-            logger.warning(f"Get latest checkpoint version {ckpt_id} from path {path}.")
-        else:
-            logger.warning(f"Checkpoint not found in path: {path}")
-    else:
-        logger.warning(f"{path} not exists")
+    if fs.exists(os.path.join(path, "checkpoint")):
+        content = fs.open(os.path.join(path, "checkpoint"), "r").read()
+        versions = content.split("\n")[::-1]
+        for version in versions:
+            if len(version) == 0:
+                continue
+            ckpt_id = version.strip()
+            break
+        logger.warning(f"Get latest checkpoint version {ckpt_id} from path {path}.")
     if ckpt_id is not None:
         real_path = os.path.join(path, ckpt_id)
     else:
@@ -311,7 +305,7 @@ def load_pt_file(ckpt_dir: str, file_name: str):
     from_pickle = False
     if fs.exists(pt_path):
         with fs.open(pt_path, "rb") as f:
-            data = torch.load(f=f)
+            data = torch.load(f=f, weights_only=False)
     elif fs.exists(pk_path):
         from_pickle = True
         f = fs.open(pk_path, "rb")
@@ -554,7 +548,7 @@ class ModelBankParser:
                 bank.exclude.discard(self._extra_fields.io_state)
                 bank.exclude.update(self._extra_fields.get_io_fields())
 
-    def _get_dst_names(self, path: str):
+    def _get_dst_names(self, path: str, ignore_error: bool):
         """read index file, model file, extra file to get dst vars"""
         sparse_names = set()
         dense_names = set()
@@ -573,19 +567,31 @@ class ModelBankParser:
         if fs.exists(os.path.join(ckpt_path, "model.pt")) or fs.exists(
             os.path.join(ckpt_path, "model.pkl")
         ):
-            data, _ = load_pt_file(ckpt_path, "model")
-            dense_names.update(data.keys())
+            try:
+                data, _ = load_pt_file(ckpt_path, "model")
+                dense_names.update(data.keys())
+            except Exception as e:
+                if ignore_error:
+                    logger.warning(f"Load dense model file failed: {e}")
+                else:
+                    raise e
         else:
             logger.warning(f"Dense model file not found in {ckpt_path}")
 
         if fs.exists(os.path.join(ckpt_path, "extra.pt")) or fs.exists(
             os.path.join(ckpt_path, "extra.pkl")
         ):
-            data, _ = load_pt_file(ckpt_path, "extra")
-            extra_names.update(data.keys())
-            if self._extra_fields.prev_optim in data:
-                extra_names.discard(self._extra_fields.prev_optim)
-                extra_names.add(self._extra_fields.recis_dense_optim)
+            try:
+                data, _ = load_pt_file(ckpt_path, "extra")
+                extra_names.update(data.keys())
+                if self._extra_fields.prev_optim in data:
+                    extra_names.discard(self._extra_fields.prev_optim)
+                    extra_names.add(self._extra_fields.recis_dense_optim)
+            except Exception as e:
+                if ignore_error:
+                    logger.warning(f"Load extra model file failed: {e}")
+                else:
+                    raise e
         else:
             logger.warning(f"Extra model file not found in {ckpt_path}")
 
@@ -654,7 +660,9 @@ class ModelBankParser:
                 logger.warning("all variables are loaded, break parse model bank.")
                 break
             path = bank.path
-            dst_sparse_names, dst_dense_names, extra_names = self._get_dst_names(path)
+            dst_sparse_names, dst_dense_names, extra_names = self._get_dst_names(
+                path, bank.ignore_error
+            )
             dst_names = dst_sparse_names | dst_dense_names | extra_names
             if len(dst_names) == 0:
                 logger.warning(f"No dst vars found in ckpt: {path}")

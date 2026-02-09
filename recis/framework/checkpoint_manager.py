@@ -415,10 +415,10 @@ class Saver:
                 with fs.open(os.path.join(ckpt_path, "extra.pt"), "wb") as f:
                     torch.save(extra_save, f=f)
                 if io_states:
-                    with fs.open(os.path.join(ckpt_path, "io_state_count"), "w+") as f:
+                    with fs.open(os.path.join(ckpt_path, "io_state_count"), "w") as f:
                         f.write(f"{self._shard_num}")
             with fs.open(
-                os.path.join(self._output_dir, self._checkpoint_file), "a+"
+                os.path.join(self._output_dir, self._checkpoint_file), "a"
             ) as out_f:
                 out_f.write(ckpt_id + "\n")
                 self._checkpoint_version_list.append(ckpt_id)
@@ -584,6 +584,8 @@ class Saver:
             ckpt_dir (str): Directory containing the checkpoint.
             strict (bool): Whether to strictly enforce state dict keys match. Defaults to True.
         """
+        if len(model_bank_conf) == 0:
+            return set()
         state_dict_loaded, from_pickle = load_pt_file(ckpt_dir, "model")
         if from_pickle:
             state_dict_loaded = pickle_to_torch(state_dict_loaded)
@@ -647,7 +649,7 @@ class Saver:
             with fs.open(os.path.join(ckpt_dir, "io_state_count"), "r") as f:
                 shard_num = int(f.read())
             with fs.open(os.path.join(ckpt_dir, f"io_state_{shared_id}.pt"), "rb") as f:
-                io_state = torch.load(f=f)
+                io_state = torch.load(f=f, weights_only=False)
             for io_name, io in self._io_state.items():
                 assert shard_num == io._worker_num, (
                     f"IO states size not equal to worker num, expect: {io._worker_num}, got: {shard_num}"
