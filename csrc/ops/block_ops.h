@@ -43,12 +43,14 @@ torch::Tensor gather_cuda(const torch::Tensor ids, const torch::Tensor emb);
 
 torch::Tensor block_filter_cuda(const torch::Tensor ids,
                                 std::vector<torch::Tensor>& emb_blocks,
-                                int64_t block_size, int64_t step);
+                                int64_t block_size, int64_t step,
+                                int64_t compare_op);
 
 torch::Tensor block_filter(const torch::Tensor ids,
                            std::vector<torch::Tensor> emb_blocks,
                            // const torch::Tensor mask,
-                           int64_t block_size, int64_t step);
+                           int64_t block_size, int64_t step,
+                           int64_t compare_op);
 
 }  // namespace functional
 }  // namespace recis

@@ -1,7 +1,36 @@
 #include "block_ops.h"
+#include "compare_ops.h"
 
 namespace recis {
 namespace functional {
+
+template <typename T, CompareOp op>
+struct CompareFactory;
+
+template <typename T>
+struct CompareFactory<T, CompareOp::LT> {
+  bool operator()(const T a, const T b) const { return a < b; }
+};
+
+template <typename T>
+struct CompareFactory<T, CompareOp::LE> {
+  bool operator()(const T a, const T b) const { return a <= b; }
+};
+
+template <typename T>
+struct CompareFactory<T, CompareOp::GT> {
+  bool operator()(const T a, const T b) const { return a > b; }
+};
+
+template <typename T>
+struct CompareFactory<T, CompareOp::GE> {
+  bool operator()(const T a, const T b) const { return a >= b; }
+};
+
+template <typename T>
+struct CompareFactory<T, CompareOp::EQ> {
+  bool operator()(const T a, const T b) const { return a == b; }
+};
 
 template <class TEmb>
 struct GatherFunctor {
@@ -225,16 +254,18 @@ torch::Tensor block_gather_cpu_kernel(const torch::Tensor ids,
   return output;
 }
 
-template <class TEmb>
+template <class TEmb, typename Factory>
 struct BlocksFilterFunctor {
   BlocksFilterFunctor(TEmb threshold, int64_t block_size,
                       const int64_t *index_vec,
-                      std::vector<torch::Tensor> &emb_blocks, bool *mask_out)
+                      std::vector<torch::Tensor> &emb_blocks, bool *mask_out,
+                      Factory factory)
       : threshold_(threshold),
         block_size_(block_size),
         index_vec_(index_vec),
         emb_blocks_(emb_blocks),
-        mask_out_(mask_out) {}
+        mask_out_(mask_out),
+        factory_(factory) {}
   void operator()(const int64_t beg, const int64_t end) const {
     for (auto src_index : c10::irange(beg, end)) {
       auto dst_index = index_vec_[src_index];
@@ -242,7 +273,7 @@ struct BlocksFilterFunctor {
       auto dst_row_index = dst_index % block_size_;
       TEmb filter_val =
           emb_blocks_[dst_block_index].data_ptr<TEmb>()[dst_row_index];
-      bool to_filter = (filter_val < threshold_);
+      bool to_filter = factory_(filter_val, threshold_);
       mask_out_[src_index] = to_filter;
     }
   }
@@ -253,11 +284,13 @@ struct BlocksFilterFunctor {
   const int64_t *index_vec_;
   std::vector<torch::Tensor> &emb_blocks_;
   bool *mask_out_;
+  Factory factory_;
 };
 
 torch::Tensor block_filter_cpu_kernel(const torch::Tensor ids,
                                       std::vector<torch::Tensor> &emb_blocks,
-                                      int64_t threshold, int64_t block_size) {
+                                      int64_t threshold, int64_t block_size,
+                                      int64_t compare_op) {
   TORCH_CHECK(ids.device().is_cpu(), "CPU version requires CPU input");
   TORCH_CHECK(emb_blocks.size() == 0 || emb_blocks[0].device().is_cpu(),
               "CPU version requires CPU emb_blocks");
@@ -268,11 +301,16 @@ torch::Tensor block_filter_cpu_kernel(const torch::Tensor ids,
   if (num_ids == 0) return output;
 
   AT_DISPATCH_INDEX_TYPES(
-      emb_blocks[0].scalar_type(), "block_filter_cuda_impl", ([&] {
-        BlocksFilterFunctor<index_t> filter_functor(
-            static_cast<index_t>(threshold), block_size,
-            ids.data_ptr<int64_t>(), emb_blocks, output.data_ptr<bool>());
-        at::parallel_for(0, ids.numel(), 0, filter_functor);
+      emb_blocks[0].scalar_type(), "block_filter_cpu_impl", ([&] {
+        BF_DISPATCH_COMPARE_TYPES(
+            compare_op, ([&] {
+              using Factory = CompareFactory<index_t, compare_t>;
+              BlocksFilterFunctor<index_t, Factory> filter_functor(
+                  static_cast<index_t>(threshold), block_size,
+                  ids.data_ptr<int64_t>(), emb_blocks, output.data_ptr<bool>(),
+                  Factory());
+              at::parallel_for(0, ids.numel(), 0, filter_functor);
+            }));
       }));
   return output;
 }
@@ -300,13 +338,15 @@ torch::Tensor block_gather(const torch::Tensor ids,
 
 torch::Tensor block_filter(const torch::Tensor ids,
                            std::vector<torch::Tensor> emb_blocks,
-                           int64_t block_size, int64_t threshold) {
+                           int64_t block_size, int64_t threshold,
+                           int64_t compare_op) {
   if (ids.device().type() == torch::kCUDA) {
-    return block_filter_cuda(ids, emb_blocks, threshold, block_size);
+    return block_filter_cuda(ids, emb_blocks, threshold, block_size, compare_op);
   } else {
-    return block_filter_cpu_kernel(ids, emb_blocks, threshold, block_size);
+    return block_filter_cpu_kernel(ids, emb_blocks, threshold, block_size, compare_op);
   }
 }
+
 
 torch::Tensor block_gather_by_range(const torch::Tensor ids,
                                     std::vector<torch::Tensor> emb_blocks,
@@ -335,7 +375,6 @@ void block_insert_cpu_kernel(const torch::Tensor ids,
   auto num_ids = ids.numel();
   if (num_ids == 0) return;
   int64_t embedding_dim = embedding_blocks[0].size(1);
-  auto ids_data = ids.data_ptr<int64_t>();
   AT_DISPATCH_ALL_TYPES_AND(
       at::ScalarType::Half, embedding.scalar_type(), "block_insert_cpu_impl",
       ([&] {
@@ -376,7 +415,6 @@ void block_insert_with_mask_cpu_kernel(
   auto num_ids = ids.numel();
   if (num_ids == 0) return;
   int64_t embedding_dim = embedding_blocks[0].size(1);
-  auto ids_data = ids.data_ptr<int64_t>();
   AT_DISPATCH_ALL_TYPES_AND(
       at::ScalarType::Half, embedding.scalar_type(),
       "block_insert_with_mask_cpu_impl", ([&] {

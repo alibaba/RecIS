@@ -8,9 +8,38 @@
 
 #include "cuda/cuda_param.cuh"
 #include "cuda/utils.cuh"
+#include "compare_ops.h"
 
 namespace recis {
 namespace functional {
+
+template <typename T, CompareOp op>
+struct CompareFactory;
+
+template <typename T>
+struct CompareFactory<T, CompareOp::LT> {
+  __host__ __device__ bool operator()(const T a, const T b) const { return a < b; }
+};
+
+template <typename T>
+struct CompareFactory<T, CompareOp::LE> {
+  __host__ __device__ bool operator()(const T a, const T b) const { return a <= b; }
+};
+
+template <typename T>
+struct CompareFactory<T, CompareOp::GT> {
+  __host__ __device__ bool operator()(const T a, const T b) const { return a > b; }
+};
+
+template <typename T>
+struct CompareFactory<T, CompareOp::GE> {
+  __host__ __device__ bool operator()(const T a, const T b) const { return a >= b; }
+};
+
+template <typename T>
+struct CompareFactory<T, CompareOp::EQ> {
+  __host__ __device__ bool operator()(const T a, const T b) const { return a == b; }
+};
 
 template <typename scalar_t, typename pack_t>
 __global__ void gather_cuda_kernel(const int64_t* ids, const scalar_t* emb,
@@ -276,11 +305,11 @@ torch::Tensor block_gather_cuda(const torch::Tensor ids,
   return output;
 }
 
-template <typename scalar_t>
+template <typename scalar_t, typename Factory>
 __global__ void block_filter_cuda_kernel(
     const int64_t* __restrict__ ids, const scalar_t** __restrict__ emb_blocks,
     int64_t num_ids, int64_t block_size, scalar_t threshold,
-    bool* __restrict__ output) {
+    bool* __restrict__ output, Factory factory) {
   int64_t did = blockIdx.x * blockDim.x + threadIdx.x;
   if (did >= num_ids) {
     return;
@@ -289,27 +318,28 @@ __global__ void block_filter_cuda_kernel(
   int64_t block_index = id / block_size;
   int64_t row_index = id % block_size;
   scalar_t ft_val = emb_blocks[block_index][row_index];
-  bool expired = (ft_val < threshold);
+  bool expired = factory(ft_val, threshold);
   output[did] = expired;
 }
 
-template <typename scalar_t>
+template <typename scalar_t, typename Factory>
 void block_filter_kernel_launcher(const int64_t* ids,
                                   const scalar_t** emb_blocks, int64_t num_ids,
                                   int64_t block_size, scalar_t threshold,
-                                  bool* output) {
+                                  bool* output, Factory factory) {
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   static const int filter_block_size = 128;
   dim3 grids((num_ids + filter_block_size - 1) / filter_block_size);
   dim3 blocks(filter_block_size);
 
-  block_filter_cuda_kernel<scalar_t><<<grids, blocks, 0, stream>>>(
-      ids, emb_blocks, num_ids, block_size, threshold, output);
+  block_filter_cuda_kernel<scalar_t, Factory><<<grids, blocks, 0, stream>>>(
+      ids, emb_blocks, num_ids, block_size, threshold, output, factory);
 }
 
 torch::Tensor block_filter_cuda(const torch::Tensor ids,
                                 std::vector<torch::Tensor>& emb_blocks,
-                                int64_t threshold, int64_t block_size) {
+                                int64_t threshold, int64_t block_size,
+                                int64_t compare_op) {
   TORCH_CHECK(ids.is_cuda(), "Input must be on CUDA device");
   TORCH_CHECK(emb_blocks.size() == 0 || emb_blocks[0].is_cuda(),
               "Embedding must be on CUDA device");
@@ -324,15 +354,19 @@ torch::Tensor block_filter_cuda(const torch::Tensor ids,
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   AT_DISPATCH_INDEX_TYPES(
       emb_blocks[0].scalar_type(), "block_filter_cuda_impl", ([&] {
-        recis::cuda::CudaVecParam<index_t*> emb_blocks_ptrs(block_num, stream);
-        for (auto i = 0; i < block_num; ++i) {
-          emb_blocks_ptrs[i] = emb_blocks[i].data_ptr<index_t>();
-        }
-        block_filter_kernel_launcher<index_t>(
-            ids.data_ptr<int64_t>(),
-            const_cast<const index_t**>(emb_blocks_ptrs.data()), num_ids,
-            block_size, static_cast<index_t>(threshold),
-            output.data_ptr<bool>());
+        BF_DISPATCH_COMPARE_TYPES(
+            compare_op, ([&] {
+              using Factory = CompareFactory<index_t, compare_t>;
+              recis::cuda::CudaVecParam<index_t*> emb_blocks_ptrs(block_num, stream);
+              for (auto i = 0; i < block_num; ++i) {
+                emb_blocks_ptrs[i] = emb_blocks[i].data_ptr<index_t>();
+              }
+              block_filter_kernel_launcher<index_t, Factory>(
+                  ids.data_ptr<int64_t>(),
+                  const_cast<const index_t**>(emb_blocks_ptrs.data()), num_ids,
+                  block_size, static_cast<index_t>(threshold),
+                  output.data_ptr<bool>(), Factory());
+            }));
       }));
   cudaError_t err = cudaGetLastError();
   TORCH_CHECK(cudaSuccess == err, cudaGetErrorString(err));
