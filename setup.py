@@ -184,8 +184,10 @@ def build_fslib():
     os.makedirs("build", exist_ok=True)
     install_lib = os.path.join(BASEDIR, "recis", "lib")
     os.makedirs("recis/lib", exist_ok=True)
+    cmake_bin_path = os.getenv("CMAKE_BIN_PATH", "cmake")
+    # if sys level cmake unavailable, use pip level cmake
     subprocess.check_call(
-        ["cmake", "..", f"-DRECIS_LIB_INSTALL_DIR={install_lib}"], cwd="build"
+        [cmake_bin_path, "..", f"-DRECIS_LIB_INSTALL_DIR={install_lib}"], cwd="build"
     )
     subprocess.check_call(["make", "-j64"], cwd="build")
     subprocess.check_call(["make", "install"], cwd="build")

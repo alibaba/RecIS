@@ -20,6 +20,12 @@ add_library(fslib_c_api SHARED ${fslib_c_api_CC})
 target_include_directories(fslib_c_api PUBLIC ${CC_BASE_INCLUDE_DIR})
 target_include_directories(fslib_c_api SYSTEM PRIVATE ${DEPS_DIR})
 target_link_options(fslib_c_api PRIVATE "-Wl,-rpath,$ORIGIN")
+# Best Practice
+# set_target_properties(fslib_c_api PROPERTIES
+#     INSTALL_RPATH "$ORIGIN"
+#     BUILD_RPATH "$ORIGIN"
+#     BUILD_WITH_INSTALL_RPATH TRUE
+# )
 target_link_libraries(fslib_c_api PRIVATE 
 	${DEPS_DIR}/fslib/lib64/libpangudfs_pangu_client.so.1
 	${DEPS_DIR}/fslib/lib64/libfslib-framework.so
