@@ -3,7 +3,6 @@ import os
 
 import numpy as np
 import torch
-import torch.multiprocessing as mp
 from torch.utils.data import IterableDataset
 
 from recis.io.map_dataset import MapDataset
@@ -255,8 +254,7 @@ class DatasetBase(IterableDataset):
         self._local_step = 0
         self._load_states = None
         self._shard_paths = None
-        self._lock = mp.Lock()
-        self._io_state = mp.Manager().dict()
+        self._io_state = {}
         self.hash_types = []
         self.hash_buckets = []
         self.hash_features = []
@@ -485,9 +483,7 @@ class DatasetBase(IterableDataset):
         """
         if not self._save_interval:
             return None
-        self._lock.acquire()
         cur_state = dict(self._io_state)
-        self._lock.release()
         return cur_state
 
     def load_io_state(self, io_states):
@@ -508,9 +504,7 @@ class DatasetBase(IterableDataset):
         Resets the io state, allowing the dataset to be reused from the beginning.
 
         """
-        self._lock.acquire()
-        self._io_state = mp.Manager().dict()
-        self._lock.release()
+        self._io_state = {}
 
     def _create_state_dataset(self, dataset, sub_id, sub_num):
         """Creates a state-aware dataset wrapper for checkpointing.
@@ -535,7 +529,6 @@ class DatasetBase(IterableDataset):
         load_state = self._load_states[sub_id] if self._load_states else None
         dataset = StateDataset(
             dataset,
-            self._lock,
             self._io_state,
             load_state=load_state,
             save_interval=self._save_interval,
@@ -594,7 +587,7 @@ class DatasetBase(IterableDataset):
                 self._drop_remainder,
                 parallel=self._pack_threads_num,
                 pinned_result=(self._device == "pin"),
-                gpu_result=(self._device == "cuda")
+                gpu_result=(self._device == "cuda"),
             )
         else:
             self._dataset = self._dataset.pack(

@@ -33,7 +33,6 @@ class _StateIterator:
         self,
         input_iterator,
         load_state,
-        lock,
         state_map,
         save_interval,
         sub_id,
@@ -53,7 +52,6 @@ class _StateIterator:
             exact position it was in when the state was saved.
         """
         self._input_iterator = input_iterator
-        self._lock = lock
         self._state_map = state_map
         self._save_interval = save_interval
         self._sub_id = sub_id
@@ -87,9 +85,7 @@ class _StateIterator:
             This method uses multiprocessing locks to ensure thread-safe
             updates to the shared state map in distributed environments.
         """
-        self._lock.acquire()
         self._state_map[self._sub_id] = state
-        self._lock.release()
 
     def serialize(self):
         """Serialize the current iterator state.
@@ -219,7 +215,6 @@ class StateDataset(IterableDataset):
     def __init__(
         self,
         dataset,
-        mp_lock,
         state_map,
         load_state=None,
         save_interval=100,
@@ -242,7 +237,6 @@ class StateDataset(IterableDataset):
             to ensure proper sharing across processes in distributed training scenarios.
         """
         self._dataset = dataset
-        self._lock = mp_lock
         self._state_map = state_map
         self._load_state = load_state
         self._save_interval = save_interval
@@ -296,7 +290,6 @@ class StateDataset(IterableDataset):
         self._iter = _StateIterator(
             iter(self._dataset),
             self._load_state,
-            self._lock,
             self._state_map,
             self._save_interval,
             self._sub_id,
