@@ -71,3 +71,9 @@ class Hook:
 
     def after_data(self, is_train=True, *args, **kwargs):
         """Called after each data batch."""
+
+    def after_eval(self, *args, **kwargs):
+        """Called after each evaluation run loop."""
+
+    def after_train(self, *args, **kwargs):
+        """Called after each training run loop."""

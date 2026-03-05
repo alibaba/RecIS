@@ -1,13 +1,89 @@
 import os
+import time
+from datetime import datetime
+from typing import Optional, Union
 
 import torch
 
+from recis.info import is_internal_enabled
 from recis.io.dataset_base import DatasetBase
 
 
 if not os.environ.get("BUILD_DOCUMENT", None) == "1":
     import column_io.dataset.dataset as column_io_dataset
     from column_io.dataset.file_sharding import LakeStreamSharding
+
+    if is_internal_enabled():
+        from column_io.dataset.config import (
+            LakeBatchConfig as OriginalLakeBatchConfig,
+            LakeConfig as OriginalLakeConfig,
+        )
+
+        class LakeConfig:
+            """Lake Config for reading streaming data from Lake sources.
+
+            Attributes:
+                storageName (str): Storage name.
+                projectName (str): Project name.
+                tableName (str): Table name.
+                columnFamilyName (str): Column family name.
+                partitionSpec (str): Partition specification.
+                startTime (int): Start time.
+                endTime (int): End time.
+                useService (bool): Whether to use service.
+                serviceName (str): Service name.
+                batch_table (bool): Whether to use batch table.
+            """
+
+            def __init__(
+                self,
+                storageName: str,
+                projectName: str,
+                tableName: str,
+                columnFamilyName: str,
+                partitionSpec: str,
+                startTime: Optional[Union[int, str]] = None,
+                endTime: Optional[Union[int, str]] = None,
+                useService: Optional[bool] = True,
+                serviceName: Optional[str] = None,
+                batch_table: Optional[bool] = False,
+            ):
+                if isinstance(startTime, str):
+                    startTime = str2timestamp(startTime)
+                if isinstance(endTime, str):
+                    endTime = str2timestamp(endTime)
+                if batch_table:
+                    self.config = OriginalLakeBatchConfig(
+                        storageName,
+                        projectName,
+                        tableName,
+                        columnFamilyName,
+                        partitionSpec,
+                    )
+                else:
+                    self.config = OriginalLakeConfig(
+                        storageName,
+                        projectName,
+                        tableName,
+                        columnFamilyName,
+                        partitionSpec,
+                        startTime,
+                        endTime,
+                        useService,
+                        serviceName,
+                    )
+
+            def get_v1_path(self):
+                return self.config.get_v1_path()
+
+            def get_v2_path(self, withTime=True):
+                return self.config.get_v2_path(withTime)
+
+
+def str2timestamp(s, format="%Y%m%d%H%M%S"):
+    s = str(s)
+    ts = time.mktime(datetime.strptime(s, format).timetuple())
+    return int(ts) * 1000000
 
 
 class LakeStreamDataset(DatasetBase):

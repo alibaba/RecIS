@@ -13,7 +13,7 @@ from torch import nn
 from torch.utils.data import Dataset
 
 from recis.framework.checkpoint_manager import ExtraFields, Saver, SaverOptions
-from recis.framework.metrics import get_global_metrics
+from recis.framework.metrics import add_metric, get_log_metrics
 from recis.hooks import Hook, LoggerHook
 from recis.hooks.checkpoint_hooks import (
     CheckpointLoadArguments,
@@ -23,6 +23,7 @@ from recis.hooks.checkpoint_hooks import (
 )
 from recis.hooks.initial_profiler_hook import _InitialProfilerHook
 from recis.hooks.metric_report_hook import MetricReportHook
+from recis.hooks.mos_report_hook import MosReporterEvalHook
 from recis.metrics.metric_reporter import MODEL_FWD_NAME, MetricReporter
 from recis.optim import sparse_optim
 from recis.utils.data_utils import copy_data_to_device
@@ -69,6 +70,8 @@ class TrainingArguments:
         ckpt_save_arg (Optional[CheckpointSaveArguments]): Arguments for checkpoint save. Defaults to None.
         ckpt_load_arg (Optional[CheckpointLoadArguments]): Arguments for checkpoint load. Defaults to None.
         mixed_precision (Optional[str]): Mixed precision training mode. Defaults to None. Only support "bf16" and "fp16".
+        window_iter (Optional[int]): Number of windows to iter. Defaults to None.
+        eval_mos_report_uri (Optional[str]): URI for MOS report when eval. Defaults to None.
     """
 
     gradient_accumulation_steps: int = 1
@@ -94,6 +97,7 @@ class TrainingArguments:
     ckpt_load_arg: Optional[CheckpointLoadArguments] = None
     mixed_precision: Optional[str] = None
     window_iter: Optional[int] = None
+    eval_mos_report_uri: Optional[str] = None
 
 
 class Trainer:
@@ -317,6 +321,8 @@ class Trainer:
                 report_args=None,
             )
         )
+        if self.args.eval_mos_report_uri:
+            self.hooks.append(MosReporterEvalHook(self.args.eval_mos_report_uri))
 
     def add_hooks(self, hooks: List[Hook]):
         """Add multiple hooks to the trainer.
@@ -554,18 +560,18 @@ class Trainer:
                 data = copy_data_to_device(data, "cuda")
             for hook in self.hooks:
                 hook.after_data(is_train=False, data=data)
-            metrics = {}
             with torch.no_grad():
                 eval_result = self.model(data)
-            metrics.update(get_global_metrics())
             for hook in self.hooks:
                 hook.after_step(
-                    metrics=metrics,
+                    metrics=get_log_metrics(),
                     global_step=self._global_step,
                     is_train=False,
                     eval_result=eval_result,
                 )
             lstep += 1
+        for hook in self.hooks:
+            hook.after_eval()
 
     def _train_loop_internal(self, data_iter, max_steps=None, epoch=1):
         lstep = 0
@@ -584,24 +590,33 @@ class Trainer:
                 data = copy_data_to_device(data, "cuda")
             for hook in self.hooks:
                 hook.after_data(is_train=True, data=data)
-            metrics = {}
             with self.accelerator.accumulate(self.model):
-                self._train_step(data, epoch, metrics)
+                self._train_step(data, epoch)
             for hook in self.hooks:
                 hook.after_step(
-                    metrics=metrics, global_step=self._global_step, is_train=True
+                    metrics=get_log_metrics(),
+                    global_step=self._global_step,
+                    is_train=True,
                 )
             lstep += 1
 
-    def _train_step(self, data, epoch, metrics):
+        for hook in self.hooks:
+            hook.after_train()
+
+    @property
+    def output_dir(self):
+        if self.saver is not None:
+            return self.saver._output_dir
+        return None
+
+    def _train_step(self, data, epoch):
         self.dense_optimizer.zero_grad()
         if self.sparse_optimizer is not None:
             self.sparse_optimizer.zero_grad()
         with self.accelerator.autocast():
             loss = self.model(data)
-        metrics.update(epoch=epoch)
-        metrics.update(loss=loss)
-        metrics.update(get_global_metrics())
+        add_metric("epoch", epoch, report_to_mos=True)
+        add_metric("loss", loss.item(), report_to_mos=True)
         self.accelerator.backward(loss)
         self.dense_optimizer.step()
         if self.sparse_optimizer is not None:

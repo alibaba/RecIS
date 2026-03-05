@@ -3,6 +3,9 @@ import re
 import time
 from typing import Optional
 
+from openlm_hub import add_or_update_ckpt_metrics
+
+from recis.framework.metrics import get_mos_metrics
 from recis.utils.logger import Logger
 
 
@@ -269,6 +272,7 @@ class Mos:
         self.storage_prefix, self.real_physical_path = format_physical_path(
             self.real_physical_path
         )
+        self.last_ckpt_id = self.uri_info["ckpt_id"]
 
     def ckpt_update(
         self,
@@ -329,3 +333,19 @@ class Mos:
                 physical_path=path,
                 ckpt_labels=ckpt_labels,
             )
+        self.last_ckpt_id = ckpt_id
+        self.report_mos_metrics(is_train=True)
+
+    def report_mos_metrics(self, is_train=True):
+        mos_metrics = get_mos_metrics()
+        mos_metrics["ckpt_id"] = self.last_ckpt_id
+        mode = "MODE.TRAIN" if is_train else "MODE.EVAL"
+        report_data = {}
+        for k, v in mos_metrics.items():
+            report_data[f"{mode}.{k}"] = f"{v}"
+        ckpt_uri = f"{self.version_uri}/ckpt_id={self.last_ckpt_id}"
+        add_or_update_ckpt_metrics(
+            mos_ckpt_uri=ckpt_uri, metrics=report_data, user_id=self.user_id
+        )
+        logger.info(f"Report mos metrics to uri: {ckpt_uri}")
+        logger.warning(f"Report mos metrics: {report_data}")

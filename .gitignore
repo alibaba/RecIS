@@ -18,3 +18,6 @@ fake_data/
 test.py
 code_format_report.md
 results.json
+*.LOG
+pangu_client*
+py_pangu*
