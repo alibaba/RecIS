@@ -192,10 +192,7 @@ def wrapped_named_optimizer(optim):
             state_dict: dict,
             valid_names: set[str],
         ):
-            new_state = {
-                "state": {},
-                "param_groups": [],
-            }
+            current_state = super().state_dict()
 
             # when not train model, state_dict["state"] is empty
             if len(state_dict["state"]) > 0:
@@ -204,13 +201,13 @@ def wrapped_named_optimizer(optim):
                     # some layer will not be trained but created by model
                     # so state_dict["state"] will not have this layer, ignore this layer
                     if idx in state_dict["state"]:
-                        new_state["state"][idx] = state_dict["state"][idx]
+                        current_state["state"][idx] = state_dict["state"][idx]
 
-            new_state["param_groups"] = self._update_param_groups(
+            current_state["param_groups"] = self._update_param_groups(
                 deepcopy(self.state_dict(origin=True)["param_groups"]),
                 deepcopy(state_dict["param_groups"]),
             )
-            super().load_state_dict(new_state)
+            super().load_state_dict(current_state)
 
         def _load_origin_state_dict(
             self,
@@ -225,7 +222,7 @@ def wrapped_named_optimizer(optim):
                     state_dict["state"][self.param_index_map[p_name]] = s
                 else:
                     logger.warning(
-                        f"_load_origin_state_dict, No model found for {p_name} provided in ckpt"
+                        f"_load_origin_state_dict, No model found for {p_name} provided in model"
                     )
 
             for param_group in state_dict["param_groups"]:
@@ -236,7 +233,7 @@ def wrapped_named_optimizer(optim):
                         param_group["params"].append(self.param_index_map[p_name])
                     else:
                         logger.warning(
-                            f"_load_origin_state_dict, No model found for {p_name} provided in ckpt"
+                            f"_load_origin_state_dict, No model found for {p_name} provided in model"
                         )
 
             return self._safe_load_state_dict(state_dict, valid_names)
@@ -268,6 +265,13 @@ def wrapped_named_optimizer(optim):
                 ori_index_param_map = self._get_ori_index_param_map(state_dict)
                 # update state_dict state idx to model_name, param_groups params idx to model_name
                 self._convert_ori_index_to_named_index(state_dict, ori_index_param_map)
+
+            if valid_names is not None:
+                for name in self.param_index_map.keys():
+                    if name not in valid_names:
+                        logger.warning(
+                            f"Missing {name} in ckpt when load dense optimizer"
+                        )
 
             # convert by load_map
             if load_map is not None:
