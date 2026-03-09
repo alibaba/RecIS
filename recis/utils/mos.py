@@ -326,6 +326,7 @@ class Mos:
         if is_delete:
             delete_ckpt(mos_ckpt_uri=ckpt_uri, user_id=self.user_id)
             logger.warning(f"[MOS] delete ckpt_id = {ckpt_id}")
+            self.last_ckpt_id = ckpt_id
         else:
             add_or_sync_mos_ckpt(
                 user_id=self.user_id,
@@ -333,8 +334,8 @@ class Mos:
                 physical_path=path,
                 ckpt_labels=ckpt_labels,
             )
-        self.last_ckpt_id = ckpt_id
-        self.report_mos_metrics(is_train=True)
+            self.last_ckpt_id = ckpt_id
+            self.report_mos_metrics(is_train=True)
 
     def report_mos_metrics(self, is_train=True):
         mos_metrics = get_mos_metrics()
