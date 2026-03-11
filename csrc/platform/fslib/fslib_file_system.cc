@@ -25,7 +25,9 @@ void ClosePangu() {
 }
 }  // namespace
 
-FslibTfFileSystem::FslibTfFileSystem() {}
+FslibTfFileSystem::FslibTfFileSystem() {
+  recis::fslib_wrapper::Wrapper::init_alog();
+}
 
 #define CHECK_FS_ERROR_CODE(x, err_msg) \
   if (x == fslib::ErrorCode::EC_OK) {   \

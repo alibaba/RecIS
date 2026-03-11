@@ -1,10 +1,15 @@
 #include "c_api/fslib/c_api.h"
 
+#include <atomic>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 
+#include "autil/Log.h"
 #include "fslib/fs/File.h"
 #include "fslib/fs/FileSystem.h"
 #include "fslib/fslib.h"
@@ -21,9 +26,29 @@ char **vectorToStringArray(const std::vector<std::string> &vec) {
 
   return result;
 }
+
+bool IsFslLogEnabled() {
+  const char *env = std::getenv("RECIS_OPEN_FSLIB_LOG");
+  return (env != nullptr) && (std::strcmp(env, "1") == 0);
+}
+
+void InitAlog() {
+  if (IsFslLogEnabled()) {
+    const char *default_log_conf = R"magic(alog.rootLogger=INFO, rootAppender
+alog.max_msg_len=2048
+alog.appender.rootAppender=ConsoleAppender
+alog.appender.rootAppender.layout=PatternLayout
+alog.appender.rootAppender.layout.LogPattern=[%%d] [%%l] [%%t,%%F -- %%f():%%n] %%m
+)magic";
+    alog::Configurator::configureLoggerFromString(default_log_conf);
+    AUTIL_ROOT_LOG_SETLEVEL(DEBUG);
+  }
+}
+std::once_flag once_flag;
 }  // namespace
 
 extern "C" {
+void init_alog_C() { std::call_once(once_flag, InitAlog); }
 void Fslib_Fs_FileSystem_Close_C() { fslib::fs::FileSystem::close(); }
 size_t FslibFileHandle_C_Read(void *handle, void *buf, size_t count,
                               size_t offset) {

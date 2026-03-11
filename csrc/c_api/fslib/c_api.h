@@ -6,6 +6,7 @@
 extern "C" {
 using TypeFslibFileHandle_C = void *;
 
+void init_alog_C();
 size_t FslibFileHandle_C_Read(void *handle, void *buf, size_t count,
                               size_t offset);
 size_t FslibFileHandle_C_Write(void *handle, const void *buf, size_t count);

@@ -25,6 +25,7 @@ class FslibFile {
 };
 class Wrapper {
  public:
+  static void init_alog();
   static void fslib_fs_FileSystem_close();
   static std::string GetErrorString(fslib::ErrorCode ec);
   static FslibFile *OpenFile(const std::string &file, fslib::Flag mode);

@@ -42,6 +42,7 @@ FslibFile::~FslibFile() { FslibFileHandle_C_Destory(handle_); }
 
 FslibFile::FslibFile(TypeFslibFileHandle_C handle) : handle_(handle) {}
 
+void Wrapper::init_alog() { init_alog_C(); }
 void Wrapper::fslib_fs_FileSystem_close() { Fslib_Fs_FileSystem_Close_C(); }
 
 std::string Wrapper::GetErrorString(fslib::ErrorCode ec) {
