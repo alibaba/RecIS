@@ -151,6 +151,7 @@ class LakeStreamDataset(DatasetBase):
         device="cpu",
         prefetch_transform=None,
         user_define_module=None,
+        read_batch_size=None,
     ) -> None:
         """Initialize LakeStreamDataset with configuration parameters.
 
@@ -174,7 +175,9 @@ class LakeStreamDataset(DatasetBase):
             save_interval (int, optional): Interval for saving checkpoints. Defaults to 100.
             dtype (torch.dtype, optional): Data type for tensors. Defaults to torch.float32.
             device (str, optional): Device for tensor operations. Defaults to "cpu".
-            prefetch_transform (int, optional): Number of batches to prefetch for transform. Defaults to None.
+            prefetch_transform (int, optional): Number of batches to prefetch for transform. Defaults to None. A python thread will be used to prefetch data.
+            user_define_module (callable, optional): User-defined module for data processing. Defaults to None.
+            read_batch_size (int, optional): Read batch size set for source dataset, if not specified, batch_size will be used.
 
         Note:
             Lake-specific parameters (lake_use_prefetch, lake_prefetch_thread_num,
@@ -198,6 +201,7 @@ class LakeStreamDataset(DatasetBase):
             device,
             prefetch_transform,
             user_define_module,
+            read_batch_size,
         )
         self._lake_use_prefetch = lake_use_prefetch
         self._lake_prefetch_thread_num = lake_prefetch_thread_num
@@ -224,7 +228,7 @@ class LakeStreamDataset(DatasetBase):
         return lambda x: column_io_dataset.Dataset.from_lake_source(
             paths=x,
             is_compressed=self._is_compressed,
-            batch_size=self._batch_size,
+            batch_size=self._read_batch_size,
             selected_columns=self._select_column,
             hash_features=self.hash_features,
             hash_types=self.hash_types,

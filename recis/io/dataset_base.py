@@ -167,6 +167,9 @@ class DatasetBase(IterableDataset):
         save_interval (int): Interval for saving IO state. Defaults to 100.
         dtype (torch.dtype): Data type for floating-point tensors. Defaults to torch.float32.
         device (str): Target device for data placement ("cpu", "cuda", or "pin"). Defaults to "cpu".
+        prefetch_transform (int, optional): Number of batches to prefetch for transform. Defaults to None. A python thread will be used to prefetch data.
+        user_define_module (callable, optional): User-defined module for data processing. Defaults to None.
+        read_batch_size (int, optional): Read batch size set for source dataset, if not specified, batch_size will be used.
 
     Example:
 
@@ -211,6 +214,7 @@ class DatasetBase(IterableDataset):
         device="cpu",
         prefetch_transform=None,
         user_define_module=None,
+        read_batch_size=None,
     ) -> None:
         super().__init__()
         self._dataset = None
@@ -259,6 +263,12 @@ class DatasetBase(IterableDataset):
         self.hash_buckets = []
         self.hash_features = []
         self._user_define_module = user_define_module
+
+        if read_batch_size is None:
+            self._read_batch_size = batch_size
+        else:
+            self._read_batch_size = read_batch_size
+        self._map_funcs_internal = []
 
     def varlen_feature(self, name, hash_type=None, hash_bucket=0, trans_int8=False):
         """Configure a variable-length (sparse) feature with optional hashing.
@@ -403,6 +413,25 @@ class DatasetBase(IterableDataset):
 
         """
         self._map_funcs.append(map_func)
+
+    def map_internal(self, name="k2_prerank", **kwargs):
+        """Adds a mapping function to the data processing pipeline.
+
+        Which will be inserted between parallel_interleave and packer for string process.
+
+        source --> parallel_interleave --> `map_internal` --> packer.
+
+        Args:
+            name (str): The name of the mapping function, which is registered by column_io.
+            **kwargs: Additional keyword arguments to pass to the mapping function.
+
+        Example:
+        .. code-block:: python
+
+            dataset.map_internal(name="k2_rank_canxi", odl_mode=True)
+
+        """
+        self._map_funcs_internal.append((name, kwargs))
 
     def transform_ragged_batch(self, func):
         self._transform_ragged_batch_funcs.append(func)
@@ -580,6 +609,9 @@ class DatasetBase(IterableDataset):
             buffer_output_elements=1,
             prefetch_input_elements=0,
         )
+
+        for filter_name, kargs in self._map_funcs_internal:
+            self._dataset = self._dataset.map(filter_name, kargs)
 
         if self._user_define_module is None:
             self._dataset = self._dataset.pack(

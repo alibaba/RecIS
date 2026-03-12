@@ -273,14 +273,20 @@ class EmbeddingSegmentReduceRagged(torch.autograd.Function):
         if combiner == "tile":
             if combiner_kwargs is None:
                 combiner_kwargs = {}
+            left_pad = torch.concat(combiner_kwargs["left_pad"], dim=0).cuda(
+                non_blocking=True
+            )
             emb, batch_tile_len = torch.ops.recis.ragged_tile(
                 combiner_kwargs["bs"],
                 combiner_kwargs["tile_len"],
                 reverse_indices,
                 offsets,
                 unique_emb,
+                left_pad,
             )
-            ctx.save_for_backward(weight, reverse_indices, offsets, batch_tile_len)
+            ctx.save_for_backward(
+                weight, reverse_indices, offsets, batch_tile_len, left_pad
+            )
             batch_info = (
                 unique_emb.shape[0],
                 len(combiner_kwargs["bs"]),
@@ -311,10 +317,12 @@ class EmbeddingSegmentReduceRagged(torch.autograd.Function):
         """
         unique_size = ctx.unique_size
         if ctx.combiner == "tile":
-            weight, reverse_indices, offsets, batch_tile_len = ctx.saved_tensors
+            weight, reverse_indices, offsets, batch_tile_len, left_pad = (
+                ctx.saved_tensors
+            )
             batch_info = ctx.batch_info
             unique_emb_grad = torch.ops.recis.ragged_tile_back(
-                batch_tile_len, batch_info, reverse_indices, offsets, grad
+                batch_tile_len, batch_info, reverse_indices, offsets, grad, left_pad
             )
         else:
             weight, reverse_indices, offsets = ctx.saved_tensors

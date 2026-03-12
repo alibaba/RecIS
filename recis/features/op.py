@@ -446,6 +446,7 @@ class SequenceTruncate(_OP):
         check_length=True,
         truncate=True,
         truncate_side="left",
+        pad_side="right",
         n_dims=2,
         dtype=torch.long,
     ):
@@ -456,6 +457,7 @@ class SequenceTruncate(_OP):
             check_length (bool): Whether to validate sequence length. Defaults to True.
             truncate (bool): Whether to apply truncation. Defaults to True.
             truncate_side (str): Truncation side ("left" or "right"). Defaults to "left".
+            pad_side (str): Padding side ("left" or "right"). Defaults to "right".
             n_dims (int): Number of input dimensions (2 or 3). Defaults to 2.
             dtype (torch.dtype): Data type of sequences. Defaults to torch.long.
 
@@ -469,9 +471,10 @@ class SequenceTruncate(_OP):
         self.check_length = check_length
         self.truncate = truncate
         self.truncate_side = truncate_side
+        self.pad_side = pad_side
         self.cutoff_func = self.CUT_FUNC_MAP[n_dims]
         self.drop_sides = torch.BoolTensor([self.truncate_side == "left"])
-        self.pad_sides = torch.BoolTensor([False])
+        self.pad_sides = torch.BoolTensor([self.pad_side == "left"])
         self.keep_lengths = torch.IntTensor([self.seq_len])
         self.dtype = dtype
         self.keep_lengths = torch.IntTensor([self.seq_len])

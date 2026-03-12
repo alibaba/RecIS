@@ -317,13 +317,14 @@ class FusedCutoffOP(_FusedOP):
                     "index": i,
                     "seq_len": op.seq_len,
                     "is_left_truncate": op.truncate_side == "left",
+                    "is_left_padding": op.pad_side == "left",
                 }
             )
 
         for group_key, group_items in self._groups.items():
             keep_lengths_list = [item["seq_len"] for item in group_items]
             drop_sides_list = [item["is_left_truncate"] for item in group_items]
-            pad_sides_list = [False] * len(group_items)  # Always False
+            pad_sides_list = [item["is_left_padding"] for item in group_items]
 
             self._group_params[group_key] = {
                 "keep_lengths_list": keep_lengths_list,

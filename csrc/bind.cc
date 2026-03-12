@@ -20,7 +20,6 @@
 #include "ops/block_apply_adamw_op.h"
 #include "ops/block_ops.h"
 #include "ops/bucketize_op.h"
-#include "ops/calc_ragged_index.h"
 #include "ops/dense_to_ragged.h"
 #include "ops/embedding_segment_reduce.h"
 #include "ops/feature_cross_ragged.h"
@@ -28,6 +27,7 @@
 #include "ops/fused_hash.h"
 #include "ops/fused_ragged_cutoff.h"
 #include "ops/fused_uint64_mod.h"
+#include "ops/gather_ragged_by_padded_index.h"
 #include "ops/gauc.h"
 #include "ops/hashtable_ops.h"
 #include "ops/ids_encode.h"
@@ -241,6 +241,10 @@ TORCH_LIBRARY(recis, m) {
       .def("make_write_blocks", &recis::serialize::Saver::MakeWriteBlocks)
       .def("save", &recis::serialize::Saver::Save);
 
+  m.class_<recis::serialize::LoadSummary>("LoadSummary")
+      .def("missing_info", &recis::serialize::LoadSummary::VariablesToLoad)
+      .def("match_info", &recis::serialize::LoadSummary::VariablesLoadMap);
+
   m.class_<recis::serialize::Loader>("Loader")
       .def(torch::init<const std::string, int64_t,
                        torch::Dict<std::string, HashTablePtr>,
@@ -306,9 +310,10 @@ TORCH_LIBRARY(recis, m) {
   m.def("feature_cross_ragged", recis::functional::feature_cross_ragged);
   m.def("ragged_tile", recis::functional::ragged_tile);
   m.def("ragged_tile_back", recis::functional::ragged_tile_back);
-  m.def("calc_ragged_index", recis::functional::calc_ragged_index);
   m.def("fused_int64_to_string_int8",
         recis::functional::fused_int64_to_string_int8);
+  m.def("gather_ragged_by_padded_index",
+        recis::functional::gather_ragged_by_padded_index);
 
   m.class_<recis::monitor::Client>("MonitorClient")
       .def(torch::init([](const std::string& name) {

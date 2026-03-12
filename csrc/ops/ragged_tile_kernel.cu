@@ -6,8 +6,11 @@
 #include <cuda_runtime.h>
 #include <torch/extension.h>
 
+#include <algorithm>
 #include <cstdint>
 
+#include "c10/core/DeviceType.h"
+#include "c10/util/Optional.h"
 #include "cuda/atomic_fast.cuh"
 #include "ragged_tile.h"
 namespace recis {
@@ -25,16 +28,18 @@ __device__ __inline__ void copy_data(const float* src, float* dst) {
 template <typename VT, typename TT>
 __device__ void copy_table(const VT* __restrict__ value,
                            const TT* __restrict__ table, TT* __restrict__ dst,
-                           const uint value_len, const uint seq,
-                           const uint dim) {
+                           const uint value_len, const uint seq, const uint dim,
+                           const bool left_pad) {
   const uint t_id = blockIdx.x * blockDim.x + threadIdx.x;
   const uint threads = gridDim.x * blockDim.x;
+  const uint pad_num =
+      ((left_pad) & (seq >= value_len)) ? (seq - value_len) : 0;
   for (uint idx = t_id; idx < seq * dim; idx += threads) {
     uint val_id = idx / dim;
     uint dim_id = idx % dim;
     uint dst_pos = val_id * dim + dim_id;
-    if (val_id < value_len) {
-      uint value_data = static_cast<uint>(value[val_id]);
+    if ((val_id < value_len + pad_num) && (val_id >= pad_num)) {
+      uint value_data = static_cast<uint>(value[val_id - pad_num]);
       dst[dst_pos] = table[value_data * dim + dim_id];
     } else {
       dst[dst_pos] = TT(0);
@@ -45,17 +50,20 @@ __device__ void copy_table(const VT* __restrict__ value,
 template <typename VT, typename TT>
 __device__ void copy_dy(const VT* __restrict__ value, const TT* __restrict__ dy,
                         TT* __restrict__ d_table, const uint value_len,
-                        const uint seq, const uint dim) {
+                        const uint seq, const uint dim, const bool left_pad) {
   const uint t_id = blockIdx.x * blockDim.x + threadIdx.x;
   const uint threads = gridDim.x * blockDim.x;
-  const uint rows = min(value_len, seq);
-  for (uint idx = t_id; idx < rows * dim; idx += threads) {
+  const uint pad_num =
+      ((left_pad) & (seq >= value_len)) ? (seq - value_len) : 0;
+  for (uint idx = t_id; idx < seq * dim; idx += threads) {
     uint val_id = idx / dim;
-    uint dim_id = idx % dim;
-    uint dy_pos = val_id * dim + dim_id;
-    uint value_data = static_cast<uint>(value[val_id]);
-    uint table_pos = value_data * dim + dim_id;
-    atomic_add_custom<TT>(d_table + table_pos, dy[dy_pos]);
+    if ((val_id < value_len + pad_num) && (val_id >= pad_num)) {
+      uint dim_id = idx % dim;
+      uint dy_pos = val_id * dim + dim_id;
+      uint value_data = static_cast<uint>(value[val_id - pad_num]);
+      uint table_pos = value_data * dim + dim_id;
+      atomic_add_custom<TT>(d_table + table_pos, dy[dy_pos]);
+    }
   }
 }  // copy_dy
 
@@ -93,7 +101,8 @@ template <typename BT, typename VT, typename OT, typename TT>
 static __global__ void ragged_tile_kernel(
     const BT* __restrict__ batch_seq, const VT* __restrict__ value,
     const OT* __restrict__ offset, const TT* __restrict__ table,
-    TT* __restrict__ output, const int64_t dim, const int64_t batch_num) {
+    TT* __restrict__ output, const int64_t dim, const int64_t batch_num,
+    const bool* __restrict__ left_pad) {
   __shared__ BT batch_seq_sm[6];
   __shared__ OT offset_sm[2];
   OT value_start;
@@ -107,14 +116,15 @@ static __global__ void ragged_tile_kernel(
   TT* out_start_ptr = output + out_start;
   const uint dim_uint = static_cast<uint>(dim);
   copy_table<VT, TT>(value_start_ptr, table, out_start_ptr, value_len, seq,
-                     dim_uint);
+                     dim_uint, left_pad[blockIdx.z]);
 }  // ragged_tile_kernel
 
 template <typename BT, typename VT, typename OT, typename TT>
 static __global__ void ragged_tile_back_kernel(
     const BT* __restrict__ batch_seq, const VT* __restrict__ value,
     const OT* __restrict__ offset, const TT* __restrict__ dy,
-    TT* __restrict__ d_table, const int64_t dim, const int64_t batch_num) {
+    TT* __restrict__ d_table, const int64_t dim, const int64_t batch_num,
+    const bool* __restrict__ left_pad) {
   __shared__ BT batch_seq_sm[6];
   __shared__ OT offset_sm[2];
   OT value_start;
@@ -127,7 +137,8 @@ static __global__ void ragged_tile_back_kernel(
   const VT* value_ptr = value + value_start;
   const TT* dy_ptr = dy + out_start;
   const uint dim_uint = static_cast<uint>(dim);
-  copy_dy<VT, TT>(value_ptr, dy_ptr, d_table, value_len, seq, dim_uint);
+  copy_dy<VT, TT>(value_ptr, dy_ptr, d_table, value_len, seq, dim_uint,
+                  left_pad[blockIdx.z]);
 }  // ragged_tile_backward_kernel
 
 template <typename BT>
@@ -135,7 +146,8 @@ void ragged_tile_gpu_impl(const std::vector<BT>& batch_seq,
                           torch::Tensor batch_dev, const int64_t batch_num,
                           const int64_t batch_max, const int64_t seq_min,
                           torch::Tensor value, torch::Tensor offset,
-                          torch::Tensor table, torch::Tensor out) {
+                          torch::Tensor table, torch::Tensor out,
+                          torch::Tensor left_pad) {
   auto stream = at::cuda::getCurrentCUDAStream().stream();
   int64_t dim = table.sizes()[1];
   auto copy_size = batch_seq.size() * sizeof(BT);
@@ -161,7 +173,8 @@ void ragged_tile_gpu_impl(const std::vector<BT>& batch_seq,
                         <<<grid, block, 0, stream>>>(
                             batch_dev.data_ptr<BT>(), value.data_ptr<VT>(),
                             offset.data_ptr<OT>(), table.data_ptr<scalar_t>(),
-                            out.data_ptr<scalar_t>(), dim, batch_num);
+                            out.data_ptr<scalar_t>(), dim, batch_num,
+                            left_pad.data_ptr<bool>());
                   }));
             }));
       }));
@@ -172,7 +185,8 @@ template <typename BT>
 void ragged_tile_back_impl(torch::Tensor batch_dev, const int64_t batch_num,
                            const int64_t batch_max, const int64_t seq_min,
                            torch::Tensor value, torch::Tensor offset,
-                           torch::Tensor d_table, torch::Tensor dy) {
+                           torch::Tensor d_table, torch::Tensor dy,
+                           torch::Tensor left_pad) {
   auto stream = at::cuda::getCurrentCUDAStream().stream();
   int64_t dim = dy.sizes()[1];
   const int64_t threads = 128;
@@ -203,7 +217,8 @@ void ragged_tile_back_impl(torch::Tensor batch_dev, const int64_t batch_num,
                         <<<grid, block, 0, stream>>>(
                             batch_dev.data_ptr<BT>(), value.data_ptr<VT>(),
                             offset.data_ptr<OT>(), dy.data_ptr<TT>(),
-                            d_table.data_ptr<TT>(), dim, batch_num);
+                            d_table.data_ptr<TT>(), dim, batch_num,
+                            left_pad.data_ptr<bool>());
                   }));
             }));
       }));
@@ -245,7 +260,8 @@ std::vector<torch::Tensor> ragged_tile(const std::vector<int64_t>& batch,
                                        const std::vector<int64_t>& seq,
                                        torch::Tensor value,
                                        torch::Tensor offset,
-                                       torch::Tensor table) {
+                                       torch::Tensor table,
+                                       c10::optional<torch::Tensor> left_pad) {
   c10::ScalarType Tensor_T = c10::CppTypeToScalarType<BATCH_T>::value;
   int64_t dim = table.sizes()[1];
   int64_t batch_num = batch.size();
@@ -257,15 +273,24 @@ std::vector<torch::Tensor> ragged_tile(const std::vector<int64_t>& batch,
   int64_t batch_len = static_cast<int64_t>(batch.size()) * 3 + 3;
   torch::Tensor batch_seq_gpu =
       torch::empty({batch_len}, offset.options().dtype(Tensor_T));
+  torch::Tensor left_pad_tensor;
+  if (!left_pad.has_value()) {
+    left_pad_tensor =
+        torch::zeros({(int64_t)batch.size()},
+                     offset.options().dtype(torch::kBool).device(torch::kCUDA));
+  } else {
+    left_pad_tensor = left_pad.value();
+  }
   ragged_tile_gpu_impl<BATCH_T>(batch_seq, batch_seq_gpu, batch_num, batch_max,
-                                seq_min, value, offset, table, out);
+                                seq_min, value, offset, table, out,
+                                left_pad_tensor);
   return {out, batch_seq_gpu};
 }  // ragged_tile
 
 torch::Tensor ragged_tile_back(torch::Tensor batch_seq,
                                const std::vector<int64_t>& batch_info,
                                torch::Tensor value, torch::Tensor offset,
-                               torch::Tensor dy) {
+                               torch::Tensor dy, torch::Tensor left_pad) {
   int64_t dim = dy.sizes()[1];
   int64_t batch_num =
       batch_info[1];  //[table_rows, batch_len, batch_max, seq_min]
@@ -275,7 +300,7 @@ torch::Tensor ragged_tile_back(torch::Tensor batch_seq,
   std::vector<int64_t> out_shape = {table_rows, dim};
   torch::Tensor d_table = torch::zeros(out_shape, dy.options());
   ragged_tile_back_impl<BATCH_T>(batch_seq, batch_num, batch_max, seq_min,
-                                 value, offset, d_table, dy);
+                                 value, offset, d_table, dy, left_pad);
   return d_table;
 }  // ragged_tile
 }  // namespace functional

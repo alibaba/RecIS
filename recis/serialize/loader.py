@@ -64,7 +64,7 @@ class Loader:
         self._filter_func = filter_func
 
     @MetricReporter.report_time_wrapper(LOAD_TIME_NAME, force=True)
-    def load(self):
+    def load(self, print_load_summary=False):
         """Executes the loading process.
 
         Retrieves default load information from the checkpoint, applies the filter function
@@ -80,5 +80,23 @@ class Loader:
         """
         load_info = json.loads(self._impl.default_load_info())
         load_info = self._filter_func(load_info)
-        load_size = self._impl.load(json.dumps(load_info))
+        load_summary, load_size = self._impl.load(json.dumps(load_info))
         MetricReporter.report(LOAD_SIZE_NAME, load_size, force=True)
+        if print_load_summary:
+            self._print_load_summary(load_summary)
+
+    def _print_load_summary(self, load_summary):
+        missing_info = load_summary.missing_info()
+        match_info = load_summary.match_info()
+        logger.info(f"{'*' * 8} Load Summary {'*' * 8}")
+        logger.info(f"load path: {self._checkpoint_path}")
+        logger.info(f"{'*' * 8} Match Info   {'*' * 8}")
+        dst_max_length = 0
+        src_max_length = 0
+        for dst, src in match_info.items():
+            dst_max_length = max(dst_max_length, len(dst))
+            src_max_length = max(src_max_length, len(src))
+        for dst, src in match_info.items():
+            logger.info(f"{dst:>{dst_max_length}} <- {src:<{src_max_length}}")
+        logger.info(f"{'*' * 8} Missing Info  {'*' * 8}")
+        logger.info(missing_info)

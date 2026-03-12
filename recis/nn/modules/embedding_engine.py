@@ -265,7 +265,7 @@ class RuntimeGroupFeature:
         self._coalesced_ids = None
         self._coalesced_weights = None
         self._coalesced_offsets = None
-        self._combiner_kwargs = {"bs": [], "tile_len": []}
+        self._combiner_kwargs = {"bs": [], "tile_len": [], "left_pad": []}
 
     def combiner(self):
         """Get the combiner type.
@@ -458,6 +458,12 @@ class RuntimeGroupFeature:
         if self._combiner == "tile":
             self._combiner_kwargs["bs"].append(combiner_kwargs["bs"])
             self._combiner_kwargs["tile_len"].append(combiner_kwargs["tile_len"])
+            if isinstance(fea, RaggedTensor) and fea.pad_info is not None:
+                self._combiner_kwargs["left_pad"].append(fea.pad_info.pad_sides.view(1))
+            else:
+                self._combiner_kwargs["left_pad"].append(
+                    torch.zeros([1], dtype=torch.bool, device=fea.device)
+                )
 
     def clear_child(self):
         """Clear child data to free memory."""

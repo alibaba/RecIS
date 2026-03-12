@@ -1,15 +1,12 @@
 #include "serialize/ht_read_collection.h"
 
-#include <exception>
 #include <string>
 
 #include "ATen/core/List.h"
 #include "c10/util/Exception.h"
 #include "c10/util/intrusive_ptr.h"
-#include "c10/util/logging_is_not_google_glog.h"
 #include "embedding/hashtable.h"
 #include "embedding/slot_group.h"
-#include "platform/filesystem.h"
 #include "serialize/name.h"
 #include "serialize/read_block.h"
 #include "serialize/table_reader.h"

@@ -206,7 +206,7 @@ class HashTable(torch.nn.Module):
                     initializer=str(self._initializer),
                 )
             )
-            HashtableRegister().register(child, info_str)
+            HashtableRegister().register(child, info_str, self)
 
         self._hashtable_impl = torch.ops.recis.make_hashtable(
             block_size,
@@ -237,6 +237,11 @@ class HashTable(torch.nn.Module):
             )
         else:
             self._filter_hook_impl = torch.nn.Identity()
+
+    @classmethod
+    def clear_child(cls, child) -> None:
+        """Clear child hashtable."""
+        HashtableRegister().get_ht_by_child_name(child)._hashtable_impl.clear(child)
 
     def forward(self, ids: torch.Tensor, admit_hook: AdmitHook = None) -> torch.Tensor:
         """Perform embedding lookup for given feature IDs.
@@ -826,8 +831,12 @@ class HashtableRegister(metaclass=SingletonMeta):
     def __init__(self) -> None:
         """Initialize the hash table registry."""
         self._hashtables = {}
+        self._child_name_to_ht = {}
 
-    def register(self, name: str, info: str):
+    def get_ht_by_child_name(self, name: str) -> HashTable:
+        return self._child_name_to_ht[name]
+
+    def register(self, name: str, info: str, ht: HashTable):
         """Register a hash table with the given name and configuration.
 
         Args:
@@ -857,3 +866,4 @@ class HashtableRegister(metaclass=SingletonMeta):
                 f"Duplicate hashtable shard name: {name}, before: {self._hashtables[name]}, now: {info}"
             )
         self._hashtables[name] = info
+        self._child_name_to_ht[name] = ht

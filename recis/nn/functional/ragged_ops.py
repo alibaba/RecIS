@@ -1,7 +1,8 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import torch
 
+from recis.ragged.tensor import RaggedPadInfo, RaggedTensor
 from recis.utils.logger import Logger
 
 
@@ -773,9 +774,13 @@ class RaggedTile(torch.autograd.Function):
         indices: torch.Tensor,
         offset: torch.Tensor,
         table: torch.Tensor,
+        left_pad: torch.Tensor,
     ):
+        if left_pad is None:
+            left_pad = torch.zeros([len(batch),], dtype=torch.bool, device='cuda')
+
         [out, batch_seq] = torch.ops.recis.ragged_tile(
-            batch, seq, indices, offset, table
+            batch, seq, indices, offset, table, left_pad
         )
         batch_max = max(batch)
         seq_min = min(seq)
@@ -785,19 +790,19 @@ class RaggedTile(torch.autograd.Function):
             batch_max,
             seq_min,
         )  # [table_rows, batch_len, batch_max, seq_min]
-        ctx.save_for_backward(indices, offset, batch_seq)
+        ctx.save_for_backward(indices, offset, batch_seq, left_pad)
         ctx.batch_info = batch_info
         return out
 
     @staticmethod
     def backward(ctx, dy):
         assert dy.is_contiguous()
-        indices, offset, batch_seq = ctx.saved_tensors
+        indices, offset, batch_seq, left_pad = ctx.saved_tensors
         batch_info = ctx.batch_info
         dx = torch.ops.recis.ragged_tile_back(
-            batch_seq, batch_info, indices, offset, dy
+            batch_seq, batch_info, indices, offset, dy, left_pad
         )
-        return None, None, None, None, dx
+        return None, None, None, None, dx, None
 
 
 def ragged_tile(
@@ -806,6 +811,7 @@ def ragged_tile(
     indices: torch.Tensor,
     offset: torch.Tensor,
     table: torch.Tensor,
+    left_pad: torch.Tensor = None,
     check_enable: bool = False,
 ):
     """
@@ -815,6 +821,7 @@ def ragged_tile(
         indices(torch.Tensor): used to restore table.
         offset (torch.Tensor): ragged tensor offset.
         table(torch.Tensor): shape = [N,dim]
+        left_pad(torch.Tensor): boolean tensor indicates which side to pad zeros, shape = [M].
         check_enable(bool): false will not check input, true will lead to low performance
     Returns:
         torch.Tensor: shape = [batch1*seq1+...+batchM*seqM, dim]
@@ -832,7 +839,7 @@ def ragged_tile(
             [2,3], [0,0], [0,0], [0,0]]
     """
     check_para(batch, seq, indices, offset, table, check_enable)
-    return RaggedTile.apply(batch, seq, indices, offset, table)
+    return RaggedTile.apply(batch, seq, indices, offset, table, left_pad)
 
 
 def check_para(
@@ -858,74 +865,76 @@ def check_para(
     assert table.is_contiguous()
 
 
-def ragged_topk_index_cutoff(
-    drop_num: torch.Tensor,
-    pad_num: torch.Tensor,
-    drop_side: torch.Tensor,
-    pad_side: torch.Tensor,
-    offset: torch.Tensor,
-    topk_index: torch.Tensor,
-    indicator: torch.Tensor,
-):
+def index_select_ragged_by_padded_index(
+    pad_info: RaggedPadInfo,
+    padded_indices: torch.Tensor,
+    src_row_indices: torch.Tensor,
+    source_tensors: List[RaggedTensor],
+) -> Tuple[List[RaggedTensor], List[torch.Tensor]]:
     """
-    Applies cutoff operations to a ragged tensor based on top-k indices.
-
-    This function performs cutoff operations on a ragged tensor using the provided
-    top-k indices. It calculates the value indices and updated offsets after applying
-    the cutoff operations based on drop and pad parameters.
-
-    The function uses the RECIS calc_ragged_index operator to compute the new indices
-    and offsets for the ragged tensor after considering the top-k selection.
-
+    Constructs new RaggedTensors by gathering elements from source RaggedTensors using
+    absolute indices defined in padded sequence space, corrected via per-row padding/dropping metadata
+    and then gathered from the corresponding source row.
+    For the output tensor at position `i`, its `j`-th row, `k`-th element is sourced from:
+        out_tensors[i].row(j)[k] = source_tensors[i].row(src_row_indices[j])[col_index]
+    Where column offset `col_index` is computed as:
+        col_index = padded_indices[j][k]
+                    - pad_info.pad_side[j] * pad_info.pad_nums[j]
+                    + pad_info.drop_side[j] * pad_info.drop_nums[j]
+    Before fill the output tensor, we will first check whether `col_index` is valid.
+    If `col_index` >= source_tensors[i].offset(j+1) - source_tensors[i].offset(j) or `col_index` < 0,
+    the output will be filled with 0 , and corresponding value in mask will be set to False.
     Args:
-        drop_num (torch.Tensor): A 1D tensor specifying the number of elements being
-            dropped from each segment of the ragged tensor. Shape: (num_segments,).
-        pad_num (torch.Tensor): A 1D tensor specifying the number of elements being
-            padded for each segment of the ragged tensor. Shape: (num_segments,).
-        drop_side (torch.Tensor): A scalar boolean tensor indicating the side from
-            which to drop elements. True means drop from the left/start, False means
-            drop from the right/end. Shape: (num_segments,).
-        pad_side (torch.Tensor): A scalar boolean tensor indicating the side to which
-            to pad elements. True means pad to the left/start, False means pad to
-            the right/end. Shape: (num_segments,).
-        offset (torch.Tensor): A 1D tensor representing the offsets that define
-            the boundaries of segments in the ragged tensor. Shape: (num_segments + 1,).
-        topk_index (torch.Tensor): A 2D tensor containing the top-k indices that
-            determine which elements to keep after the cutoff operations.
-            Shape: (bs, keep_top).
-        indicator (torch.Tensor): A 1D tensor containing the original indices of the
-            rows in the topk_index.
-            Shape: (bs,).
-
+        pad_info (RaggedPadInfo):
+            Used to convert padded-space indices to valid offsets in compact storage.
+        padded_indices (torch.Tensor): shape (J, K_max)
+            Absolute column positions in the padded sequence space (after preprocessing).
+            `padded_indices[j][k]` denotes the position (0-based) in the full padded sequence
+            corresponding to the k-th element of output row j.
+            Actual valid length per row may be less than K_max (determined by context or mask).
+        src_row_indices (torch.Tensor): shape (J,), dtype=torch.int64
+            Specifies the source row in each input tensor for every output row.
+            `src_row_indices[j]` indicates that output row `j` draws data from input row `src_row_indices[j]`.
+            Must satisfy: 0 <= src_row_indices[j] < number of rows in source tensors.
+        source_tensors (List[RaggedTensor]):
+            Input RaggedTensors storing compact (unpadded) data.
+            Each tensor’s `row_splits` defines row boundaries, and `values` holds flattened valid elements.
+            All tensors are expected to share the same batch structure (i.e., identical row counts).
     Returns:
-        Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
-            - value_index (torch.Tensor): A 1D tensor containing the computed indices of values after
-              applying the cutoff operations.
-            - offset (torch.Tensor): The updated offsets after applying the cutoff
-              operations. Shape: (num_segments + 1,).
-
-    Example:
-        ```python
-        # Example usage of ragged_topk_index_cutoff
-        offset = torch.tensor([0, 8, 10, 13], dtype=torch.int32)
-        drop_num = torch.tensor([5, 0, 0])
-        pad_num = torch.tensor([0, 0, 0])
-        drop_side = torch.tensor(True)
-        pad_side = torch.tensor(False)
-        topk_index = torch.tensor([[1, 2], [0, 2], [0, 1]])
-        indicator = torch.tensor([0, 1, 2])
-        value_index, offset = ragged_topk_index_cutoff(
-            drop_num, pad_num, drop_side, pad_side, offset, topk_index, indicator
-        )
-        # value_index: [6, 7, 8, 10, 11]
-        # offset: [0, 2, 3, 5]
-        ```
-
-    Note:
-        All input tensors should be on the same device.
-        The function relies on the underlying RECIS calc_ragged_index operator.
+        List[RaggedTensor]:
+            A list of newly constructed RaggedTensors, where each output tensor:
+              - Has J rows (J = len(src_row_indices))
+              - Row j contains as many elements as there are valid k indices for that row
+              - `values` are gathered from `source_tensors` according to the corrected indexing rule
+              - `row_splits` are dynamically built based on per-row output lengths
+        List[torch.Tensor]:
+            A list of boolean tensors indicating whether each element in the output tensor is valid.
+    Notes:
+        1. `col_index` must be a non-negative integer.
+        2. All fields in `pad_info` must have length equal to `len(src_row_indices)` (i.e., J).
+        3. The output RaggedTensor structure is determined solely by the number of valid
+           indices in `padded_indices` per row.
+        4. Inputs can be placed on any device, outputs will be placed on gpu;
     """
-    value_index, offset = torch.ops.recis.calc_ragged_index(
-        drop_num, pad_num, drop_side, pad_side, offset, topk_index, indicator
+    values = [ts.values() for ts in source_tensors]
+    offsets = [ts.offsets()[0] for ts in source_tensors]
+    out_offset = torch.arange(
+        0,
+        padded_indices.numel() + 1,
+        padded_indices.size(1),
+        dtype=offsets[0].dtype,
+        device="cuda",
     )
-    return value_index, offset
+    out_values, out_masks = torch.ops.recis.gather_ragged_by_padded_index(
+        pad_info.drop_nums,
+        pad_info.drop_sides,
+        pad_info.pad_nums,
+        pad_info.pad_sides,
+        padded_indices,
+        src_row_indices,
+        offsets,
+        values,
+    )
+    return [
+        RaggedTensor(out_values[i], [out_offset]) for i in range(len(out_values))
+    ], out_masks

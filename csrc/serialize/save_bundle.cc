@@ -7,25 +7,18 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
 
 #include "ATen/PTThreadPool.h"
-#include "ATen/Utils.h"
 #include "ATen/core/List.h"
 #include "ATen/core/TensorBody.h"
 #include "ATen/core/jit_type.h"
-#include "ATen/cuda/CUDAContext.h"
-#include "c10/core/Allocator.h"
 #include "c10/core/DeviceGuard.h"
+#include "c10/cuda/CUDAFunctions.h"
 #include "c10/util/Exception.h"
-#include "c10/util/flat_hash_map.h"
 #include "c10/util/intrusive_ptr.h"
 #include "c10/util/irange.h"
 #include "c10/util/logging_is_not_google_glog.h"
 #include "c10/util/string_view.h"
-#include "embedding/hashtable.h"
-#include "embedding/initializer.h"
-#include "embedding/slot_group.h"
 #include "platform/env.h"
 #include "platform/filesystem.h"
 #include "platform/path.h"

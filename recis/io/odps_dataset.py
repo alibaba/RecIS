@@ -125,6 +125,7 @@ class OdpsDataset(DatasetBase):
         device="cpu",
         prefetch_transform=None,
         user_define_module=None,
+        read_batch_size=None,
     ) -> None:
         """Initialize OdpsDataset with configuration parameters.
 
@@ -144,7 +145,9 @@ class OdpsDataset(DatasetBase):
             save_interval (int, optional): Interval for saving checkpoints. Defaults to 100.
             dtype (torch.dtype, optional): Data type for tensors. Defaults to torch.float32.
             device (str, optional): Device for tensor operations. Defaults to "cpu".
-            prefetch_transform (int, optional): Number of batches to prefetch for transform. Defaults to None.
+            prefetch_transform (int, optional): Number of batches to prefetch for transform. Defaults to None. A python thread will be used to prefetch data.
+            user_define_module (callable, optional): User-defined module for data processing. Defaults to None.
+            read_batch_size (int, optional): Read batch size set for source dataset, if not specified, batch_size will be used.
 
         Note:
             The dataset automatically detects ODPS Open Storage availability and
@@ -167,6 +170,7 @@ class OdpsDataset(DatasetBase):
             device,
             prefetch_transform,
             user_define_module,
+            read_batch_size,
         )
         self._shuffle = shuffle
         self._table_sizes = []
@@ -263,7 +267,7 @@ class OdpsDataset(DatasetBase):
         return lambda x: column_io_dataset.Dataset.from_odps_source(
             [x.decode() if isinstance(x, bytes) else x],
             self._is_compressed,
-            self._batch_size,
+            self._read_batch_size,
             self._select_column,
             self.hash_features,
             self.hash_types,

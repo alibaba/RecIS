@@ -1,6 +1,5 @@
 #include "serialize/load_internal.h"
 
-#include <exception>
 #include <string>
 
 #include "ATen/PTThreadPool.h"
@@ -8,18 +7,16 @@
 #include "ATen/core/ivalue.h"
 #include "ATen/core/ivalue_inl.h"
 #include "ATen/core/jit_type.h"
-#include "ATen/cuda/CUDAContext.h"
-#include "c10/core/DeviceGuard.h"
+#include "c10/cuda/CUDAFunctions.h"
 #include "c10/util/Exception.h"
 #include "c10/util/flat_hash_map.h"
 #include "c10/util/intrusive_ptr.h"
-#include "c10/util/string_view.h"
 #include "embedding/hashtable.h"
-#include "embedding/slice_info.h"
 #include "embedding/slot_group.h"
-#include "serialize/ht_read_collection.h"
+#include "serialize/load_summary.h"
 #include "serialize/name.h"
 #include "serialize/read_block.h"
+
 namespace recis {
 namespace {
 class HTSlotsEmptyInitializerContext {
@@ -67,6 +64,8 @@ at::intrusive_ptr<LoaderInternal> LoaderInternal::Make(
     const std::unordered_map<std::string, at::Tensor> &tensors_to_load,
     int64_t parallel) {
   auto obj = at::make_intrusive<LoaderInternal>();
+  obj->load_summary_ = at::make_intrusive<LoadSummary>();
+  obj->load_summary_->InitFromLoadInfo(load_info);
   obj->load_bundle_ = load_bundle;
   obj->BuildHTLoadCollection(hts_to_load, load_info);
   obj->BuildTensorLoadCollection(tensors_to_load, load_info);
@@ -123,6 +122,8 @@ void LoaderInternal::BuildHTLoadCollection(
           // std::string tensor_name =
           // torch::str(shared_name, TensorSymbolAt(), slot_name);
           if (load_bundle_->HasTensor(tensor_name)) {
+            this->load_summary_->MarkVariableLoaded(
+                HTSlotNameEncode(shared_name, slot_name), tensor_name);
             // find tensor in ckpt.
             auto slice_infos = load_bundle_->SliceInfos(tensor_name);
             for (const auto &slice_info_str : slice_infos) {
@@ -175,6 +176,8 @@ void LoaderInternal::BuildTensorLoadCollection(
       for (const auto &load_entry : load_entrys) {
         const auto &load_tensor_name = load_entry.first;
         if (load_bundle_->HasTensor(load_tensor_name)) {
+          this->load_summary_->MarkVariableLoaded(tensor_name,
+                                                  load_tensor_name);
           const auto &load_block_name =
               BlockNameEncode(load_tensor_name, EmptySliceInfo());
           auto block_info = load_bundle_->GetBlockInfo(load_block_name);
@@ -274,5 +277,10 @@ void LoaderInternal::Load(int64_t &load_size) {
   LOG(WARNING) << " Load Dense Tensor Complete";
   load_size = ReadBlock::size_counter_.GetSize();
 }
+
+at::intrusive_ptr<LoadSummary> LoaderInternal::GetLoadSummary() const {
+  return load_summary_;
+}
+
 }  // namespace serialize
 }  // namespace recis

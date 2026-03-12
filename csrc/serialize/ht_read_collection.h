@@ -3,11 +3,9 @@
 
 #include "ATen/PTThreadPool.h"
 #include "ATen/Utils.h"
-#include "ATen/core/jit_type.h"
 #include "c10/util/intrusive_ptr.h"
 #include "embedding/hashtable.h"
 #include "embedding/slot_group.h"
-#include "platform/filesystem.h"
 #include "serialize/block_info.h"
 #include "serialize/read_block.h"
 #include "serialize/table_reader.h"

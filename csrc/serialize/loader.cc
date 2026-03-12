@@ -8,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 
 #include "ATen/PTThreadPool.h"
@@ -30,6 +31,7 @@
 #include "serialize/load_bundle.h"
 #include "serialize/load_info.h"
 #include "serialize/load_internal.h"
+#include "serialize/load_summary.h"
 #include "serialize/name.h"
 #include "serialize/read_block.h"
 #include "utils/str_util.h"
@@ -59,7 +61,8 @@ std::string Loader::DefaultLoadInfo() {
   return load_info.Serialize();
 }
 
-int64_t Loader::Load(std::string load_info) {
+std::tuple<at::intrusive_ptr<LoadSummary>, int64_t> Loader::Load(
+    const std::string &load_info) {
   LoadInfo load_info_obj;
   load_info_obj.Deserialize(load_info);
 
@@ -69,7 +72,7 @@ int64_t Loader::Load(std::string load_info) {
 
   int64_t load_size = 0;
   loader_internal->Load(load_size);
-  return load_size;
+  return std::make_tuple(loader_internal->GetLoadSummary(), load_size);
 }
 
 Loader::~Loader() {}

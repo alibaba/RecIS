@@ -1,4 +1,3 @@
-import logging
 import math
 import os
 import random
@@ -10,13 +9,14 @@ import torch
 
 from recis.io.lake_dataset import LakeStreamDataset
 from recis.io.odps_dataset import OdpsDataset, get_table_size
+from recis.utils.logger import Logger
 
 
 if not os.environ.get("BUILD_DOCUMENT", None) == "1":
     from column_io.dataset.file_sharding import LakeStreamSharding
 
 
-logger = logging.getLogger(__name__)
+logger = Logger(__name__)
 
 
 @dataclass
@@ -552,10 +552,6 @@ def make_odps_window_io(split_num=None, row_num=None):
                 read_offset : read_offset + self._read_threads_num
             ]
             self._read_offset += self._read_threads_num
-            try:
-                next(iter(self))
-            except StopIteration:
-                return True
             return False
 
         def reset(self):
@@ -713,7 +709,7 @@ def _ts_to_string(ts, format="%Y%m%d%H%M%S"):
     return datetime.strftime(datetime.fromtimestamp(ts), format)
 
 
-def make_lake_stream_window_io(step_mins=60, repeat_mins=None):
+def make_lake_stream_window_io(step_mins=60, repeat_mins=None, name="train"):
     """Make lake stream window io class.
 
     Args:
@@ -737,7 +733,7 @@ def make_lake_stream_window_io(step_mins=60, repeat_mins=None):
         _read_offset = torch.LongTensor([0])
         _shard_sheets = []
         _epochs = 1
-        _name = "test"
+        _name = name
         _loaded = False
 
         def __init__(self, *args, **kwargs):
@@ -745,6 +741,7 @@ def make_lake_stream_window_io(step_mins=60, repeat_mins=None):
             # because read offset is saved after each window.
             kwargs["save_interval"] = None
             super().__init__(*args, **kwargs)
+            self._current_window = []
 
         def add_path(self, lake_path, start_time, interval_mins):
             self.add_paths([(lake_path, start_time, interval_mins)])
@@ -815,6 +812,9 @@ def make_lake_stream_window_io(step_mins=60, repeat_mins=None):
             self._window_paths = []
             self._loaded = False
 
+        def current_window(self):
+            return self._current_window
+
         def next_window(self):
             """Move the window forward.
 
@@ -827,6 +827,7 @@ def make_lake_stream_window_io(step_mins=60, repeat_mins=None):
             start_ts = self._read_offset.item()
             self._read_offset = self._read_offset + self._step
             end_ts = start_ts + self._interval
+            self._current_window = [_ts_to_string(start_ts), _ts_to_string(end_ts)]
             self._shard_sheets = []
             total_step = 1
             try:
