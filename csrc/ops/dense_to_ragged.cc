@@ -54,26 +54,34 @@ std::tuple<torch::Tensor, torch::Tensor> dense_to_ragged_cpu(
   return std::make_tuple(values_tensor, offsets_tensor);
 }
 
-std::tuple<torch::Tensor, torch::Tensor> dense_to_ragged(
+std::tuple<torch::Tensor, std::vector<torch::Tensor>> dense_to_ragged(
     const torch::Tensor& data, bool check_invalid,
     const torch::Tensor& invalid_value) {
-  TORCH_CHECK(data.dim() == 2, "Input must be a 2D tensor");
   auto device = data.device();
-
   if (check_invalid) {
+    // TODO: support mult-dim check_invalid
+    TORCH_CHECK(data.dim() == 2, "Input must be a 2D tensor");
+    torch::Tensor val;
+    std::vector<torch::Tensor> offsets(1);
     if (device.is_cuda()) {
-      return dense_to_ragged_cuda(data, invalid_value);
+      std::tie(val, offsets[0]) = dense_to_ragged_cuda(data, invalid_value);
     } else {
-      return dense_to_ragged_cpu(data, invalid_value);
+      std::tie(val, offsets[0]) = dense_to_ragged_cpu(data, invalid_value);
     }
+    return std::make_tuple(val, offsets);
   } else {
-    int rows = data.size(0);
-    int cols = data.size(1);
-    torch::Tensor offsets = torch::arange(
-        0, rows * cols + 1, cols,
-        torch::TensorOptions().dtype(torch::kInt32).device(device));
-    return std::make_tuple(data.view(-1), offsets);
+    auto data_contig = data.contiguous();
+    std::vector<torch::Tensor> offsets(data_contig.dim() - 1);
+    size_t segs = data_contig.size(0);
+    for (int dim = 0; dim < data_contig.dim() - 1; ++dim) {
+      segs *= data_contig.size(dim + 1);
+      offsets[dim] = torch::arange(
+          0, segs + 1, data_contig.size(dim + 1),
+          torch::TensorOptions().dtype(torch::kInt32).device(device));
+    }
+    return std::make_tuple(data_contig.view(-1), offsets);
   }
 }
+
 }  // namespace functional
 }  // namespace recis

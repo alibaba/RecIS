@@ -1,6 +1,6 @@
 import copy
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -516,6 +516,30 @@ class RaggedTensor:
             dense_shape=self._dense_shape,
         )
 
+    @property
+    def _nested(self):
+        if len(self._offsets) > 1:
+            return RaggedTensor(
+                values=self._values, offsets=self._offsets[1:], weight=self._weight
+            )
+        else:
+            return self._values
+
+    @classmethod
+    def from_offsets(
+        cls,
+        values: torch.Tensor,
+        offsets: Union[torch.Tensor, List[torch.Tensor]],
+        weight: Optional[torch.Tensor] = None,
+    ):
+        if isinstance(values, RaggedTensor):
+            return cls(
+                values=values.values(),
+                offsets=[offsets] + values.offsets(),
+                weight=values.weight(),
+            )
+        return cls(values, offsets=offsets, weight=weight)
+
     def __str__(self) -> str:
         """Return string representation of the ragged tensor.
 
@@ -602,3 +626,392 @@ class RaggedTensor:
         new_ragged._pad_info = new_pad_info
 
         return new_ragged
+
+    def __getitem__(self, key):
+        """Support advanced indexing for RaggedTensor.
+
+        Supports standard Python indexing syntax including integers, slices,
+        None (newaxis), and Ellipsis. Indexing into inner ragged dimensions
+        with integers or tensors is not allowed.
+
+        Args:
+            key: Indexing key. Can be an int, slice, tuple of keys, or Ellipsis.
+
+        Returns:
+            A new RaggedTensor representing the indexed result.
+
+        Example:
+            >>> import torch
+            >>> from recis.ragged.tensor import RaggedTensor
+            >>> values = torch.tensor([1, 2, 3, 4, 5, 6])
+            >>> offsets = [torch.tensor([0, 2, 5, 6])]  # Sequences: [1,2], [3,4,5], [6]
+            >>> ragged = RaggedTensor(values, offsets)
+            >>> # Select first sequence
+            >>> first_seq = ragged[0]  # Returns dense tensor [1, 2]
+            >>> # Slice outer dimension
+            >>> subset = ragged[1:3]  # Returns RaggedTensor with sequences [3,4,5], [6]
+            >>> # Add new axis
+            >>> expanded = ragged[None, :]  # Shape becomes (1, 3, 3)
+        """
+        if not isinstance(key, (list, tuple)):
+            key = (key,)
+        if Ellipsis in key:
+            key = self._expand_ellipsis(key)
+        return self._getitem_impl(key)
+
+    def _getitem_impl(self, keys: Tuple) -> "RaggedTensor":
+        """Internal implementation of __getitem__.
+
+        Processes a normalized tuple of indexing keys and dispatches to
+        appropriate slicing methods based on the key type and position.
+
+        Args:
+            keys: Normalized tuple of indexing objects (int, slice, None, etc.).
+
+        Returns:
+            A new RaggedTensor representing the indexed result.
+
+        Raises:
+            IndexError: If negative step slicing is used or if inner ragged
+                dimensions are indexed with integers or tensors.
+            TypeError: If an unsupported index type is provided.
+        """
+        if not keys:
+            return self
+
+        # Disallow negative step slicing
+        if any(
+            isinstance(k, slice) and k.step is not None and k.step < 0 for k in keys
+        ):
+            raise IndexError("Negative step slicing is not supported")
+
+        # Disallow indexing into inner ragged dimensions with int or tensor
+        row_key = keys[0]
+        remaining_keys = keys[1:]
+        if any(isinstance(item, (int, torch.Tensor)) for item in remaining_keys):
+            raise IndexError("Indexing into inner ragged dimensions is not allowed")
+
+        # Handle newaxis (None) at outer dimension
+        if row_key is None:
+            offset = self._offsets[0]
+            new_offset = torch.tensor(
+                [0, len(offset) - 1], dtype=offset.dtype, device=offset.device
+            )
+            inner_result = self._getitem_impl(remaining_keys)
+            return RaggedTensor.from_offsets(inner_result, new_offset)
+
+        # Handle integer indexing (single row)
+        if isinstance(row_key, int):
+            return self._slice_row(row_key, remaining_keys)
+
+        # Handle slice indexing (multiple rows)
+        if isinstance(row_key, slice):
+            sliced_rt = self._slice_row_axis(row_key)
+            return (
+                sliced_rt._slice_inner_axis(remaining_keys)
+                if remaining_keys
+                else sliced_rt
+            )
+
+        raise TypeError(f"Unsupported index type: {type(row_key)}")
+
+    def _slice_row_axis(self, row_slice: slice) -> "RaggedTensor":
+        """Slice along the outermost (batch) dimension.
+
+        This method handles slicing of the top-level sequences without
+        modifying inner ragged structures.
+
+        Args:
+            row_slice: Slice object for the outer dimension.
+
+        Returns:
+            A new RaggedTensor containing the selected rows.
+
+        Raises:
+            NotImplementedError: If step != 1 (non-contiguous slicing).
+        """
+        offset = self._offsets[0]
+        num_rows = len(offset) - 1
+        start, stop, step = row_slice.indices(num_rows)
+
+        if self._is_full_slice(row_slice):
+            return self
+
+        # Optimized path for contiguous slicing (step=1)
+        if step == 1:
+            if stop <= start:
+                return self._empty_like_same_ndim()
+
+            sliced_offset = offset[start : stop + 1]
+            layer_start = sliced_offset[0]
+            layer_stop = sliced_offset[-1]
+            fixed_offset = sliced_offset - layer_start
+            nested_sliced = self._nested[layer_start:layer_stop]
+
+            return RaggedTensor.from_offsets(nested_sliced, fixed_offset)
+        else:
+            indices = torch.arange(start, stop, step, device=offset.device)
+            return self.__gather_rows(indices)
+
+    def _slice_inner_axis(self, keys: Tuple) -> "RaggedTensor":
+        """Apply slicing to inner ragged dimensions.
+
+        After outer rows have been selected, this method applies slicing
+        to each row's internal structure. Each row is sliced independently
+        according to its actual length.
+
+        Args:
+            keys: Remaining indexing keys for inner dimensions.
+
+        Returns:
+            A new RaggedTensor with inner dimensions sliced.
+
+        Raises:
+            IndexError: If attempting to index inner dimensions with non-slice objects.
+        """
+        if not keys:
+            return self
+
+        col_key = keys[0]
+        remaining = keys[1:]
+
+        # Handle newaxis in inner dimensions
+        if col_key is None:
+            inner = self._slice_inner_axis(remaining)
+            new_dim_offset = torch.arange(
+                len(inner._offsets[0]),
+                dtype=inner._offsets[0].dtype,
+                device=inner._offsets[0].device,
+            )
+            return RaggedTensor.from_offsets(inner, new_dim_offset)
+
+        assert isinstance(col_key, slice), (
+            "Indexing into inner ragged dimension is not allowed."
+        )
+
+        offset = self._offsets[0]
+        inner_lengths = offset[1:] - offset[:-1]
+        rel_start, rel_stop, step = self._resolve_ragged_slice(col_key, inner_lengths)
+        abs_start = offset[:-1] + rel_start
+        abs_stop = offset[:-1] + rel_stop
+
+        return self._ragged_range_gather(abs_start, abs_stop, step, remaining=remaining)
+
+    def _ragged_range_gather(
+        self,
+        starts: torch.Tensor,
+        stops: torch.Tensor,
+        step: int,
+        remaining: Optional[Tuple] = None,
+    ) -> "RaggedTensor":
+        """Gather ragged ranges and reconstruct as a new RaggedTensor.
+
+        Given per-row start/stop positions and a step size, extract elements
+        and reassemble them into a properly structured RaggedTensor.
+
+        Args:
+            starts: Absolute start indices for each row.
+            stops: Absolute stop indices (exclusive) for each row.
+            step: Step size for strided extraction.
+            remaining: Additional indexing keys for deeper dimensions.
+
+        Returns:
+            A new RaggedTensor containing the gathered data.
+        """
+        diff = stops - starts
+        diff = torch.clamp_min(diff, 0)
+        lengths = (diff + step - 1) // step
+        total_elements = lengths.sum().item()
+
+        if total_elements == 0:
+            offset = torch.zeros(
+                len(starts) + 1, dtype=starts.dtype, device=starts.device
+            )
+            empty_nested = self._nested[:0]
+            return RaggedTensor.from_offsets(empty_nested, offset)
+
+        # Generate gather indices vectorized
+        row_ids = torch.repeat_interleave(
+            torch.arange(len(lengths), device=lengths.device), lengths
+        )
+        length_cumsum = torch.cumsum(lengths, dim=0)
+        global_starts = torch.cat(
+            [torch.tensor([0], device=lengths.device), length_cumsum[:-1]]
+        )
+        global_arange = torch.arange(total_elements, device=lengths.device)
+        local_indices = global_arange - global_starts[row_ids]
+        gather_indices = starts[row_ids] + local_indices * step
+
+        gathered_nested = self.__internal_gather(self._nested, gather_indices)
+
+        # Handle weights (only at leaf level)
+        gathered_weight = None
+        if self._weight is not None and not isinstance(self._nested, RaggedTensor):
+            gathered_weight = self._weight[gather_indices]
+
+        # Build new offsets
+        new_offset = torch.cat(
+            [torch.zeros(1, device=lengths.device, dtype=lengths.dtype), length_cumsum]
+        )
+
+        # Recurse on remaining keys if needed
+        if remaining:
+            if not isinstance(gathered_nested, RaggedTensor):
+                if len(remaining) == 1 and remaining[0] is None:
+                    gathered_nested = RaggedTensor.from_offsets(
+                        gathered_nested,
+                        torch.arange(gathered_nested.numel() + 1),
+                        weight=gathered_weight,
+                    )
+                else:
+                    raise IndexError("Cannot apply inner slicing to dense tensor")
+            else:
+                gathered_nested = gathered_nested._slice_inner_axis(remaining)
+
+        return RaggedTensor.from_offsets(
+            gathered_nested, new_offset, weight=gathered_weight
+        )
+
+    def __internal_gather(self, target, indices):
+        """Private method to safely gather from tensor or RaggedTensor."""
+        if isinstance(target, RaggedTensor):
+            return target.__gather_rows(indices)
+        else:
+            return target[indices]
+
+    def __gather_rows(self, indices: torch.Tensor):
+        """Private method to gather rows by index.
+
+        Used internally for strided slicing or recursive indexing.
+        """
+        if len(indices) == 0:
+            return self._empty_like_same_ndim()
+
+        offset = self._offsets[0]
+        start = offset[indices]
+        stop = offset[indices + 1]
+        return self._ragged_range_gather(start, stop, step=1)
+
+    def _resolve_ragged_slice(
+        self, s: slice, lengths: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, int]:
+        """Resolve a slice into per-row relative start/stop positions.
+
+        Handles negative indices and clamps to valid range [0, length].
+
+        Args:
+            s: Slice object to parse.
+            lengths: Length of each row.
+
+        Returns:
+            Tuple of (relative_starts, relative_stops, step).
+        """
+        step = s.step if s.step is not None else 1
+
+        if s.start is None:
+            r_start = torch.zeros_like(lengths)
+        else:
+            val = s.start
+            if val < 0:
+                r_start = torch.clamp_min(lengths + val, 0)
+            else:
+                r_start = torch.clamp_max(
+                    torch.tensor(val, device=lengths.device), lengths
+                )
+
+        if s.stop is None:
+            r_stop = lengths
+        else:
+            val = s.stop
+            if val < 0:
+                r_stop = torch.clamp_min(lengths + val, 0)
+            else:
+                r_stop = torch.clamp_max(
+                    torch.tensor(val, device=lengths.device), lengths
+                )
+
+        return r_start, r_stop, step
+
+    def _slice_row(
+        self, idx: int, remaining: Tuple
+    ) -> Union[torch.Tensor, "RaggedTensor"]:
+        """Extract a single row by index and apply remaining slicing.
+
+        Converts negative indices to positive and validates bounds before
+        extracting the corresponding segment from the flattened values.
+
+        Args:
+            idx: Row index (supports negative indexing).
+            remaining: Additional indexing keys for inner dimensions.
+
+        Returns:
+            The extracted row, possibly further sliced by remaining keys.
+
+        Raises:
+            IndexError: If index is out of bounds.
+        """
+        offset = self._offsets[0]
+        num_rows = len(offset) - 1
+        if idx < 0:
+            idx += num_rows
+        if idx < 0 or idx >= num_rows:
+            raise IndexError(f"Index {idx} out of bounds for {num_rows} rows")
+
+        start, stop = offset[idx], offset[idx + 1]
+        row = self._nested[start:stop]
+        return row[remaining] if remaining else row
+
+    def _empty_like_same_ndim(self):
+        """Create an empty RaggedTensor with the same number of dimensions."""
+        return RaggedTensor.from_offsets(
+            values=torch.empty(
+                (0,), dtype=self._values.dtype, device=self._values.device
+            ),
+            offsets=[
+                torch.tensor(
+                    [0], device=self._offsets[0].device, dtype=self._offsets[0].dtype
+                )
+            ]
+            + self._offsets[1:],
+        )
+
+    def _is_full_slice(self, s: slice) -> bool:
+        """Check if a slice represents the full range with default step.
+
+        A full slice is defined as `slice(None)`, `slice(None, None)`,
+        or `slice(None, None, 1)`.
+
+        Args:
+            s: Slice object to check.
+
+        Returns:
+            True if the slice selects all elements with step 1, False otherwise.
+        """
+        return s.start is None and s.stop is None and (s.step is None or s.step == 1)
+
+    def _expand_ellipsis(self, key: Tuple) -> Tuple:
+        """Expand Ellipsis (...) into appropriate number of full slices.
+
+        Replaces the Ellipsis with enough `slice(None)` objects to match
+        the tensor's number of dimensions.
+
+        Args:
+            key: Tuple containing exactly one Ellipsis.
+
+        Returns:
+            Expanded tuple with Ellipsis replaced by full slices.
+
+        Raises:
+            AssertionError: If multiple Ellipses are present.
+        """
+        explicit_dims = sum(1 for k in key if k is not Ellipsis and k is not None)
+        expand_count = self.dim - explicit_dims
+        assert key.count(Ellipsis) == 1, "Multiple ellipses are not allowed"
+
+        expanded_key = []
+        for k in key:
+            if k is Ellipsis:
+                expanded_key.extend([slice(None)] * max(0, expand_count))
+            else:
+                expanded_key.append(k)
+        return tuple(expanded_key)

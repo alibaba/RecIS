@@ -2,45 +2,14 @@ import os
 
 import torch
 
-
-try:
-    from column_io.dataset.odps_env_setup import (
-        ensure_standard_path_format,
-        init_odps_open_storage_session,
-        is_turn_on_odps_open_storage,
-    )
-except ImportError:
-
-    def is_turn_on_odps_open_storage():
-        """Fallback function when ODPS Open Storage is not available.
-
-        Returns:
-            bool: Always returns False when Open Storage is not available.
-        """
-        return False
-
-
 from recis.io.dataset_base import DatasetBase
 from recis.utils.logger import Logger
 
 
-if not os.environ.get("BUILD_DOCUMENT", None) == "1":
-    import column_io.dataset.dataset as column_io_dataset
-    from column_io.dataset.file_sharding import OdpsTableSharding
-
-
 logger = Logger(__name__)
 
-if not os.environ.get("BUILD_DOCUMENT", None) == "1":
-    # Automatically select the appropriate ODPS dataset backend
-    if is_turn_on_odps_open_storage():
-        odps_dataset_func = column_io_dataset.OdpsOpenStorageDataset
-    else:
-        odps_dataset_func = column_io_dataset.OdpsTableColumnDataset
-    odps_dataset_func.load_plugin()
 
-
-def get_table_size(table_name):
+def get_table_size(table_name: str) -> int:
     """Get the size (number of rows) of an ODPS table.
 
     Args:
@@ -57,8 +26,68 @@ def get_table_size(table_name):
         print(f"Table has {size} rows")
 
     """
-    table_size = odps_dataset_func.get_table_size(table_name)
-    return table_size
+    raise NotImplementedError
+
+
+def init_odps_session(paths: list[str], select_column: list[str]):
+    """
+    Initialize ODPS session
+
+    Args:
+        paths: list of paths
+        select_column: list of column_name to read
+
+    Note:
+        The session contains two type of information:
+            1. authorization
+            2. odps data location
+
+        The session could be create by three internal ways, thus three types of session:
+            1. odps-algo-sdk
+            2. odps-open-storage-direct
+            3. odps-open-storage-tunnel
+        And each type of session are NOT ABLE TO SHARE INFOMATION with other types.
+
+        The session WILL NOT be created by every worker, only the creator of whole task could do it.
+        So if the creator does not know the new dataset to be read, we need to call this function forcely.
+    """
+    raise NotImplementedError
+
+
+try:
+    if os.environ.get("BUILD_DOCUMENT", None) == "1":
+        # In BUILD_DOCUMENT mode, NO code will be really executed. So libs in IO needn't be imported
+        raise ImportError("column_io is needn't in BUILD_DOCUMENT mode")
+
+    import column_io.dataset.dataset as column_io_dataset
+    from column_io.dataset.file_sharding import OdpsTableSharding
+    from column_io.dataset.odps_env_setup import (
+        ensure_standard_path_format,
+        init_odps_open_storage_session,
+        is_turn_on_odps_open_storage,
+    )
+
+    # Automatically select the appropriate ODPS dataset backend
+    if is_turn_on_odps_open_storage():
+        odps_dataset_func = column_io_dataset.OdpsOpenStorageDataset
+    else:
+        odps_dataset_func = column_io_dataset.OdpsTableColumnDataset
+    odps_dataset_func.load_plugin()
+
+    def get_table_size(table_name):
+        table_size = odps_dataset_func.get_table_size(table_name)
+        return table_size
+
+    def init_odps_session(paths: list[str], select_column: list[str]):
+        if not is_turn_on_odps_open_storage():
+            return  # TODO: refresh_odps_io_config() for  odps algo-sdk
+        standard_paths = ensure_standard_path_format(paths)
+        init_odps_open_storage_session(
+            standard_paths, required_data_columns=select_column
+        )
+
+except ImportError:
+    pass
 
 
 class OdpsDataset(DatasetBase):
@@ -231,11 +260,7 @@ class OdpsDataset(DatasetBase):
             When ODPS Open Storage is available, it initializes the session
             with standardized paths and required columns for optimal performance.
         """
-        if is_turn_on_odps_open_storage():
-            standard_paths = ensure_standard_path_format(self._paths)
-            init_odps_open_storage_session(
-                standard_paths, required_data_columns=self._select_column
-            )
+        init_odps_session(paths=self._paths, select_column=self._select_column)
         file_shard = OdpsTableSharding()
         file_shard.add_paths(self._paths)
         self._shard_paths = file_shard.partition(
@@ -300,11 +325,7 @@ class OdpsDataset(DatasetBase):
             This method may take some time to execute as it queries the ODPS
             service for actual table statistics.
         """
-        if is_turn_on_odps_open_storage():
-            standard_paths = ensure_standard_path_format(self._paths)
-            init_odps_open_storage_session(
-                standard_paths, required_data_columns=self._select_column
-            )
+        init_odps_session(paths=self._paths, select_column=self._select_column)
         for i, table_name in enumerate(self._paths):
             table_size = get_table_size(table_name)
             self._table_sizes[i] = table_size

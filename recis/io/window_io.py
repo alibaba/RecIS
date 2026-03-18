@@ -4,10 +4,12 @@ import random
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Optional
 
 import torch
 
 from recis.io.lake_dataset import LakeStreamDataset
+from recis.io.odps_combo_dataset import OdpsComboDataset
 from recis.io.odps_dataset import OdpsDataset, get_table_size
 from recis.utils.logger import Logger
 
@@ -81,7 +83,7 @@ def _parse_proportion(thread_num, proportions):
         # Result: threads=[4, 2], total=6
 
     """
-    total = {t for _, t in proportions}
+    total: set[int] = {t for _, t in proportions}
     if len(total) != 1:
         raise ValueError(f"total split num should consistency, but get {total}")
     total = total.pop()
@@ -137,7 +139,7 @@ def _build_shard(begin, length, num, extra_offset=0):
 
 def _shard_sheets_by_split_num(
     table, task_id, task_num, thread_num, split_num, extra_offset
-):
+) -> tuple[list[TableSheet], int]:
     """Create table sheets by dividing table into fixed number of splits.
 
     This function creates TableSheet objects by dividing an ODPS table into
@@ -172,7 +174,7 @@ def _shard_sheets_by_split_num(
 
 def _shard_sheets_by_row_num(
     table, task_id, task_num, thread_num, row_num, extra_offset
-):
+) -> tuple[list[TableSheet], int]:
     """Create table sheets by dividing table into fixed-size row chunks.
 
     This function creates TableSheet objects by dividing an ODPS table into
@@ -212,7 +214,7 @@ def _shard_sheets_by_row_num(
     return sheets[task_id::task_num], extra_offset
 
 
-def _shard_table_by_subprocess(table_sheets, sub_id, sub_num):
+def _shard_table_by_subprocess(table_sheets: list[TableSheet], sub_id, sub_num):
     """Shard table sheets across subprocesses within a worker.
 
     This function further divides table sheets among subprocesses within
@@ -385,7 +387,7 @@ def make_odps_window_io(split_num=None, row_num=None):
                 The sum of all parts should equal total_parts.
             """
             if len(proportion) != 2:
-                raise ValueError("porportion size must be 2")
+                raise ValueError("proportion size must be 2")
             if not all(isinstance(v, int) for v in proportion):
                 raise ValueError("element in proportion should be int")
             self._paths.append(odps_table)
@@ -863,3 +865,298 @@ def make_lake_stream_window_io(step_mins=60, repeat_mins=None, name="train"):
             return False
 
     return _LakeStreamWindowIO
+
+
+def make_odps_combo_window_io(split_num=None, row_num=None):
+    """Create an ODPS Combo dataset class with windowed access patterns.
+
+    This factory function creates a specialized OdpsComboDataset class that supports
+    windowed data processing with configurable sharding strategies.
+
+    Args:
+        split_num (int, optional): Number of splits to divide each table into.
+        row_num (int, optional): Target number of rows per data chunk.
+
+    Returns:
+        class: A specialized OdpsDataset class with windowed capabilities.
+
+    Raises:
+        ValueError: If both or neither split_num and row_num are specified.
+
+    Example:
+
+    .. code-block:: python
+
+        # Create dataset class with split-based sharding
+        WindowDataset = make_odps_combo_window_io(split_num=8)
+
+        dataset = WindowDataset(batch_size=1024)
+        dataset.add_path(
+            ["project.table1_base", "project.table1_inc"], proportion=(2, 3)
+        )
+        dataset.add_path(
+            ["project.table2_base", "project.table2_inc"], proportion=(1, 3)
+        )
+        dataset.varlen_feature("feature_foo")
+        dataset.fixedlen_feature("feature_bar", default_value=[1.0])
+        # Process data in windows
+        while True:
+            try:
+                if dataset.next_window():
+                    continue  # Skip empty window
+                for batch in dataset:
+                    process_batch(batch)
+            except StopIteration:
+                break
+    """
+    if not ((split_num is None) ^ (row_num is None)):
+        raise ValueError("only one of split_num and row_num should be set!")
+
+    class _OdpsComboDataset(OdpsComboDataset):
+        """Specialized ODPS Combo dataset with windowed access capabilities.
+
+        This class extends OdpsComboDataset to provide windowed data processing,
+        allowing large tables to be processed in manageable chunks with
+        configurable sharding strategies and proportional sampling.
+
+        Class Attributes:
+            _split_num (int): Number of splits for table sharding.
+            _total_row_num (int): Target rows per chunk for row-based sharding.
+
+        Object Attributes:
+            _path_proportion (list[tuple]): Proportion configuration for each table.
+            _window_paths (list): Current window's data paths.
+            _read_offset (torch.LongTensor): Current reading offset in windows.
+            _shard_sheets (list[list]): Current shard's table sheets.
+        """
+
+        # DOUBT: Why use cls variable? It seems cannot be initialized multple
+        _split_num = split_num
+        _total_row_num = row_num
+
+        def __init__(self, *args, **kwargs):
+            # for window io, save_interval should be None,
+            # because read offset is saved after each window.
+            self._path_proportion: list[tuple[int, int]] = []
+            self._window_paths: list[list[TableSheet]] = []
+            self._read_offset = torch.LongTensor([0])
+            self._shard_sheets: list[list[TableSheet]] = []
+            self._shard_paths: list[list[str]] = []
+            kwargs["save_interval"] = None
+            super().__init__(*args, **kwargs)
+
+        def add_path(self, table_group: list[str], proportion: tuple = (1, 1)):
+            """Add an ODPS table path with proportional configuration.
+
+            Args:
+                table_group (list[str]): The ODPS table group names to read.
+                proportion (tuple): The portion of data this table contributes to batches.
+                    Format: (parts, total_parts) where parts/total_parts defines
+                    the proportion of this table in each batch.
+
+            Raises:
+                ValueError: If table_group or proportion format is invalid.
+
+            Example:
+
+            .. code-block:: python
+
+                # Table contributes 2/3 of each batch
+                dataset.add_path(
+                    ["project.main_table_base", "project.main_table_inc"],
+                    proportion=(2, 3),
+                )
+
+                # Table contributes 1/3 of each batch
+                dataset.add_path(
+                    ["project.aux_table_base", "project.aux_table_inc"],
+                    proportion=(1, 3),
+                )
+
+            Note:
+                All tables should have the same total_parts value for consistency.
+                The sum of all parts should equal total_parts.
+            """
+            # self._paths.append(table_group)
+            super().add_path(table_group)
+            if len(proportion) != 2:
+                raise ValueError("proportion size must be 2")
+            if not all(isinstance(v, int) for v in proportion):
+                raise ValueError("element in proportion should be int")
+            self._path_proportion.append(proportion)
+
+        def add_paths(
+            self,
+            table_groups: list[list[str]],
+            proportions: Optional[list[tuple]] = None,
+        ):
+            """Add list of ODPS table paths with proportional configuration.
+
+            Args:
+                table_groups (list[list[str]]): The list of ODPS table group names to read.
+                proportions (list[tuple]): The portion of data this tables contributes to batches.
+                    If not provided, each table will contribute equally.
+            """
+            if proportions is None:
+                proportions = len(table_groups) * [(1, 1)]
+            if len(proportions) != len(table_groups):
+                raise ValueError(
+                    f"The len of table_groups mismatch proportions: {len(table_groups)} from {len(proportions)}"
+                )
+            for i in range(len(table_groups)):
+                self.add_path(table_groups[i], proportions[i])
+            return
+
+        def _shard_window_paths(self):
+            """Create windowed paths by sharding tables according to configuration.
+
+            This method gives the same sharding results as it in _OdpsDataset.
+            """
+            if len(self._paths) == 0:
+                raise RuntimeError("No paths are added to this dataset.")
+            thread_nums, self._read_threads_num = _parse_proportion(
+                self._read_threads_num, self._path_proportion
+            )
+            self._batch_size = (
+                self._batch_size + self._path_proportion[0][1] - 1
+            ) // self._path_proportion[0][1]
+
+            # [ [base_1, base_2, base_N], [incA_1, incA_2, incA_N] ], [incB_1, incB_2], ... ]
+            grouped_shard_paths: list[list[str]] = []
+            for i in range(self._combo_group_size):
+                # 构造同组id的shard_paths. 目的是复用相同_shard_window_paths逻辑
+                tmp_paths = []
+                for table_group in self._paths:
+                    tmp_paths.append(table_group[i])
+
+                ### ALIGNED LOGIC WITH _OdpsDataset._shard_window_paths ###
+                if self._split_num:
+                    splits = [
+                        [] for _ in range(self._split_num)
+                    ]  # [ [prop1, prop2, propN], split_2, split_num ]
+                shard_paths: list[TableSheet] = []
+                for index, table in enumerate(tmp_paths):
+                    extra_offset = 0
+                    if self._split_num:
+                        thread_num = thread_nums[index % len(thread_nums)]
+                        sheets, extra_offset = _shard_sheets_by_split_num(
+                            table,
+                            self._worker_idx,
+                            self._worker_num,
+                            thread_num,
+                            self._split_num,
+                            extra_offset,
+                        )
+                        for i in range(self._split_num):
+                            splits[i].extend(
+                                sheets[i * thread_num : (i + 1) * thread_num]
+                            )
+                        if index % len(thread_nums) == len(thread_nums) - 1:
+                            for i in range(self._split_num):
+                                shard_paths.extend(splits[i])
+                                splits[i] = []
+                    else:
+                        sheets, extra_offset = _shard_sheets_by_row_num(
+                            table,
+                            self._worker_idx,
+                            self._worker_num,
+                            self._read_threads_num,
+                            self._total_row_num,
+                            extra_offset,
+                        )
+                        shard_paths.extend(sheets)
+                ### ALIGNED LOGIC WITH _OdpsDataset._shard_window_paths ###
+                grouped_shard_paths.append(shard_paths)
+            # grouped_shard_paths是按照group idx每列组成的list, 需转秩回add_paths(group)的顺序
+            shard_group_paths: list[list[TableSheet]] = [
+                list(row) for row in zip(*grouped_shard_paths)
+            ]
+            self._window_paths = shard_group_paths
+
+        def _shard_path(self, sub_id, sub_num):
+            """Shard current window's paths across subprocesses.
+
+            Args:
+                sub_id (int): Subprocess identifier.
+                sub_num (int): Total number of subprocesses.
+
+            Note:
+                This method is called internally to distribute the current
+                window's table sheets among available subprocesses.
+            """
+
+            def _shard_table_group_by_subprocess(
+                table_group_sheets: list[list[TableSheet]], sub_id, sub_num
+            ):
+                """Shard table sheets across subprocesses within a worker.
+
+                This function gives the same sharding results as it in _shard_table_by_subprocess.
+                """
+                sub_group_sheets: list[list[str]] = []
+                for table_group in table_group_sheets:
+                    row: list[str] = []
+                    for table_sheet in table_group:
+                        table = table_sheet.table
+                        start = table_sheet.start
+                        end = table_sheet.end
+                        slice_size = end - start
+                        extra = slice_size % sub_num
+                        slice_size = slice_size // sub_num
+                        end = start + (sub_id + 1) * slice_size + min(sub_id + 1, extra)
+                        start = start + sub_id * slice_size + min(sub_id, extra)
+                        row.append(f"{table}?start={start}&end={end}")
+                    sub_group_sheets.append(row)
+                return sub_group_sheets
+
+            self._shard_paths = _shard_table_group_by_subprocess(
+                self._shard_sheets, sub_id, sub_num
+            )
+
+        def next_window(self) -> bool:
+            """Advance to the next window and reinitialize the dataset.
+
+            This method moves to the next window of data and prepares the dataset as it in _OdpsDataset.
+            """
+            if len(self._window_paths) == 0:
+                self._shard_window_paths()
+            read_offset = self._read_offset[0]
+            if read_offset == len(self._window_paths):
+                raise StopIteration("Finish IO")
+            self._shard_sheets = self._window_paths[
+                read_offset : read_offset + self._read_threads_num
+            ]
+            self._read_offset += self._read_threads_num
+            try:
+                next(iter(self))
+            except StopIteration:
+                return True
+            return False
+
+        def state_dict(self):
+            """Get the current state of the windowed IO system.
+
+            This method store the same interval state as it in _OdpsDataset.
+            """
+            return {"read_offset": self._read_offset}
+
+        def load_state_dict(self, state_dict):
+            """Load previously saved state to resume windowed processing.
+
+            This method load the same interval state as it in _OdpsDataset.
+            """
+            self._read_offset = state_dict["read_offset"]
+
+        def reset(self):
+            """Reset the windowed dataset to initial state.
+
+            This method reset the same interval state as it in _OdpsDataset.
+            """
+            self._paths = []
+            self._start_groups = []
+            self._end_groups = []
+            self._path_proportion = []
+            self._window_paths = []
+            self._read_offset = self._read_offset.fill_(0)
+            self._shard_sheets = []
+
+    return _OdpsComboDataset

@@ -12,7 +12,7 @@
 
 namespace recis {
 namespace functional {
-std::tuple<torch::Tensor, torch::Tensor> dense_to_ragged(
+std::tuple<torch::Tensor, std::vector<torch::Tensor>> dense_to_ragged(
     const torch::Tensor& data, bool check_invalid,
     const torch::Tensor& invalid_value);
 

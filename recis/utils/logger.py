@@ -109,6 +109,17 @@ class Logger:
         logger.propagate = False
         self._logger = logger
 
+    def debug(self, *args, **kwargs):
+        """Log a debug message.
+        Args:
+            *args: Positional arguments passed to logger.debug().
+            **kwargs: Keyword arguments passed to logger.debug().
+        Example:
+            >>> logger.debug("Processing batch %d", batch_idx)
+            >>> logger.debug("Training loss: %.4f", loss.item())
+        """
+        self._logger.debug(*args, **kwargs)
+
     def info(self, *args, **kwargs):
         """Log an info message.
 

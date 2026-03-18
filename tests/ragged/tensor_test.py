@@ -245,6 +245,90 @@ class TestRaggedTensor:
         assert pinned.offsets()[0].is_pinned()
         assert pinned is not ragged  # Should be a new object
 
+    def test_slice_2D(self):
+        """Test __getitem__ for 2D ragged tensor"""
+        values = torch.tensor([1, 2, 3, 4, 5, 6])
+        offsets = torch.tensor([0, 2, 5, 6])
+        ragged = RaggedTensor(values, offsets)
+        ragged_copy = copy.deepcopy(ragged)
+
+        # testing indexing the axis 0. 2D -> 1D, ragged -> dense
+        assert ragged[0].shape == torch.Size([2])
+        assert torch.equal(ragged[-1].to_dense(), torch.tensor([6]))
+        # testing slice the axis 0
+        assert torch.equal(ragged[1:3].to_dense(), ragged.to_dense()[1:3])
+        # testing slice the axis 0 and 1
+        assert torch.equal(ragged[1:3, 0:1].to_dense(), ragged.to_dense()[1:3, 0:1])
+        assert torch.equal(ragged[0:8, 2:5].to_dense(), ragged.to_dense()[0:8, 2:5])
+        assert torch.equal(
+            ragged[0:8:1, 0:3:2].to_dense(), ragged.to_dense()[0:8:1, 0:3:2]
+        )
+
+        # testing slice the axis 0 and 1 with neg
+        assert torch.equal(
+            ragged[-3:-1:1, -2::1].to_dense(), torch.tensor([[1, 2], [4, 5]])
+        ), f"ragged[-3:-1:1, -2::1].to_dense() is {ragged[-3:-1:1, -2::1].to_dense()}"
+
+        # testing indexing the axis 1
+        with pytest.raises(IndexError):
+            ragged[0:5, 1]
+        # testing add new axis
+        assert torch.equal(ragged[None].to_dense(), ragged.to_dense()[None])
+        assert torch.equal(ragged[:, None].to_dense(), ragged.to_dense()[:, None])
+        assert torch.equal(ragged[:, :, None].to_dense(), ragged.to_dense()[:, :, None])
+
+        assert ragged_copy is not ragged
+        assert torch.equal(ragged_copy.to_dense(), ragged.to_dense())
+
+    def test_slice_3D(self):
+        values = torch.tensor(
+            [10, 11, 12, 13, 14, 15, 16, 17, 18, 19], dtype=torch.int64
+        )
+        offsets = [
+            torch.tensor([0, 3, 4, 6], dtype=torch.int32),
+            torch.tensor([0, 1, 4, 4, 8, 8, 10], dtype=torch.int32),
+        ]
+        ragged = RaggedTensor(values, offsets)
+        ragged_copy = copy.deepcopy(ragged)
+
+        # testing index the axis 0. 3D ragged tensor -> 2D ragged tensor
+        assert torch.equal(ragged[1].to_dense(), torch.tensor([[14, 15, 16, 17]]))
+        # testing slice the axis 0
+        assert torch.equal(
+            ragged[1:4:1].to_dense(),
+            torch.tensor(
+                [[[14, 15, 16, 17], [0, 0, 0, 0]], [[0, 0, 0, 0], [18, 19, 0, 0]]]
+            ),
+        )
+        # testing index and slice the axis 0, 1 and 2
+        assert torch.equal(ragged[2, :, :1].to_dense(), torch.tensor([[0], [18]]))
+        assert torch.equal(ragged[..., :2].to_dense(), ragged.to_dense()[..., :2])
+        assert torch.equal(
+            ragged[1:4, 1:8, 1:2].to_dense(), torch.tensor([[[0]], [[19]]])
+        )
+        assert torch.equal(
+            ragged[-3:-1, ::, -2:-1].to_dense(),
+            torch.tensor([[[0], [12], [0]], [[16], [0], [0]]]),
+        )
+        assert (
+            ragged[1:1, 1:8, 1:2].values().numel() == 0
+            and ragged[1:1, 1:8, 1:2].dim == 3
+        )
+
+        # testing indexing the axis 1
+        with pytest.raises(IndexError):
+            ragged[0:5, 1]
+        # testing add new axis
+        assert torch.equal(ragged[None].to_dense(), ragged.to_dense()[None])
+        assert torch.equal(ragged[:, None].to_dense(), ragged.to_dense()[:, None])
+        assert torch.equal(ragged[:, :, None].to_dense(), ragged.to_dense()[:, :, None])
+        assert torch.equal(
+            ragged[:, :, :, None].to_dense(), ragged.to_dense()[:, :, :, None]
+        )
+
+        assert ragged_copy is not ragged
+        assert torch.equal(ragged_copy.to_dense(), ragged.to_dense())
+
 
 if __name__ == "__main__":
     pytest.main([__file__])
