@@ -24,11 +24,18 @@ std::string FullJsonFileName(const std::string &path) {
   return io::JoinPath(path, "torch_rank_weights_embs_table_multi_shard.json");
 }
 
-std::string FullTorchRankJsonNameTmp(const int64_t shard_index,
-                                     const std::string &path) {
+std::string FullTorchRankJsonShardName(const int64_t shard_index,
+                                       const std::string &path) {
   return io::JoinPath(path,
                       std::to_string(shard_index) +
                           "torch_rank_weights_embs_table_multi_shard.json");
+}
+
+std::string FullTorchRankJsonShardNameTmp(const int64_t shard_index,
+                                          const std::string &path) {
+  return io::JoinPath(path,
+                      std::to_string(shard_index) +
+                          "torch_rank_weights_embs_table_multi_shard.json.tmp");
 }
 
 std::string IndexTorchRankJsonNameTmp(const int64_t shard_index,
@@ -38,9 +45,14 @@ std::string IndexTorchRankJsonNameTmp(const int64_t shard_index,
                           "torch_rank_weights_embs_table_multi_shard.json");
 }
 
-std::string FullTensorKeyJsonFileNameTmp(const std::string &path,
-                                         int64_t shard_idx) {
+std::string FullTensorKeyJsonFileShardName(const std::string &path,
+                                           int64_t shard_idx) {
   return io::JoinPath(path, std::to_string(shard_idx) + "tensorkey.json");
+}
+
+std::string FullTensorKeyJsonFileShardNameTmp(const std::string &path,
+                                              int64_t shard_idx) {
+  return io::JoinPath(path, std::to_string(shard_idx) + "tensorkey.json.tmp");
 }
 
 std::string FullTensorKeyJsonFileName(const std::string &path) {

@@ -14,8 +14,10 @@ constexpr const char *TensorSymbolAt() { return "@"; }
 constexpr const char *TensorSymbolDot() { return "."; }
 constexpr const char *TensorSymbolULine() { return "_"; }
 
-std::string FullTorchRankJsonNameTmp(const int64_t shard_index,
-                                     const std::string &path);
+std::string FullTorchRankJsonShardName(const int64_t shard_index,
+                                       const std::string &path);
+std::string FullTorchRankJsonShardNameTmp(const int64_t shard_index,
+                                          const std::string &path);
 
 std::string IndexTorchRankJsonNameTmp(const int64_t shard_index,
                                       const std::string &path);
@@ -24,8 +26,10 @@ std::string FullIndexFileName(const std::string &path);
 std::string FullIndexFileNameTmp(const std::string &path);
 std::string FullJsonFileName(const std::string &path);
 std::string FullTensorKeyJsonFileName(const std::string &path);
-std::string FullTensorKeyJsonFileNameTmp(const std::string &path,
-                                         int64_t shard_idx);
+std::string FullTensorKeyJsonFileShardName(const std::string &path,
+                                           int64_t shard_idx);
+std::string FullTensorKeyJsonFileShardNameTmp(const std::string &path,
+                                              int64_t shard_idx);
 std::string IndexFileName(const std::string &path, int64_t shard_index);
 std::string IndexFileNameTmp(const std::string &path, int64_t shard_index);
 std::string IndexTorchRankJsonName(const std::string &path, int64_t shard_index,

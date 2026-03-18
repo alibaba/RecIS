@@ -177,14 +177,17 @@ void SaveBundle::SaveMeta() {
     auto filename = IndexFileNameTmp(path_, shard_index_);
     auto msg = index_info_->Serialize();
     save_file(filename, msg);
-    Env::Default()->TransactionRenameFile(filename,
-                                          IndexFileName(path_, shard_index_));
+    RECIS_STATUS_COND(Env::Default()->TransactionRenameFile(
+        filename, IndexFileName(path_, shard_index_)));
   }
 
   {
     nlohmann::json tensorkey_json = tensor_name_map_;
     auto msg = tensorkey_json.dump(4);
-    save_file(FullTensorKeyJsonFileNameTmp(path_, shard_index_), msg);
+    auto writing_name = FullTensorKeyJsonFileShardNameTmp(path_, shard_index_);
+    save_file(writing_name, msg);
+    RECIS_STATUS_COND(Env::Default()->TransactionRenameFile(
+        writing_name, FullTensorKeyJsonFileShardName(path_, shard_index_)));
   }
 }
 
@@ -218,12 +221,12 @@ void SaveBundle::SaveTables() {
   for (auto i : c10::irange(parallel_)) {
     if (table_writers_[i]->Empty()) continue;
     valid_num++;
-    Env::Default()->TransactionRenameFile(
+    RECIS_STATUS_COND(Env::Default()->TransactionRenameFile(
         io::JoinPath(path_, table_writers_[i]->FileName()),
-        io::JoinPath(path_, table_file_names_[i]));
-    Env::Default()->TransactionRenameFile(
+        io::JoinPath(path_, table_file_names_[i])));
+    RECIS_STATUS_COND(Env::Default()->TransactionRenameFile(
         io::JoinPath(path_, table_writers_[i]->JsonName()),
-        io::JoinPath(path_, table_json_names_[i]));
+        io::JoinPath(path_, table_json_names_[i])));
   }
 
   MergeParallelTorchRankJson(valid_num);
@@ -237,7 +240,10 @@ void SaveBundle::MergeParallelTorchRankJson(const int valid_num) {
   }
   nlohmann::json combine_data;
   GetSubFileData(sub_json_files, combine_data);
-  DumpJsonFile(combine_data, FullTorchRankJsonNameTmp(shard_index_, path_));
+  auto writing_name = FullTorchRankJsonShardNameTmp(shard_index_, path_);
+  DumpJsonFile(combine_data, writing_name);
+  RECIS_STATUS_COND(Env::Default()->TransactionRenameFile(
+      writing_name, FullTorchRankJsonShardName(shard_index_, path_)));
   return;
 }
 
@@ -356,7 +362,7 @@ void SaveBundle::MergeTorchRankJson() {
 void SaveBundle::MergeTensorKeyJson() {
   std::vector<std::string> sub_json_files;
   for (int i = 0; i < shard_num_; i++) {
-    sub_json_files.push_back(FullTensorKeyJsonFileNameTmp(path_, i));
+    sub_json_files.push_back(FullTensorKeyJsonFileShardName(path_, i));
   }
   nlohmann::json combine_data;
 
