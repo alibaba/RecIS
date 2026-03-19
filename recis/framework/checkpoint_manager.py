@@ -37,6 +37,15 @@ else:
 logger = Logger(__name__)
 
 
+def get_default_sync_fn(shard_num):
+    if shard_num > 1:
+        sync_func = torch.distributed.barrier
+    else:
+        def sync_func():
+            return None
+    return sync_func
+
+
 class ExtraFields:
     global_step = "global_step"
     recis_dense_optim = "recis.dense.optim."
@@ -361,6 +370,7 @@ class Saver:
         ckpt_id: str,
         label_key: Optional[str] = None,
         label_value: Optional[str] = None,
+        sync_func: Optional[Callable] = None,
     ):
         """Save a complete checkpoint with the given ID.
 
@@ -373,6 +383,8 @@ class Saver:
             label_key (str): Key for the label when saving to MOS. Defaults to None.
             label_value (str): Value for the label when saving to MOS. Defaults to None.
         """
+        if not sync_func:
+            sync_func = get_default_sync_fn(self._shard_num)
         ckpt_path = os.path.join(self._output_dir, ckpt_id)
         fs = get_file_system(ckpt_path)
         logger.info(f"Save checkpoint {ckpt_id} to {ckpt_path}")
@@ -389,6 +401,7 @@ class Saver:
                 ckpt_path,
                 self._sparse_state_dict,
                 self._concurrency,
+                sync_func,
             )
 
         # save train and eval io states
@@ -461,6 +474,7 @@ class Saver:
                     label_value=label_value,
                 )
         torch.cuda.synchronize()
+        sync_func()
 
     def save_sparse_params(
         self,
@@ -469,7 +483,7 @@ class Saver:
         ckpt_path: str,
         sparse_state_dict: OrderedDict,
         concurrent: int = 16,
-        sync_func=None,
+        sync_func: Optional[Callable] = None,
     ):
         """Save sparse parameters using distributed saving.
 
@@ -482,13 +496,7 @@ class Saver:
             sync_func (Optional[Callable]): Synchronization function for distributed saving.
         """
         if not sync_func:
-            if shard_num > 1:
-                sync_func = torch.distributed.barrier
-            else:
-
-                def sync_func():
-                    return None
-
+            sync_func = get_default_sync_fn(shard_num)
         sparse_state_dict_copy = sparse_state_dict.copy()
         sparse_state_dict, dense_state_dict = split_sparse_dense_state_dict(
             sparse_state_dict_copy
