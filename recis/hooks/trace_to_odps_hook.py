@@ -10,7 +10,13 @@ import pyarrow as pa
 import torch
 
 from recis.hooks import Hook
+from recis.info import is_internal_enabled
+from recis.utils.cluster import is_external_cluster
 from recis.utils.logger import Logger
+
+
+if is_internal_enabled():
+    from recis.utils.cluster import X_CLUSTER_TUNNEL_ENDPOINT
 
 
 if not os.environ.get("BUILD_DOCUMENT", None) == "1":
@@ -205,34 +211,73 @@ class TraceWriter(Process):
         size_threshold: int = 50 * 1024 * 1024,  # 50 MiB
     ):
         super().__init__()
+        required = {"access_id", "access_key", "project", "table_name"}
+        if missing := required - config.keys():
+            raise ValueError(f"Missing required config keys: {', '.join(missing)}")
+
         self._block_id = 0
-        odps = ODPS(
-            config["access_id"],
-            config["access_key"],
-            config["project"],
-            config["end_point"],
-        )
         self.table_name = config["table_name"]
+        self.partition = config.get(
+            "partition", None
+        )  # if None, the table is non-partitioned
         self.fields = fields
         self.types = types
-        self.partition = config.get("partition", None)
-        partitions = []
-        part_types = []
-        for s in self.partition.split(","):
-            partitions.append(s.split("=")[0])
-            part_types.append("string")
-        table = odps.create_table(
-            self.table_name,
-            schema=Schema.from_lists(fields, types, partitions, part_types),
-            if_not_exists=True,
-            lifecycle=365,
-            table_properties={"columnar.nested.type": "true"},
-        )
-        table.create_partition(self.partition, if_not_exists=True)
+
+        # Handling ODPS
+        if is_internal_enabled():
+            end_point = (
+                X_CLUSTER_TUNNEL_ENDPOINT
+                if is_external_cluster()
+                else config.get("end_point")
+                or "http://service.odps.aliyun-inc.com/api"  # TODO: AIDC singapore/korea compability
+            )
+            odps_args = [config["access_id"], config["access_key"], config["project"]]
+            odps_kwargs = (
+                {"tunnel_endpoint": X_CLUSTER_TUNNEL_ENDPOINT}
+                if is_external_cluster()
+                else {"endpoint": end_point}
+            )
+        else:
+            odps_args = [
+                config["access_id"],
+                config["access_key"],
+                config["project"],
+                config["end_point"],
+            ]
+            odps_kwargs = {}
+        odps = ODPS(*odps_args, **odps_kwargs)
+
+        # Create table or not by is_external_cluster
+        if is_external_cluster():
+            logger.info(
+                f"In external cluster, skip create table and partition: {self.table_name}, {self.partition}"
+            )
+        else:
+            partitions = []
+            part_types = []
+            if self.partition:
+                for s in self.partition.split(","):
+                    k = s.split("=")[0]
+                    partitions.append(k)
+                    part_types.append("string")
+            table = odps.create_table(
+                self.table_name,
+                schema=Schema.from_lists(
+                    self.fields, self.types, partitions, part_types
+                ),
+                if_not_exists=True,
+                lifecycle=365,
+                table_properties={"columnar.nested.type": "true"},
+            )
+            if self.partition:
+                table.create_partition(self.partition, if_not_exists=True)
+
+        # Create upload session
         self._tunnel_client = TableTunnel(odps)
         self._writer_session = self._tunnel_client.create_upload_session(
-            table.name, partition_spec=self.partition
+            self.table_name, partition_spec=self.partition
         )
+
         self.write_count = 0
         self.write_id = writer_id
         self._block_id = 0
