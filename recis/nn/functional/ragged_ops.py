@@ -777,7 +777,13 @@ class RaggedTile(torch.autograd.Function):
         left_pad: torch.Tensor,
     ):
         if left_pad is None:
-            left_pad = torch.zeros([len(batch),], dtype=torch.bool, device='cuda')
+            left_pad = torch.zeros(
+                [
+                    len(batch),
+                ],
+                dtype=torch.bool,
+                device="cuda",
+            )
 
         [out, batch_seq] = torch.ops.recis.ragged_tile(
             batch, seq, indices, offset, table, left_pad

@@ -1,5 +1,7 @@
 #include "block_ops.h"
 
+#include "c10/core/ScalarType.h"
+
 namespace recis {
 namespace functional {
 
@@ -336,9 +338,9 @@ void block_insert_cpu_kernel(const torch::Tensor ids,
   if (num_ids == 0) return;
   int64_t embedding_dim = embedding_blocks[0].size(1);
   auto ids_data = ids.data_ptr<int64_t>();
-  AT_DISPATCH_ALL_TYPES_AND(
-      at::ScalarType::Half, embedding.scalar_type(), "block_insert_cpu_impl",
-      ([&] {
+  AT_DISPATCH_ALL_TYPES_AND2(
+      at::ScalarType::Half, at::ScalarType::BFloat16, embedding.scalar_type(),
+      "block_insert_cpu_impl", ([&] {
         auto ids_ptr = ids.data_ptr<int64_t>();
         auto emb_ptr = embedding.data_ptr<scalar_t>();
         auto insert_launcher = [&](auto is_broadcast) {
@@ -377,8 +379,8 @@ void block_insert_with_mask_cpu_kernel(
   if (num_ids == 0) return;
   int64_t embedding_dim = embedding_blocks[0].size(1);
   auto ids_data = ids.data_ptr<int64_t>();
-  AT_DISPATCH_ALL_TYPES_AND(
-      at::ScalarType::Half, embedding.scalar_type(),
+  AT_DISPATCH_ALL_TYPES_AND2(
+      at::ScalarType::Half, at::ScalarType::BFloat16, embedding.scalar_type(),
       "block_insert_with_mask_cpu_impl", ([&] {
         BlocksInsertWithMaskFunctor<scalar_t> insert_functor(
             embedding_dim, block_size, ids.data_ptr<int64_t>(),

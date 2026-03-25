@@ -41,8 +41,10 @@ def get_default_sync_fn(shard_num):
     if shard_num > 1:
         sync_func = torch.distributed.barrier
     else:
+
         def sync_func():
             return None
+
     return sync_func
 
 

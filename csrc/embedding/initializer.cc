@@ -12,6 +12,7 @@
 #include "ATen/ops/fill.h"
 #include "ATen/ops/zeros.h"
 #include "c10/core/DeviceType.h"
+#include "c10/core/ScalarType.h"
 #include "c10/core/TensorOptions.h"
 #include "c10/util/Logging.h"
 #include "c10/util/intrusive_ptr.h"
@@ -41,11 +42,12 @@ class ConstantGenerator : public Generator {
       : Generator(shape, dtype), init_val_(init_val) {}
 
   void Initialize(torch::Tensor ret) override {
-    AT_DISPATCH_ALL_TYPES(option_.dtype().toScalarType(),
-                          "##ConstantGenerator##", [this, &ret]() {
-                            scalar_t init_val = (scalar_t)init_val_;
-                            torch::fill_(ret, init_val);
-                          });
+    AT_DISPATCH_ALL_TYPES_AND2(torch::kHalf, torch::kBFloat16,
+                               option_.dtype().toScalarType(),
+                               "##ConstantGenerator##", [this, &ret]() {
+                                 scalar_t init_val = (scalar_t)init_val_;
+                                 torch::fill_(ret, init_val);
+                               });
   }
   torch::Tensor Generate(const std::vector<int64_t> &shape = {}) override {
     const std::vector<int64_t> &shape_used = shape.empty() ? shape_ : shape;

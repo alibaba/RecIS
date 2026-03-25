@@ -6,6 +6,7 @@
 #include <cuda_fp16.h>
 #include <torch/extension.h>
 
+#include "ATen/Dispatch.h"
 #include "cuda/cuda_param.cuh"
 #include "cuda/utils.cuh"
 
@@ -237,13 +238,13 @@ torch::Tensor gather_cuda(const torch::Tensor ids, const torch::Tensor emb) {
   int embedding_dim = emb.size(1);
   auto output = torch::empty({num_ids, embedding_dim}, emb.options());
   if (num_ids == 0) return output;
-  AT_DISPATCH_FLOATING_TYPES_AND3(
-      at::ScalarType::Half, at::ScalarType::BFloat16, at::ScalarType::Char,
-      output.scalar_type(), "gather_cuda_impl", ([&] {
-        gather_kernel_launcher<scalar_t>(
-            ids.data_ptr<int64_t>(), emb.data_ptr<scalar_t>(), num_ids,
-            embedding_dim, output.data_ptr<scalar_t>());
-      }));
+  AT_DISPATCH_ALL_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+                             output.scalar_type(), "gather_cuda_impl", ([&] {
+                               gather_kernel_launcher<scalar_t>(
+                                   ids.data_ptr<int64_t>(),
+                                   emb.data_ptr<scalar_t>(), num_ids,
+                                   embedding_dim, output.data_ptr<scalar_t>());
+                             }));
   return output;
 }
 
@@ -261,10 +262,9 @@ torch::Tensor block_gather_cuda(const torch::Tensor ids,
   if (num_ids == 0) return output;
   auto block_num = emb_blocks.size();
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  AT_DISPATCH_FLOATING_TYPES_AND4(
-      at::ScalarType::Half, at::ScalarType::BFloat16, at::ScalarType::Long,
-      at::ScalarType::Char, output.scalar_type(), "block_gather_cuda_impl",
-      ([&] {
+  AT_DISPATCH_ALL_TYPES_AND2(
+      at::ScalarType::Half, at::ScalarType::BFloat16, output.scalar_type(),
+      "block_gather_cuda_impl", ([&] {
         recis::cuda::CudaVecParam<scalar_t*> emb_blocks_ptrs(block_num, stream);
         for (auto i = 0; i < block_num; ++i) {
           emb_blocks_ptrs[i] = emb_blocks[i].data_ptr<scalar_t>();
@@ -353,10 +353,9 @@ void block_insert_cuda(const torch::Tensor ids, const torch::Tensor embedding,
   auto block_num = embedding_blocks.size();
   if (num_ids == 0) return;
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  AT_DISPATCH_FLOATING_TYPES_AND4(
-      at::ScalarType::Half, at::ScalarType::BFloat16, at::ScalarType::Long,
-      at::ScalarType::Char, embedding.scalar_type(), "block_insert_cuda_impl",
-      ([&] {
+  AT_DISPATCH_ALL_TYPES_AND2(
+      at::ScalarType::Half, at::ScalarType::BFloat16, embedding.scalar_type(),
+      "block_insert_cuda_impl", ([&] {
         recis::cuda::CudaVecParam<scalar_t*> emb_blocks_ptrs(block_num, stream);
         for (auto i = 0; i < block_num; ++i) {
           emb_blocks_ptrs[i] = embedding_blocks[i].data_ptr<scalar_t>();
@@ -383,9 +382,8 @@ void block_insert_with_mask_cuda(const torch::Tensor ids,
   auto block_num = embedding_blocks.size();
   if (num_ids == 0) return;
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  AT_DISPATCH_FLOATING_TYPES_AND4(
-      at::ScalarType::Half, at::ScalarType::BFloat16, at::ScalarType::Long,
-      at::ScalarType::Char, embedding.scalar_type(),
+  AT_DISPATCH_ALL_TYPES_AND2(
+      at::ScalarType::Half, at::ScalarType::BFloat16, embedding.scalar_type(),
       "block_insert_with_mask_cuda_impl", ([&] {
         recis::cuda::CudaVecParam<scalar_t*> emb_blocks_ptrs(block_num, stream);
         for (auto i = 0; i < block_num; ++i) {
