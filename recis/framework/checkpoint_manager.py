@@ -432,11 +432,22 @@ class Saver:
                 if io_states:
                     with fs.open(os.path.join(ckpt_path, "io_state_count"), "w") as f:
                         f.write(f"{self._shard_num}")
+
+            # maybe checkpoint file not exists
+            checkpoint_data = ckpt_id + "\n"
+            if fs.exists(os.path.join(self._output_dir, self._checkpoint_file)):
+                with fs.open(
+                    os.path.join(self._output_dir, self._checkpoint_file), "r"
+                ) as out_f:
+                    checkpoint_data = out_f.read() + ckpt_id + "\n"
+
             with fs.open(
-                os.path.join(self._output_dir, self._checkpoint_file), "a"
+                os.path.join(self._output_dir, self._checkpoint_file), "w"
             ) as out_f:
-                out_f.write(ckpt_id + "\n")
-                self._checkpoint_version_list.append(ckpt_id)
+                out_f.write(checkpoint_data)
+
+            self._checkpoint_version_list.append(ckpt_id)
+
             if len(self._checkpoint_version_list) > self._max_keep:
                 ckpt_id_to_remove = self._checkpoint_version_list[0]
                 logger.info(
