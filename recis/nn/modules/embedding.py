@@ -15,9 +15,10 @@ from recis.metrics.metric_reporter import (
     UNIQUE_ID_SIZE_NAME,
     MetricReporter,
 )
-from recis.nn.functional.embedding_ops import (
-    ids_partition,
-    ragged_embedding_segment_reduce,
+from recis.nn.functional.embedding_ops import ids_partition
+from recis.nn.functional.reduce_function_registry import (
+    _COMBINER_REGISTRY_INSTANCE,
+    get_combiner,
 )
 from recis.nn.hashtable_hook import AdmitHook, FilterHook
 from recis.nn.initializers import ConstantInitializer, Initializer
@@ -187,7 +188,7 @@ class EmbeddingOption:
         coalesced (Optional[bool]): Whether to use coalesced operations. Defaults to False.
         initializer (Optional[Initializer]): Embedding initializer. Defaults to None.
         use_weight (Optional[bool]): Whether to use weights. Defaults to True.
-        combiner (Optional[str]): Combiner type ("sum", "mean", "tile"). Defaults to "sum".
+        combiner (Optional[str]): Combiner type ("sum", "mean", "tile") or function registered with `recis.nn.functional.reduce_function_registry.register_combiner` Defaults to "sum".
         combiner_kwargs (Optional[dict]): Additional combiner arguments. Defaults to None.
         grad_reduce_by (Optional[str]): Gradient reduction strategy. Defaults to "worker".
         filter_hook (Optional[FilterHook]): Filter hook for feature filtering. Defaults to None.
@@ -252,11 +253,9 @@ class EmbeddingOption:
             self.initializer = ConstantInitializer(init_val=0)
         if self.fp16_enabled:
             assert self.dtype in (torch.int8,), "only int8 emb can set fp16_enabled"
-        assert self.combiner in [
-            "sum",
-            "mean",
-            "tile",
-        ], f"Hashtable combiner only support [sum/mean/tile], but got {self.combiner}"
+        assert self.combiner in _COMBINER_REGISTRY_INSTANCE.list_combiners(), (
+            f"Combiner '{self.combiner}' not registered. Available combiners: {list(_COMBINER_REGISTRY_INSTANCE.list_combiners())}"
+        )
         if self.combiner == "tile":
             if self.combiner_kwargs is None:
                 raise RuntimeError("combiner_kwargs must be set when combiner is tile.")
@@ -639,15 +638,15 @@ class DynamicEmbedding(torch.nn.Module):
     def emb_reduce(
         self, emb_exchange_result, weight, combiner, combiner_kwargs, fp16_enable=False
     ):
-        """Aggregate embeddings using the specified combiner.
+        """Aggregate embeddings using registry-based combiner selection.
 
         This method waits for embedding exchange to complete and then performs
-        segment-wise reduction using the specified combiner (sum, mean, or tile).
+        segment-wise reduction using a combiner function selected from the registry.
 
         Args:
             emb_exchange_result (ExchangeEmbResults): Results from embedding exchange.
             weight (torch.Tensor, optional): Weights for weighted aggregation.
-            combiner (str): Combiner type ("sum", "mean", or "tile").
+            combiner (str): Combiner type (must be registered in COMBINER_REGISTRY).
             combiner_kwargs (dict): Additional arguments for the combiner.
             fp16_enable (bool): Enable fp16 for int embedding.
 
@@ -661,14 +660,17 @@ class DynamicEmbedding(torch.nn.Module):
             else:
                 emb = emb.to(torch.float32)
         MetricReporter.report_bytes(EMB_BYTES_NAME, emb, {"recis_ht_name": self.info})
-        emb = ragged_embedding_segment_reduce(
-            emb,
-            weight,
-            emb_exchange_result.reverse_index,
-            emb_exchange_result.offsets,
-            combiner,
-            combiner_kwargs,
+
+        # Get combiner function from registry and execute
+        combiner_func = get_combiner(combiner)
+        emb = combiner_func(
+            emb=emb,
+            weight=weight,
+            reverse_index=emb_exchange_result.reverse_index,
+            offsets=emb_exchange_result.offsets,
+            combiner_kwargs=combiner_kwargs,
         )
+
         MetricReporter.report_bytes(
             REDUCE_EMB_BYTES_NAME, emb, {"recis_ht_name": self.info}
         )

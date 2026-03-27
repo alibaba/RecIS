@@ -172,7 +172,7 @@ class RuntimeGroupFeature:
 
     Attributes:
         _dim (int): Embedding dimension.
-        _combiner (str): Combiner type ("sum", "mean", "tile").
+        _combiner (str): Combiner type ("sum", "mean", "tile") or function registered with `recis.nn.functional.reduce_function_registry.register_combiner`.
         _admit_hook: Admission hook for feature control.
         _use_weight (bool): Whether to use weights.
         _offset_dtype (torch.dtype): Data type for offsets.
@@ -232,7 +232,7 @@ class RuntimeGroupFeature:
 
         Args:
             dim (int): Embedding dimension.
-            combiner (str): Combiner type ("sum", "mean", "tile").
+            combiner (str): Combiner type ("sum", "mean", "tile") or function registered with `recis.nn.functional.reduce_function_registry.register_combiner`.
             use_weight (bool): Whether to use weights.
             offset_dtype (torch.dtype): Data type for offsets.
             admit_hook: Admission hook for feature control.
