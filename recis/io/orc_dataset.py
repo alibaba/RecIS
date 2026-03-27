@@ -132,7 +132,6 @@ class OrcDataset(DatasetBase):
             device,
             prefetch_transform,
         )
-        assert not is_compressed, "OrcDataset not support compressed data yet."
         self._shuffle = shuffle
         self._dir_sizes = []
         self._total_row_count = 0
