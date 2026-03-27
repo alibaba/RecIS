@@ -218,39 +218,14 @@ void LoaderInternal::Load(int64_t &load_size) {
     c10::List<at::intrusive_ptr<at::ivalue::Future>> futures(
         at::FutureType::create(at::NoneType::get()));
     for (auto &kv : ht_load_collections_) {
-      auto future = at::make_intrusive<at::ivalue::Future>(at::NoneType::get());
-      pool.run([&kv, device, future]() {
-        try {
-          c10::DeviceGuard device_guard(device);
-          for (auto &ht_read_collection : kv.second) {
-            ht_read_collection->LoadId();
-          }
-          future->markCompleted();
-        } catch (std::exception &e) {
-          LOG(ERROR) << e.what();
-          future->setError(std::current_exception());
-        } catch (...) {
-          LOG(ERROR) << "unknown exception";
-        }
-      });
-      futures.push_back(future);
-    }
-    c10::collectAll(futures)->waitAndThrow();
-  }
-  pool.waitWorkComplete();
-  LOG(WARNING) << " Load Sparse Id Complete";
-  {
-    c10::List<c10::intrusive_ptr<at::ivalue::Future>> futures(
-        at::FutureType::create(at::NoneType::get()));
-    for (auto &kv : ht_load_collections_) {
       for (auto &ht_read_collection : kv.second) {
-        futures.append(ht_read_collection->LoadSlotsAsync(&pool));
+        futures.append(ht_read_collection->LoadChunksAsync(&pool));
       }
     }
     auto res = c10::collectAll(futures);
     res->waitAndThrow();
   }
-  LOG(WARNING) << " Load Sparse Slot Complete";
+  LOG(INFO) << " Load Sparse ID & Slots Complete";
   {
     c10::List<at::intrusive_ptr<at::ivalue::Future>> futures(
         at::FutureType::create(at::NoneType::get()));
@@ -274,7 +249,7 @@ void LoaderInternal::Load(int64_t &load_size) {
     c10::collectAll(futures)->waitAndThrow();
   }
   pool.waitWorkComplete();
-  LOG(WARNING) << " Load Dense Tensor Complete";
+  LOG(INFO) << " Load Dense Tensor Complete";
   load_size = ReadBlock::size_counter_.GetSize();
 }
 

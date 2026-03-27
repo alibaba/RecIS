@@ -19,6 +19,7 @@ GpuIdMap::GpuIdMap(torch::Device id_device) {
 }
 
 torch::Tensor GpuIdMap::Lookup(const torch::Tensor &ids) {
+  std::lock_guard<std::mutex> lock(mu_);
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   torch::Tensor index = torch::empty_like(ids, torch::dtype(torch::kInt64));
   if (ids.numel() == 0) return index;

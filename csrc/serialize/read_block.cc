@@ -1,7 +1,6 @@
 #include "serialize/read_block.h"
 
 #include <algorithm>
-#include <chrono>
 #include <exception>
 #include <functional>
 
@@ -127,6 +126,11 @@ void CoalesceHTIDReadBlock::EncodeIds(at::Tensor ids,
   });
 }
 
+void CoalesceHTIDReadBlock::PrepareIdsForInsert(at::Tensor ids,
+                                                at::Tensor accept_indicator) {
+  EncodeIds(ids, accept_indicator, child_index_);
+}
+
 void CoalesceHTIDReadBlock::Read() {
   size_counter_.AddSize(block_info_->Size());
   int64_t ids_num = block_info_->Size() / sizeof(int64_t);
@@ -161,7 +165,7 @@ void HTSlotReadBlock::Read() {
   TORCH_CHECK(index_.defined(), "index not defined");
   TORCH_CHECK(accept_indicator_.defined(),
               "accept_indicator not defined:", (&accept_indicator_));
-  auto flat_nbtyes = slot_->FlatSize() * at::elementSize(slot_->Dtype());
+  auto flat_nbytes = slot_->FlatSize() * at::elementSize(slot_->Dtype());
   auto read_batch_size = BlockReadSize();
   int64_t read_ids_num = 0;
   int64_t ids_need_to_read = block_info_->Shape()[0];
@@ -173,18 +177,20 @@ void HTSlotReadBlock::Read() {
   while (read_ids_num < ids_need_to_read) {
     int64_t read_size =
         std::min(read_batch_size, ids_need_to_read - read_ids_num);
-    size_counter_.AddSize(read_size * flat_nbtyes);
+    size_counter_.AddSize(read_size * flat_nbytes);
     torch::string_view ret;
     auto file = table_reader_->File();
     RECIS_STATUS_COND(file->Read(
-        block_info_->OffsetBeg() + read_ids_num * flat_nbtyes,
-        read_size * flat_nbtyes, &ret, (char *)slot_tensor.data_ptr()));
+        block_info_->OffsetBeg() + read_ids_num * flat_nbytes,
+        read_size * flat_nbytes, &ret, (char *)slot_tensor.data_ptr()));
     slot_->IndexInsert(
-        index_.narrow(0, read_ids_num, read_size)
+        recis::embedding::make_lvalue(index_.narrow(0, read_ids_num, read_size))
             .to(slot_->TensorOptions().device()),
-        slot_tensor.narrow(0, 0, read_size).to(slot_->TensorOptions().device()),
-        accept_indicator_.narrow(0, read_ids_num, read_size)
-            .to(slot_->TensorOptions().device()));
+        recis::embedding::make_lvalue(slot_tensor.narrow(0, 0, read_size)
+                                          .to(slot_->TensorOptions().device())),
+        recis::embedding::make_lvalue(
+            accept_indicator_.narrow(0, read_ids_num, read_size)
+                .to(slot_->TensorOptions().device())));
     read_ids_num += read_size;
   }
 }
@@ -197,7 +203,7 @@ c10::List<at::intrusive_ptr<at::ivalue::Future>> HTSlotReadBlock::ReadAsync(
   TORCH_CHECK(index_.defined(), "index not defined");
   TORCH_CHECK(accept_indicator_.defined(),
               "accept_indicator not defined:", (&accept_indicator_));
-  auto flat_nbtyes = slot_->FlatSize() * at::elementSize(slot_->Dtype());
+  auto flat_nbytes = slot_->FlatSize() * at::elementSize(slot_->Dtype());
   auto read_batch_size = BlockReadSize();
   int64_t read_ids_num = 0;
   int64_t ids_need_to_read = block_info_->Shape()[0];
@@ -211,7 +217,7 @@ c10::List<at::intrusive_ptr<at::ivalue::Future>> HTSlotReadBlock::ReadAsync(
     int64_t read_size =
         std::min(read_batch_size, ids_need_to_read - read_ids_num);
     auto future = at::make_intrusive<at::ivalue::Future>(at::NoneType::get());
-    auto func = [this, read_size, read_ids_num, flat_nbtyes, shape, device,
+    auto func = [this, read_size, read_ids_num, flat_nbytes, shape, device,
                  future]() mutable {
       try {
         c10::DeviceGuard device_guard(device);
@@ -222,16 +228,22 @@ c10::List<at::intrusive_ptr<at::ivalue::Future>> HTSlotReadBlock::ReadAsync(
                                     .dtype(block_info_->Dtype()));
         torch::string_view ret;
         auto file = table_reader_->File();
-        size_counter_.AddSize(read_size * flat_nbtyes);
+        size_counter_.AddSize(read_size * flat_nbytes);
         RECIS_STATUS_COND(file->Read(
-            block_info_->OffsetBeg() + read_ids_num * flat_nbtyes,
-            read_size * flat_nbtyes, &ret, (char *)slot_tensor.data_ptr()));
-        slot_->IndexInsert(index_.narrow(0, read_ids_num, read_size)
-                               .to(slot_->TensorOptions().device()),
-                           slot_tensor.narrow(0, 0, read_size)
-                               .to(slot_->TensorOptions().device()),
-                           accept_indicator_.narrow(0, read_ids_num, read_size)
-                               .to(slot_->TensorOptions().device()));
+            block_info_->OffsetBeg() + read_ids_num * flat_nbytes,
+            read_size * flat_nbytes, &ret, (char *)slot_tensor.data_ptr()));
+
+        slot_->IndexInsert(
+            recis::embedding::make_lvalue(
+                index_.narrow(0, read_ids_num, read_size))
+                .to(slot_->TensorOptions().device()),
+            recis::embedding::make_lvalue(
+                slot_tensor.narrow(0, 0, read_size)
+                    .to(slot_->TensorOptions().device())),
+            recis::embedding::make_lvalue(
+                accept_indicator_.narrow(0, read_ids_num, read_size)
+                    .to(slot_->TensorOptions().device())));
+
         future->markCompleted();
       } catch (std::exception &e) {
         LOG(ERROR) << "exception:" << e.what();

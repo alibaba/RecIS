@@ -287,8 +287,15 @@ torch::Tensor gather(const torch::Tensor ids, const torch::Tensor emb) {
   }
 }
 
+torch::Tensor block_gather_bind(const torch::Tensor ids,
+                                std::vector<torch::Tensor> emb_blocks,
+                                int64_t block_size, int64_t default_key,
+                                bool readonly) {
+  return block_gather(ids, emb_blocks, block_size, default_key, readonly);
+}
+
 torch::Tensor block_gather(const torch::Tensor ids,
-                           std::vector<torch::Tensor> emb_blocks,
+                           std::vector<torch::Tensor> &emb_blocks,
                            int64_t block_size, int64_t default_key,
                            bool readonly) {
   if (ids.device().type() == torch::kCUDA) {
@@ -301,7 +308,7 @@ torch::Tensor block_gather(const torch::Tensor ids,
 }
 
 torch::Tensor block_filter(const torch::Tensor ids,
-                           std::vector<torch::Tensor> emb_blocks,
+                           std::vector<torch::Tensor> &emb_blocks,
                            int64_t block_size, int64_t threshold) {
   if (ids.device().type() == torch::kCUDA) {
     return block_filter_cuda(ids, emb_blocks, threshold, block_size);
@@ -310,8 +317,14 @@ torch::Tensor block_filter(const torch::Tensor ids,
   }
 }
 
+torch::Tensor block_filter_bind(const torch::Tensor ids,
+                                std::vector<torch::Tensor> emb_blocks,
+                                int64_t block_size, int64_t threshold) {
+  return block_filter(ids, emb_blocks, block_size, threshold);
+}
+
 torch::Tensor block_gather_by_range(const torch::Tensor ids,
-                                    std::vector<torch::Tensor> emb_blocks,
+                                    std::vector<torch::Tensor> &emb_blocks,
                                     int64_t block_size, int64_t beg,
                                     int64_t end) {
   if (ids.device().type() == torch::kCUDA) {
@@ -324,7 +337,7 @@ torch::Tensor block_gather_by_range(const torch::Tensor ids,
 
 void block_insert_cpu_kernel(const torch::Tensor ids,
                              const torch::Tensor embedding,
-                             std::vector<torch::Tensor> embedding_blocks,
+                             std::vector<torch::Tensor> &embedding_blocks,
                              int64_t block_size) {
   TORCH_CHECK(ids.device().type() == torch::kCPU,
               "Input must be on CPU device");
@@ -359,7 +372,7 @@ void block_insert_cpu_kernel(const torch::Tensor ids,
 }
 
 void block_insert(const torch::Tensor ids, const torch::Tensor embedding,
-                  std::vector<torch::Tensor> emb_blocks, int64_t block_size) {
+                  std::vector<torch::Tensor> &emb_blocks, int64_t block_size) {
   if (ids.device().type() == torch::kCUDA) {
     block_insert_cuda(ids, embedding, emb_blocks, block_size);
   } else {
@@ -367,9 +380,15 @@ void block_insert(const torch::Tensor ids, const torch::Tensor embedding,
   }
 }
 
+void block_insert_bind(const torch::Tensor ids, const torch::Tensor embedding,
+                       std::vector<torch::Tensor> emb_blocks,
+                       int64_t block_size) {
+  block_insert(ids, embedding, emb_blocks, block_size);
+}
+
 void block_insert_with_mask_cpu_kernel(
     const torch::Tensor ids, const torch::Tensor embedding,
-    const torch::Tensor mask, std::vector<torch::Tensor> embedding_blocks,
+    const torch::Tensor mask, std::vector<torch::Tensor> &embedding_blocks,
     int64_t block_size) {
   TORCH_CHECK(ids.device().type() == torch::kCPU,
               "Input must be on CPU device");
@@ -390,10 +409,18 @@ void block_insert_with_mask_cpu_kernel(
       }));
 }
 
+void block_insert_with_mask_bind(const torch::Tensor ids,
+                                 const torch::Tensor embedding,
+                                 const torch::Tensor mask,
+                                 std::vector<torch::Tensor> emb_blocks,
+                                 int64_t block_size) {
+  block_insert_with_mask(ids, embedding, mask, emb_blocks, block_size);
+}
+
 void block_insert_with_mask(const torch::Tensor ids,
                             const torch::Tensor embedding,
                             const torch::Tensor mask,
-                            std::vector<torch::Tensor> emb_blocks,
+                            std::vector<torch::Tensor> &emb_blocks,
                             int64_t block_size) {
   if (ids.device().type() == torch::kCUDA) {
     block_insert_with_mask_cuda(ids, embedding, mask, emb_blocks, block_size);

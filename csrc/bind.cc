@@ -282,10 +282,11 @@ TORCH_LIBRARY(recis, m) {
   m.def("segment_mean", recis::functional::segment_mean);
   m.def("segment_sum", recis::functional::segment_sum);
 
-  m.def("block_insert", recis::functional::block_insert);
-  m.def("block_insert_with_mask", recis::functional::block_insert_with_mask);
-  m.def("block_gather", recis::functional::block_gather);
-  m.def("block_filter", recis::functional::block_filter);
+  m.def("block_insert", recis::functional::block_insert_bind);
+  m.def("block_insert_with_mask",
+        recis::functional::block_insert_with_mask_bind);
+  m.def("block_gather", recis::functional::block_gather_bind);
+  m.def("block_filter", recis::functional::block_filter_bind);
   m.def("gather", recis::functional::gather);
   m.def("block_apply_adamw", recis::functional::block_apply_adamw);
 

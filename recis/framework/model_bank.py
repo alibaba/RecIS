@@ -797,7 +797,7 @@ class ModelBankParser:
                     MBC.EXCLUDE: set(),
                     MBC.IS_DYNAMIC: False,
                     MBC.HASHTABLE_CLEAR: True,
-                    MBC.IGNORE_ERROR: False,
+                    MBC.IGNORE_ERROR: True,
                     MBC.ONAME: [],
                 }
             )

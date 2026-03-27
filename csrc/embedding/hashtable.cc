@@ -280,6 +280,7 @@ torch::Tensor Hashtable::LookupIndexReadOnly(const torch::Tensor &ids) {
 }
 
 void Hashtable::IncrementBlocknum(int64_t ids_num) {
+  std::lock_guard<std::mutex> lock(blocknum_mutex_);
   size_t block_num =
       (ids_num + slot_group_->BlockSize()) / slot_group_->BlockSize();
   while (slot_group_->BlockNum() < block_num) {

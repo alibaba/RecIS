@@ -14,6 +14,11 @@
 namespace recis {
 namespace embedding {
 
+template <typename T>
+T &make_lvalue(T &&t) {
+  return t;
+}
+
 struct Slot : public torch::CustomClassHolder {
   Slot(const std::string &name, int64_t block_size, torch::Dtype dtype,
        const std::vector<int64_t> &partial_shape,

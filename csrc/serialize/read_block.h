@@ -48,6 +48,19 @@ class HTIdReadBlock : public ReadBlock {
 
   friend HTSlotReadBlock;
 
+  int64_t GetIdShape() const { return block_info_->Shape()[0]; }
+
+  HashTablePtr GetHT() const { return ht_; }
+
+  at::intrusive_ptr<BlockInfo> GetBlockInfo() const { return block_info_; }
+
+  at::intrusive_ptr<TableReader> GetTableReader() const {
+    return table_reader_;
+  }
+
+  virtual void PrepareIdsForInsert(at::Tensor ids,
+                                   at::Tensor accept_indicator) {}
+
  protected:
   HashTablePtr ht_;
   at::intrusive_ptr<BlockInfo> block_info_;
@@ -67,6 +80,9 @@ class CoalesceHTIDReadBlock : public HTIdReadBlock {
   void Read() override;
   friend CoalesceHTSlotReadBlock;
 
+  void PrepareIdsForInsert(at::Tensor ids,
+                           at::Tensor accept_indicator) override;
+
  private:
   int64_t child_index_;
 };
@@ -80,8 +96,19 @@ class HTSlotReadBlock : public ReadBlock {
   void Read() override;
   c10::List<at::intrusive_ptr<at::ivalue::Future>> ReadAsync(
       at::ThreadPool *pool);
+
+  int64_t GetFlatBytes() const {
+    return slot_->FlatSize() * at::elementSize(slot_->Dtype());
+  }
+
   at::intrusive_ptr<embedding::Slot> Slot();
   virtual void ExtractReadInfo(at::intrusive_ptr<HTIdReadBlock> id_block);
+
+  at::intrusive_ptr<BlockInfo> GetBlockInfo() const { return block_info_; }
+  at::intrusive_ptr<TableReader> GetTableReader() const {
+    return table_reader_;
+  }
+  at::intrusive_ptr<embedding::Slot> GetSlot() const { return slot_; }
 
  protected:
   at::Tensor index_;

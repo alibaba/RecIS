@@ -1,5 +1,6 @@
 #pragma once
 #include <cuco/flat_hash_map.cuh>
+#include <mutex>
 
 #include "embedding/id_map.h"
 
@@ -33,6 +34,7 @@ class GpuIdMap : public IdMap {
   using MapType = cuco::flat_hash_map<int64_t, int64_t>;
 
  private:
+  std::mutex mu_;
   std::unique_ptr<cuco::flat_hash_map<int64_t, int64_t>> ids_map_;
 };
 

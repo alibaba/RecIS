@@ -37,8 +37,10 @@ class TestCase(unittest.TestCase):
         self._tensor_map_json = "tensorkey.json"
         self._rank_json = "torch_rank_weights_embs_table_multi_shard.json"
         self._index_file = "index"
+        self._parallels = [1, 2, 4, 8]
+        self._hash_tables = {}
 
-    def _create_tensor(self, parallel, shard_idx=0, shard_num=1, include_ht=True):
+    def _create_tensor(self, parallel, clear=False):
         tensor_for_save = {
             "one": torch.randn([2, 2]),
             "two": torch.randn([3, 3]),
@@ -47,17 +49,6 @@ class TestCase(unittest.TestCase):
             "five": torch.randn([1, 1]),
             "six": torch.randn([1, 1]),
         }
-        hashtable_for_save = {}
-        if include_ht:
-            hashtable_for_save = {
-                "one": HashTable(
-                    [8],
-                    1024,
-                    dtype=torch.float32,
-                    name=f"hashtable{parallel}",
-                    slice=gen_slice(shard_idx, shard_num),
-                )
-            }
 
         block_size = 1 << 20
         ids_one = torch.arange(block_size)
@@ -72,13 +63,16 @@ class TestCase(unittest.TestCase):
         ids = torch.concat([ids_one, ids_two, ids_three])
         emb = torch.concat([emb_one, emb_two, emb_three])
 
-        if include_ht:
-            hashtable_for_save["one"]._hashtable_impl.insert(ids, emb)
-            hashtable_for_save["one"] = hashtable_for_save["one"]._hashtable_impl
+        hash_table = self._hash_tables[parallel]
+        if clear:
+            print("=" * 50, "clearing")
+            hash_table.clear()
+
+        hash_table.insert(ids, emb)
 
         return {
             "dense": tensor_for_save,
-            "sparse": hashtable_for_save,
+            "sparse": hash_table.state_dict(),
             "ids": ids,
             "emb": emb,
         }
@@ -213,7 +207,8 @@ class TestCase(unittest.TestCase):
         return data
 
     def load_value_ok(self, parallel):
-        data = self._create_tensor(parallel)
+        data = self._create_tensor(parallel, clear=True)
+        print("=" * 50, "loading")
         tensor_for_save, hashtable_for_save, _, _ = (
             data["dense"],
             data["sparse"],
@@ -276,8 +271,19 @@ class TestCase(unittest.TestCase):
             self.assertTrue(torch.allclose(val["tensor"], data_cmp[com_key]["tensor"]))
 
     def test_save_ok(self):
+        def _create_hashtable(parallel, shard_idx=0, shard_num=1):
+            return HashTable(
+                [8],
+                1024,
+                dtype=torch.float32,
+                name=f"hashtable{parallel}",
+                slice=gen_slice(shard_idx, shard_num),
+            )
+
         for para in [1, 2, 4, 8]:
+            self._hash_tables[para] = _create_hashtable(parallel=para)
             self.save_value_ok(para)
+            self.load_value_ok(para)
 
 
 if __name__ == "__main__":

@@ -51,6 +51,7 @@ void HTReadCollection::LoadSlots() {
     slot_reader->Read();
   }
 }
+
 c10::List<at::intrusive_ptr<at::ivalue::Future>>
 HTReadCollection::LoadSlotsAsync(at::PTThreadPool *pool) {
   TORCH_CHECK(id_done_, "id not load");
@@ -78,5 +79,115 @@ bool HTReadCollection::Valid() {
 bool HTReadCollection::Empty() {
   return block_reader_.empty() && id_reader_ == nullptr;
 }
+
+c10::List<at::intrusive_ptr<at::ivalue::Future>>
+HTReadCollection::LoadChunksAsync(at::PTThreadPool *pool, int64_t chunk_size) {
+  c10::List<at::intrusive_ptr<at::ivalue::Future>> ret(
+      at::FutureType::create(at::NoneType::get()));
+
+  // get total ids
+  int64_t total_ids = id_reader_ != nullptr ? id_reader_->GetIdShape() : 0;
+
+  if (block_reader_.empty()) {
+    return ret;
+  }
+
+  auto target_ht = id_reader_->GetHT();
+  target_ht->IncrementBlocknum(total_ids);
+
+  const int64_t id_bytes = sizeof(int64_t);
+
+  int64_t ids_per_chunk = chunk_size / id_bytes;
+  if (ids_per_chunk == 0) {
+    ids_per_chunk = 1;  // at least contains 1 id
+  }
+
+  std::vector<ChunkInfo> out_slices;
+  int64_t slice_id = 0;
+  for (int64_t j = 0; j < total_ids; j += ids_per_chunk) {
+    int64_t num_ids = std::min(total_ids - j, ids_per_chunk);
+    out_slices.emplace_back(slice_id++, j, num_ids);
+  }
+
+  for (const auto &chunk : out_slices) {
+    auto future = at::make_intrusive<at::ivalue::Future>(at::NoneType::get());
+
+    pool->run([this, chunk, target_ht, future, slice_id]() mutable {
+      try {
+        if (chunk.num_ids == 0) {
+          future->markCompleted();
+          return;
+        }
+
+        auto id_block_info = id_reader_->GetBlockInfo();
+        int64_t id_block_beg = id_block_info->OffsetBeg();
+
+        torch::Tensor chunk_ids = torch::empty(
+            {chunk.num_ids},
+            at::TensorOptions().dtype(torch::kInt64).device(torch::kCPU));
+
+        auto id_file = id_reader_->GetTableReader()->File();
+        torch::string_view ret;
+
+        int64_t id_offset = id_block_beg + chunk.beg_bytes;
+        int64_t id_read_size = chunk.num_bytes;
+
+        RECIS_STATUS_COND(id_file->Read(id_offset, id_read_size, &ret,
+                                        (char *)chunk_ids.data_ptr()));
+
+        auto chunk_accept = HTIdReadBlock::MarkIdAcceptable(
+            chunk_ids, target_ht->SliceInfo()->slice_begin(),
+            target_ht->SliceInfo()->slice_end(),
+            target_ht->SliceInfo()->slice_size());
+
+        id_reader_->PrepareIdsForInsert(chunk_ids, chunk_accept);
+
+        auto chunk_index =
+            target_ht->InsertLookupIndexWithIndicator(chunk_ids, chunk_accept);
+
+        for (auto slot_reader : block_reader_) {
+          auto slot_block_info = slot_reader->GetBlockInfo();
+          auto flat_nbytes = slot_reader->GetFlatBytes();
+
+          auto slot_file_offset = chunk.beg_ids * flat_nbytes;
+          auto read_size_bytes = chunk.num_ids * flat_nbytes;
+
+          int64_t final_file_offset =
+              slot_block_info->OffsetBeg() + slot_file_offset;
+
+          auto slot_shape = slot_block_info->Shape();
+          slot_shape[0] = chunk.num_ids;
+          at::Tensor slot_tensor =
+              torch::empty(slot_shape, at::TensorOptions()
+                                           .device(torch::kCPU)
+                                           .dtype(slot_block_info->Dtype()));
+
+          auto slot_file = slot_reader->GetTableReader()->File();
+          torch::string_view slot_ret;
+          RECIS_STATUS_COND(slot_file->Read(final_file_offset, read_size_bytes,
+                                            &slot_ret,
+                                            (char *)slot_tensor.data_ptr()));
+
+          slot_reader->GetSlot()->IndexInsert(
+              chunk_index.to(slot_reader->GetSlot()->TensorOptions().device()),
+              slot_tensor.to(slot_reader->GetSlot()->TensorOptions().device()),
+              chunk_accept.to(
+                  slot_reader->GetSlot()->TensorOptions().device()));
+        }
+
+        future->markCompleted();
+      } catch (std::exception &e) {
+        LOG(ERROR) << "Chunk processing exception: " << e.what();
+        future->setError(std::current_exception());
+      } catch (...) {
+        LOG(ERROR) << "Unknown exception in chunk processing";
+        future->setError(std::current_exception());
+      }
+    });
+    ret.push_back(future);
+  }
+  return ret;
+}
+
 }  // namespace serialize
 }  // namespace recis

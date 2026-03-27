@@ -172,6 +172,7 @@ class Hashtable : public torch::CustomClassHolder {
   at::intrusive_ptr<recis::embedding::Slot> GetSlot(const std::string &name);
 
  private:
+  std::mutex blocknum_mutex_;
   void ResetInternalState();
   std::tuple<torch::Tensor, torch::Tensor> EmbeddingLookupReadOnly(
       const torch::Tensor &ids);
