@@ -418,6 +418,18 @@ class Saver:
 
         # save dense and extra states
         if self._shard_id == 0:
+            if not fs.exists(os.path.join(ckpt_path, "index")):
+                logger.warning("Sparse params is empty!")
+                empty_index = {}
+                empty_index["file_index"] = {}
+                empty_index["block_index"] = {}
+                with fs.open(os.path.join(ckpt_path, "index"), "w") as f:
+                    json.dump(empty_index, f, indent=4)
+
+                tensorkey_json = {}
+                with fs.open(os.path.join(ckpt_path, "tensorkey.json"), "w") as f:
+                    json.dump(tensorkey_json, f, indent=4)
+
             if len(self._dense_state_dict.keys()) > 0:
                 self.save_dense_params(ckpt_path, self._dense_state_dict)
             if len(self._extra_save_dict.keys()) > 0:
@@ -551,12 +563,14 @@ class Saver:
                     f"{name} is not torch.Tensor in dense_state_dict, will not be saved to torch_rank_weights_embs_table_multi_shard.json"
                 )
 
+        existing_data = {}
         if not fs.exists(meta_file_path):
-            logger.error(
+            logger.warning(
                 f"Meta file {meta_file_path} not found after saving sparse params"
             )
-        with fs.open(meta_file_path, "r") as f:
-            existing_data = json.load(f)
+        else:
+            with fs.open(meta_file_path, "r") as f:
+                existing_data = json.load(f)
         existing_data.update(data)
         with fs.open(meta_file_path, "w") as out_f:
             json.dump(existing_data, out_f, indent=4)

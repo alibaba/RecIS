@@ -79,6 +79,12 @@ class Loader:
         The actual file reading and data reconstruction are handled by the torch.classes.recis.Loader class.
         """
         load_info = json.loads(self._impl.default_load_info())
+        if load_info is None:
+            logger.warning(
+                f"No load info found in {self._checkpoint_path}, skip loading"
+            )
+            return
+
         load_info = self._filter_func(load_info)
         load_summary, load_size = self._impl.load(json.dumps(load_info))
         MetricReporter.report(LOAD_SIZE_NAME, load_size, force=True)

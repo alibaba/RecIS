@@ -1,12 +1,16 @@
 import json
 import os
+import shutil
 import tempfile
 import unittest
 
 import torch
 from safetensors import safe_open
 
+from recis.framework.checkpoint_manager import Saver as CheckpointSaver, SaverOptions
+from recis.framework.filesystem import get_file_system
 from recis.nn.modules.hashtable import HashTable, gen_slice
+from recis.optim.named_optimizer import wrapped_named_optimizer
 from recis.serialize import Saver
 from recis.serialize.loader import Loader
 
@@ -28,6 +32,16 @@ def merge_ids_and_emb(state_dict: dict):
                 emb_list.extend([None] * ((get_index(key) + 1) - len(emb_list)))
             emb_list[get_index(key)] = value
     return torch.concat(ids_list), torch.concat(emb_list)
+
+
+class DenseModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.dense1 = torch.nn.Linear(10, 10)
+        self.dense2 = torch.nn.Linear(10, 10)
+
+    def forward(self, x):
+        return self.dense1(x) + self.dense2(x)
 
 
 class TestCase(unittest.TestCase):
@@ -269,6 +283,64 @@ class TestCase(unittest.TestCase):
 
             self.assertTrue(len(com_key) > 0)
             self.assertTrue(torch.allclose(val["tensor"], data_cmp[com_key]["tensor"]))
+
+    def _run_dense_model(self, model):
+        optimizer = wrapped_named_optimizer(torch.optim.Adam)(
+            model.named_parameters(), lr=0.001
+        )
+        for _ in range(10):
+            x = torch.randn(10, 10, device="cuda")
+            y = model(x)
+            loss = torch.sum(y)
+            loss.backward()
+            optimizer.step()
+
+    def test_save_load_without_sparse(self):
+        model = DenseModel()
+        model = model.to("cuda")
+        self._run_dense_model(model)
+        tmp_path = tempfile.mkdtemp()
+
+        saver_option = SaverOptions(
+            model,
+            None,
+            tmp_path,
+            None,
+            20,
+            1,
+            None,
+        )
+        saver = CheckpointSaver(saver_option)
+        saver.save(ckpt_id="ckpt_1")
+
+        ckpt_1 = os.path.join(tmp_path, "ckpt_1")
+
+        # test ckpt reader
+        CheckpointReaderImpl = torch.classes.recis.CheckpointReader
+        reader = CheckpointReaderImpl(ckpt_1)
+        reader.init()
+        names = reader.list_tensor_names()
+        self.assertEqual(len(names), 0)
+
+        # test loader
+        saver = CheckpointSaver(saver_option)
+        saver.restore()
+
+        fs = get_file_system(ckpt_1)
+        pt_file = os.path.join(ckpt_1, "model.pt")
+        with fs.open(pt_file, "rb") as f:
+            data1 = torch.load(f=f)
+
+        for key, val in data1.items():
+            self.assertTrue(key in model.state_dict())
+            self.assertTrue(torch.allclose(val, model.state_dict()[key]))
+
+        # load and run again
+        saver.output_dir = tmp_path
+        self._run_dense_model(model)
+
+        if os.path.exists(tmp_path):
+            shutil.rmtree(tmp_path)
 
     def test_save_ok(self):
         def _create_hashtable(parallel, shard_idx=0, shard_num=1):
