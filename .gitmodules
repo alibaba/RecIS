@@ -1,3 +1,9 @@
 [submodule "third_party/cccl"]
 	path = third_party/cccl
-	url = https://github.com/NVIDIA/cccl.git
+	url = http://gitlab.alibaba-inc.com/lujia.lmj/cccl.git
+[submodule "third_party/column-io"]
+	path = third_party/column-io
+	url = http://gitlab.alibaba-inc.com/xrec/column-io.git
+[submodule "recis/utils/torch_fx_tool"]
+	path = recis/utils/torch_fx_tool
+	url = http://gitlab.alibaba-inc.com/xrec/torch_fx_tool.git

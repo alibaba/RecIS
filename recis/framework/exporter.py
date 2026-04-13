@@ -8,7 +8,7 @@ from recis.framework.filesystem import get_file_system
 from recis.info import is_internal_enabled
 from recis.nn.modules.hashtable import filter_out_sparse_param
 from recis.serialize import Loader, Saver
-from recis.utils.torch_fx_tool.export_torch_fx_tool import ExportTorchFxTool
+from recis.utils.torch_fx_tool.ExportTorchFxTool import ExportTorchFxTool
 
 
 if is_internal_enabled() and not os.environ.get("BUILD_DOCUMENT", None) == "1":
