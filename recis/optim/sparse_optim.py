@@ -102,7 +102,6 @@ class SparseOptimizer(Optimizer):
         """
         assert self._grad_accum_steps > 0
         self._local_step += 1
-
         # Only update parameters when accumulation steps are reached
         if self._local_step % self._grad_accum_steps == 0:
             lr = self.param_groups[0]["lr"]

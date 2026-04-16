@@ -98,7 +98,7 @@ void SparseAdamWOptions::set_lr(const double lr) { lr_ = lr; }
 
 void SparseAdamW::step() {
   utils::apply_sparse_step<SparseAdamWOptions, SparseAdamWParamState>(
-      param_groups_, state_, grad_accum_steps_,
+      param_groups_, state_,
       [&](const std::string &name, HashTablePtr &p, const torch::Tensor &grad,
           SparseAdamWOptions &options, SparseAdamWParamState &state) {
         int64_t param_size = state.param()->Values()->size();

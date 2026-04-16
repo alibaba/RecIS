@@ -343,16 +343,13 @@ class HashTable(torch.nn.Module):
         """
         self._hashtable_impl.accept_grad(grad_index, grad)
 
-    def grad(self, acc_step=1) -> torch.Tensor:
+    def grad(self) -> torch.Tensor:
         """Get accumulated gradients.
-
-        Args:
-            acc_step (int, optional): Accumulation step. Defaults to 1.
 
         Returns:
             torch.Tensor: Accumulated gradients.
         """
-        return self._hashtable_impl.grad(acc_step)
+        return self._hashtable_impl.grad()
 
     def clear_grad(self) -> None:
         """Clear accumulated gradients."""

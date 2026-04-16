@@ -163,7 +163,7 @@ class Hashtable : public torch::CustomClassHolder {
   // for opt
   bool HasGrad() const { return grad_.size() > 0; };
   void AcceptGrad(const torch::Tensor &grad_index, const torch::Tensor &grad);
-  torch::Tensor Grad(int64_t accmulate_steps);
+  torch::Tensor Grad();
   void ClearGrad();
 
   const at::intrusive_ptr<recis::embedding::SliceInfo> SliceInfo();

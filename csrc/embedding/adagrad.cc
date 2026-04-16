@@ -96,7 +96,7 @@ void SparseAdagrad::add_parameters(
 
 void SparseAdagrad::step() {
   utils::apply_sparse_step<SparseAdagradOptions, SparseAdagradParamState>(
-      param_groups_, state_, grad_accum_steps_,
+      param_groups_, state_,
       [&](const std::string &name, HashTablePtr &p, const torch::Tensor &grad,
           SparseAdagradOptions &options, SparseAdagradParamState &state) {
         int64_t state_sum_size = state.state_sum()->Values()->size();

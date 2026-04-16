@@ -16,7 +16,7 @@ void apply_sparse_step(
     std::vector<SparseOptimizerParamGroup>& param_groups,
     ska::flat_hash_map<void*, std::unique_ptr<SparseOptimizerParamState>>&
         states,
-    int64_t grad_accum_steps, UpdateKernel&& update_kernel) {
+    UpdateKernel&& update_kernel) {
   torch::NoGradGuard no_grad;
   for (auto& group : param_groups) {
     auto& options = static_cast<OptionsType&>(group.options());
@@ -25,7 +25,7 @@ void apply_sparse_step(
       auto& p = it.second;
       if (!p.defined()) continue;
       if (!p->HasGrad()) continue;
-      const auto& grad = p->Grad(grad_accum_steps);
+      const auto& grad = p->Grad();
       if (!grad.defined()) continue;
       TORCH_CHECK(grad.is_sparse(),
                   "SparseOptimizer only supports sparse gradients. Got dense "

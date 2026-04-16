@@ -120,7 +120,7 @@ void Hashtable::AcceptGrad(const torch::Tensor &grad_index,
   grad_.push_back(grad);
 }
 
-torch::Tensor Hashtable::Grad(int64_t accmulate_steps) {
+torch::Tensor Hashtable::Grad() {
   auto index = torch::cat(grad_index_, 0);
   auto grad_outputs = torch::cat(grad_, 0);
   auto output = at::_unique(index, false, true);
@@ -154,7 +154,6 @@ torch::Tensor Hashtable::Grad(int64_t accmulate_steps) {
       final_shape[0] = 0;
     }
   }
-  final_grad = final_grad / accmulate_steps;
   auto sparse_grad =
       torch::sparse_coo_tensor(final_indices, final_grad, final_shape);
   sparse_grad = sparse_grad.detach_();

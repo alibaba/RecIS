@@ -52,7 +52,7 @@ class HashTableGradAccumulateTest(unittest.TestCase):
         grad_index = torch.LongTensor([2, 2, 2])
         grad = torch.ones([3, 4], dtype=torch.float32) * 3
         ht.accept_grad(grad_index, grad)
-        ga_mean = ht.grad(3)
+        ga_mean = ht.grad()
         indices = ga_mean.coalesce().indices()
         indices_true = torch.LongTensor([[1, 2, 3]])
         self.assertTrue(ts_equal(indices, indices_true))
@@ -64,8 +64,7 @@ class HashTableGradAccumulateTest(unittest.TestCase):
                 [1, 1, 1, 1],
             ]
         )
-        values_true = values_true / 3.0
-        self.assertTrue(ts_equal(values, values_true))
+        self.assertTrue(ts_equal(values, values_true * 1.0))
 
 
 if __name__ == "__main__":
