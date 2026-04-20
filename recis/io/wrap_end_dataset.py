@@ -2,7 +2,7 @@ from typing import Iterator
 
 from torch.utils.data import IterableDataset
 
-from recis.metrics.metric_reporter import DS_END_LATENCY, MetricReporter
+from recis.monitor.monitor_reporter import DS_END_LATENCY, MonitorReporter
 
 
 __all__ = ["WrapEndDataset"]
@@ -37,7 +37,7 @@ class _WrapEndIterator:
         self._input_iterator = input_iterator
         self._should_stop = False
 
-    @MetricReporter.report_time_wrapper(DS_END_LATENCY, tag=None)
+    @MonitorReporter.report_time_wrapper(DS_END_LATENCY, tag=None)
     def __next__(self):
         """Get the next data item with end-of-stream metadata.
 

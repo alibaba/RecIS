@@ -10,10 +10,10 @@ class TestMonitor(unittest.TestCase):
         import torch
 
         # Method 1: use global static factory
-        from recis.metrics.monitor import ClientBase, GetFactory, PointType
+        from recis.monitor.monitor import ClientBase, GetFactory, PointType
 
         # Method 2: use a standalone factory
-        # from recis.metrics.monitor import Factory, Client
+        # from recis.monitor.monitor import Factory, Client
         # factory = Factory()
 
         cli = GetFactory().get_client("test_client_1529")  # type: ClientBase

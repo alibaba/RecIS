@@ -6,7 +6,7 @@ from functools import wraps
 import torch
 
 # from recis.common.singleton import SingletonMeta
-from recis.metrics.monitor import GetFactory, PointType
+from recis.monitor.monitor import GetFactory, PointType
 from recis.utils.logger import Logger
 
 
@@ -28,6 +28,8 @@ UNIQUE_ID_SIZE_NAME = "unique_id_size"
 ID_SIZE_A2A_TIME_NAME = "id_size_a2a_time"
 QPS_NAME = "qps"
 FLOPS_NAME = "flops"
+FLOPS_PEAK = "flops_peak"
+MFU_NAME = "mfu"
 TRAIN_QPS_NAME = "train_qps"
 EVAL_QPS_NAME = "eval_qps"
 HT_ID_ACT_SIZE = "ht_id_activate_size"
@@ -43,19 +45,19 @@ LOAD_TIME_NAME = "load_time"
 SAVE_TIME_NAME = "save_time"
 
 
-# class MetricReporter(metaclass=SingletonMeta):
-class MetricReporter:
+# class MonitorReporter(metaclass=SingletonMeta):
+class MonitorReporter:
     _reportable = False
     logger = Logger("Metrics Reporter")
-    metric_prefix = "recis.framework"
+    monitor_prefix = "recis.framework"
     if not os.environ.get("BUILD_DOCUMENT", None) == "1":
-        metric_cli = GetFactory().get_client(metric_prefix)
+        monitor_cli = GetFactory().get_client(monitor_prefix)
 
     # FIXME: SingletonMeta object decorator only works in py39+ which not supported by ruff rule now
     # def __init__(self) -> None:
     #     self.logger = Logger("Metrics Reporter")
-    #     self.metric_prefix = "recis.framework"
-    #     self.metric_cli = GetFactory().get_client(self.metric_prefix)
+    #     self.monitor_prefix = "recis.framework"
+    #     self.monitor_cli = GetFactory().get_client(self.monitor_prefix)
     #     self._activate = False
     @classmethod
     def set_reportable(cls, reportable: bool):
@@ -70,7 +72,7 @@ class MetricReporter:
         if not cls.reportable(force):
             return
         tag = tag if tag is not None else {}
-        cls.metric_cli.report(metric_name, metric_val, tag, TAG_MAP[type])
+        cls.monitor_cli.report(metric_name, metric_val, tag, TAG_MAP[type])
 
     @classmethod
     def report_size(cls, metric_name, tensor, tag=None, force=False, type="gauge"):

@@ -4,7 +4,7 @@ from .filter_hook import HashTableFilterHook
 from .hook import Hook
 from .initial_profiler_hook import _InitialProfilerHook
 from .logger_hook import LoggerHook
-from .metric_report_hook import MetricReportHook
+from .monitor_report_hook import MetricReportHook
 from .profiler_hook import ProfilerHook
 
 

@@ -86,9 +86,8 @@ class ProfilerHook(Hook):
         """
 
         def default_trace_handler(prof):
-            save_file = (
-                f"{os.environ.get('APP_ID', 'local')}-timeline-{prof.step_num}.json"
-            )
+            rank = os.environ.get("RANK", "0")
+            local_save_file = f"{os.environ.get('APP_ID', 'local')}-{rank}-timeline-{prof.step_num}.json"
 
             try:
                 output_dir_path = Path(self.output_dir)
@@ -100,10 +99,10 @@ class ProfilerHook(Hook):
                 return
 
             fs = get_file_system(self.output_dir)
-            save_path = os.path.join(self.output_dir, save_file)
-            prof.export_chrome_trace(save_file)
-            fs.put_file(save_file, save_path)
-            self.logger.info(f"Save profiler result : {save_path}")
+            remote_save_file = os.path.join(self.output_dir, local_save_file)
+            prof.export_chrome_trace(local_save_file)
+            fs.put_file(local_save_file, remote_save_file)
+            self.logger.info(f"Save profiler result : {remote_save_file}")
 
         return default_trace_handler
 

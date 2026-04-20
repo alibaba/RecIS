@@ -23,9 +23,9 @@ from recis.hooks.checkpoint_hooks import (
     CheckpointSaveHook,
 )
 from recis.hooks.initial_profiler_hook import _InitialProfilerHook
-from recis.hooks.metric_report_hook import MetricReportHook
+from recis.hooks.monitor_report_hook import MetricReportHook, ReportArguments
 from recis.hooks.mos_report_hook import MosReporterEvalHook
-from recis.metrics.metric_reporter import MODEL_FWD_NAME, MetricReporter
+from recis.monitor.monitor_reporter import MODEL_FWD_NAME, MonitorReporter
 from recis.optim import sparse_optim
 from recis.utils.data_utils import copy_data_to_device
 from recis.utils.logger import Logger
@@ -192,6 +192,7 @@ class Trainer:
             sparse_optimizer (Optional[sparse_optim.SparseOptimizer]): Optimizer for sparse parameters.
             data_to_cuda (bool): Whether to automatically move data to CUDA. Defaults to False.
             **kwargs: Additional arguments passed to Accelerator.
+                - monitor_report_args (recis.hooks.monitor_report_hook.ReportArguments)
         """
         if hooks is None:
             hooks = []
@@ -211,6 +212,9 @@ class Trainer:
             assert self.mixed_precision in ["bf16", "fp16"], (
                 "mixed_precision must be 'bf16' or 'fp16'"
             )
+        self._monitor_report_args: Optional[ReportArguments] = kwargs.pop(
+            "monitor_report_args", None
+        )
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
         init_kwargs = InitProcessGroupKwargs(timeout=timedelta(seconds=1800))
         self.accelerator = Accelerator(
@@ -232,7 +236,7 @@ class Trainer:
         )
         if named_optimizer:
             self.dense_optimizer.named_optimizer = True
-        MetricReporter.report_forward(self.model, MODEL_FWD_NAME)
+        MonitorReporter.report_forward(self.model, MODEL_FWD_NAME)
         if self.sparse_optimizer is not None:
             self.sparse_optimizer.set_grad_accum_steps(self.gradient_accumulation_steps)
         self._global_step = torch.scalar_tensor(0, dtype=torch.int64)
@@ -316,7 +320,7 @@ class Trainer:
         self.hooks.append(
             MetricReportHook(
                 model=self.model,
-                report_args=None,
+                report_args=self._monitor_report_args,
             )
         )
         if self.args.eval_mos_report_uri:

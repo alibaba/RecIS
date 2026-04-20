@@ -2,10 +2,14 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+import torch
+
 from recis.hooks.hook import Hook
-from recis.metrics.metric_reporter import (
+from recis.monitor.gpuinfo_inquirer import Inquirer, Precision
+from recis.monitor.monitor_reporter import (
     EVAL_QPS_NAME,
     FLOPS_NAME,
+    FLOPS_PEAK,
     HT_ALL_SLOT_BYTES,
     HT_ALLOCATOR_ID_ACT_SIZE,
     HT_ALLOCATOR_ID_TOTAL_SIZE,
@@ -13,17 +17,45 @@ from recis.metrics.metric_reporter import (
     HT_ID_ACT_SIZE,
     HT_ID_TOTAL_BYTES,
     HT_ID_TOTAL_SIZE,
+    MFU_NAME,
     PREPARE_NAME,
     QPS_NAME,
     TRAIN_QPS_NAME,
-    MetricReporter,
+    MonitorReporter,
 )
 from recis.nn.modules.hashtable import filter_out_sparse_param
+from recis.utils.logger import Logger
+
+
+logger = Logger(__name__)
 
 
 @dataclass
 class ReportArguments:
+    """Report arguments for monitor
+
+    Args:
+        interval_step (int, optional): report interval step. Defaults to 100.
+        tflops_peak (float, optional): peak tflops. this will be used to calculate mfu. Defaults to -1 (means auto-detect).
+    """
+
     interval_step: int = 100
+    tflops_peak: float = -1
+
+    # TODO: consider if tflops_step_ratio_map is needed
+    # e.g. tflops_step_ratio_map: dict[str, float] = {"train": 1.0, "eval": 0.5, "tower_foo": 0.3, "tower_bar": 0.7} }
+    #     when report_metrics, use map[step_name] to multiply the original flops
+
+    def __post_init__(self):
+        if self.tflops_peak > 0:
+            self.tflops_peak = float(self.tflops_peak)
+            return
+
+        self.tflops_peak = Inquirer.get_peak_tflops(
+            device_index=0, precision=Precision.fp32
+        )
+        if self.tflops_peak is None:
+            self.tflops_peak = 148.0
 
 
 class MetricReportHook(Hook):
@@ -31,11 +63,37 @@ class MetricReportHook(Hook):
         FLOPS_NAME: 0,
     }
 
-    def __init__(self, model, report_args: Optional[ReportArguments] = None):
+    def _get_model_precision(self, model: torch.nn.Module) -> Precision:
+        try:
+            dtype_map = {
+                torch.float32: Precision.fp32,
+                torch.float16: Precision.fp16,
+                torch.bfloat16: Precision.bf16,
+                torch.int8: Precision.int8,
+            }
+            dtype = next(
+                (x.dtype for x in model.parameters()),
+                next((x.dtype for x in model.buffers()), torch.float32),
+            )
+            return dtype_map.get(dtype, Precision.fp32)
+        except Exception:
+            return Precision.fp32
+
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        report_args: Optional[ReportArguments] = None,
+    ):
         super().__init__()
-        if report_args is None:
-            report_args = ReportArguments()
         self.model = model
+
+        if report_args is not None:
+            logger.info(f"Tflops peak set to: {report_args.tflops_peak}")
+        else:
+            precision = self._get_model_precision(self.model)
+            tflops_peak = Inquirer.get_peak_tflops(device_index=0, precision=precision)
+            report_args = ReportArguments(tflops_peak=tflops_peak)
+            logger.info(f"Tflops peak detect: {tflops_peak} as precision: {precision}")
         self.hashtables = filter_out_sparse_param(model)
         self.args = report_args
         self.steps = 0
@@ -56,53 +114,59 @@ class MetricReportHook(Hook):
         qps = self.args.interval_step / spend_time
         train_qps = self.train_steps / spend_time
         eval_qps = self.eval_steps / spend_time
+        flops_peak = self.args.tflops_peak * 1e12
         flops_total = (
             self.__class__._internal_profs.get(FLOPS_NAME, 0)
             * self.args.interval_step
             / spend_time
         )
-        MetricReporter.report(QPS_NAME, qps, {"recis_qps_type": QPS_NAME})
-        MetricReporter.report(QPS_NAME, train_qps, {"recis_qps_type": TRAIN_QPS_NAME})
-        MetricReporter.report(QPS_NAME, eval_qps, {"recis_qps_type": EVAL_QPS_NAME})
-        MetricReporter.report(FLOPS_NAME, flops_total, {"recis_flops_type": FLOPS_NAME})
+        mfu = round(flops_total / flops_peak, 5)
+        MonitorReporter.report(QPS_NAME, qps, {"recis_qps_type": QPS_NAME})
+        MonitorReporter.report(QPS_NAME, train_qps, {"recis_qps_type": TRAIN_QPS_NAME})
+        MonitorReporter.report(QPS_NAME, eval_qps, {"recis_qps_type": EVAL_QPS_NAME})
+        MonitorReporter.report(
+            FLOPS_NAME, flops_total, {"recis_flops_type": FLOPS_NAME}
+        )
+        MonitorReporter.report(FLOPS_NAME, flops_peak, {"recis_flops_type": FLOPS_PEAK})
+        MonitorReporter.report(MFU_NAME, mfu, {"recis_mfu_type": MFU_NAME})
 
         # hashtable
         for ht_name, ht in self.hashtables.items():
             act_num, total_num = ht.id_info()
-            MetricReporter.report(
+            MonitorReporter.report(
                 HT_ID_ACT_SIZE, act_num, {"recis_ht_name": ht_name}, type="gauge_sticky"
             )
-            MetricReporter.report(
+            MonitorReporter.report(
                 HT_ID_TOTAL_SIZE,
                 total_num,
                 {"recis_ht_name": ht_name},
                 type="gauge_sticky",
             )
             allocator_act_num, allocator_total_num = ht.allocator_id_info()
-            MetricReporter.report(
+            MonitorReporter.report(
                 HT_ALLOCATOR_ID_ACT_SIZE,
                 allocator_act_num,
                 {"recis_ht_name": ht_name},
                 type="gauge_sticky",
             )
-            MetricReporter.report(
+            MonitorReporter.report(
                 HT_ALLOCATOR_ID_TOTAL_SIZE,
                 allocator_total_num,
                 {"recis_ht_name": ht_name},
                 type="gauge_sticky",
             )
             total_mem = ht.id_memory_info()
-            MetricReporter.report(
+            MonitorReporter.report(
                 HT_ID_TOTAL_BYTES,
                 total_mem,
                 {"recis_ht_name": ht_name},
                 type="gauge_sticky",
             )
             emb_mem, total_mem = ht.emb_memory_info()
-            MetricReporter.report(
+            MonitorReporter.report(
                 HT_EMB_BYTES, emb_mem, {"recis_ht_name": ht_name}, type="gauge_sticky"
             )
-            MetricReporter.report(
+            MonitorReporter.report(
                 HT_ALL_SLOT_BYTES,
                 total_mem,
                 {"recis_ht_name": ht_name},
@@ -116,7 +180,7 @@ class MetricReportHook(Hook):
             return
         self.step_time = time.time()
         self.activate = True
-        MetricReporter.set_reportable(True)
+        MonitorReporter.set_reportable(True)
 
     def after_step(self, is_train=True, *args, **kwargs):
         self.steps += 1
@@ -128,15 +192,15 @@ class MetricReportHook(Hook):
             return
         self._report_metrics()
         self._reset()
-        MetricReporter.set_reportable(False)
+        MonitorReporter.set_reportable(False)
         self.activate = False
 
     def out_off_data(self, *args, **kwargs):
         self._reset()
-        MetricReporter.set_reportable(False)
+        MonitorReporter.set_reportable(False)
         self.activate = False
 
     def after_data(self, is_train=True, *args, **kwargs):
         if self.activate:
             eclapsed_time = (time.time() - self.step_time) * 1000
-            MetricReporter.report(PREPARE_NAME, eclapsed_time)
+            MonitorReporter.report(PREPARE_NAME, eclapsed_time)

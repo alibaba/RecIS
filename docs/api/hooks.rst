@@ -51,7 +51,7 @@ TraceToOdpsHook
 .. autoclass:: TraceToOdpsHook
    :members: __init__
 
-.. currentmodule:: recis.hooks.metric_report_hook
+.. currentmodule:: recis.hooks.monitor_report_hook
 
 MetricReportHook
 ~~~~~~~~~~~~~~~~~~~~~~~~

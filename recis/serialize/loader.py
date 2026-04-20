@@ -3,11 +3,15 @@ from typing import Optional
 
 import torch
 
+from recis.monitor.monitor_reporter import (
+    LOAD_SIZE_NAME,
+    LOAD_TIME_NAME,
+    MonitorReporter,
+)
 from recis.utils.logger import Logger
 
 
 logger = Logger(__name__)
-from recis.metrics.metric_reporter import LOAD_SIZE_NAME, LOAD_TIME_NAME, MetricReporter
 
 
 class Loader:
@@ -63,7 +67,7 @@ class Loader:
         )
         self._filter_func = filter_func
 
-    @MetricReporter.report_time_wrapper(LOAD_TIME_NAME, force=True)
+    @MonitorReporter.report_time_wrapper(LOAD_TIME_NAME, force=True)
     def load(self, print_load_summary=False):
         """Executes the loading process.
 
@@ -87,7 +91,7 @@ class Loader:
 
         load_info = self._filter_func(load_info)
         load_summary, load_size = self._impl.load(json.dumps(load_info))
-        MetricReporter.report(LOAD_SIZE_NAME, load_size, force=True)
+        MonitorReporter.report(LOAD_SIZE_NAME, load_size, force=True)
         if print_load_summary:
             self._print_load_summary(load_summary)
 

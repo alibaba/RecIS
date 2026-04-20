@@ -6,10 +6,10 @@ from collections import defaultdict
 import torch
 from torch import nn
 
-from recis.metrics.metric_reporter import (
+from recis.monitor.monitor_reporter import (
     EMB_ENGINE_NAME,
     SPARSE_FWD_NAME,
-    MetricReporter,
+    MonitorReporter,
 )
 from recis.nn.modules.embedding import DynamicEmbedding, EmbeddingOption
 from recis.ragged.tensor import RaggedTensor
@@ -635,7 +635,7 @@ class EmbeddingEngine(nn.Module):
                 f"ht name: {ht_name}, coalesced info: {fea_group.embedding_info().coalesced_info()}, children: {fea_group.embedding_info().children}"
             )
 
-    @MetricReporter.report_time_wrapper(
+    @MonitorReporter.report_time_wrapper(
         SPARSE_FWD_NAME, {"recis_emb_phase": EMB_ENGINE_NAME}
     )
     def forward(self, input_features: dict[str, torch.Tensor]):

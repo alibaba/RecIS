@@ -3,8 +3,8 @@ import os
 from torch.profiler import ProfilerActivity, profile, schedule
 
 from recis.hooks.hook import Hook
-from recis.hooks.metric_report_hook import MetricReportHook
-from recis.metrics.metric_reporter import FLOPS_NAME
+from recis.hooks.monitor_report_hook import MetricReportHook
+from recis.monitor.monitor_reporter import FLOPS_NAME
 from recis.utils.logger import Logger
 
 

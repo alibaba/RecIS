@@ -265,6 +265,7 @@ class GPUInfo:
 
         try:
             # according --help-query-gpu to get all available fields
+            # TODO: support `rocm-smi` command for future
             out = subprocess.check_output(
                 ["nvidia-smi", "--help-query-gpu"],
                 encoding="utf-8",
@@ -342,19 +343,36 @@ class GPUInfo:
         except Exception as e:
             flogger.warning("nvidia-smi exec error: {}".format(e))
             return []
+
+        def static_cast(t: any, value: str) -> any:
+            try:
+                return t(value)
+            except (ValueError, TypeError):
+                return t()
+            except Exception:
+                return 0.0
+
         gpus_info_list = []
         for line in output.strip().split("\n"):
             parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 9:
+                flogger.warning(
+                    "nvidia-smi output has fewer fields than expected: {}".format(
+                        line[:256]
+                    )
+                )
+                continue
             gpu_info = GPUInfo(
-                id=int(parts[0]),
+                id=static_cast(int, parts[0]),
                 name=parts[1],
-                gpu_util=float(parts[2]) / 100,
-                gpu_sm_util=float(parts[3]) / 100,  # 如果无SM字段，这里就是GPU Util
-                mem_band_util=float(parts[4]) / 100,
-                mem_total_MB=int(parts[5]),
-                mem_used_MB=int(parts[6]),
-                temperature=float(parts[7]),
-                power_draw=float(parts[8]),
+                gpu_util=static_cast(float, parts[2]) / 100,
+                gpu_sm_util=static_cast(float, parts[3])
+                / 100,  # 如果无SM字段，这里就是GPU Util
+                mem_band_util=static_cast(float, parts[4]) / 100,
+                mem_total_MB=static_cast(int, parts[5]),
+                mem_used_MB=static_cast(int, parts[6]),
+                temperature=static_cast(float, parts[7]),
+                power_draw=static_cast(float, parts[8]),
             )
             gpus_info_list.append(gpu_info)
         return gpus_info_list

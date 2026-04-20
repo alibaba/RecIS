@@ -7,13 +7,13 @@ from typing import List, Optional, Union
 import torch
 import torch.distributed as dist
 
-from recis.metrics.metric_reporter import (
+from recis.monitor.monitor_reporter import (
     EMB_BYTES_NAME,
     ID_SIZE_A2A_TIME_NAME,
     ID_SIZE_NAME,
     REDUCE_EMB_BYTES_NAME,
     UNIQUE_ID_SIZE_NAME,
-    MetricReporter,
+    MonitorReporter,
 )
 from recis.nn.functional.embedding_ops import ids_partition
 from recis.nn.functional.reduce_function_registry import (
@@ -549,16 +549,16 @@ class DynamicEmbedding(torch.nn.Module):
             ExchangeIDsResults: Data class containing exchanged IDs and
                 metadata needed for the reverse operation.
         """
-        MetricReporter.report_size(ID_SIZE_NAME, ids, {"recis_ht_name": self.info})
+        MonitorReporter.report_size(ID_SIZE_NAME, ids, {"recis_ht_name": self.info})
         ids, ids_parts, ids_reverse_index = ids_partition(
             ids, self._emb_opt.max_partition_num, self._world_size
         )
-        MetricReporter.report_size(
+        MonitorReporter.report_size(
             UNIQUE_ID_SIZE_NAME, ids, {"recis_ht_name": self.info}
         )
         # sync all to all: exchange parts num
         ids_parts_reverse = torch.empty_like(ids_parts)
-        with MetricReporter.report_time(
+        with MonitorReporter.report_time(
             ID_SIZE_A2A_TIME_NAME, {"recis_ht_name": self.info}
         ):
             dist.all_to_all_single(ids_parts_reverse, ids_parts, group=self._pg)
@@ -659,7 +659,7 @@ class DynamicEmbedding(torch.nn.Module):
                 emb = emb.to(torch.float16)
             else:
                 emb = emb.to(torch.float32)
-        MetricReporter.report_bytes(EMB_BYTES_NAME, emb, {"recis_ht_name": self.info})
+        MonitorReporter.report_bytes(EMB_BYTES_NAME, emb, {"recis_ht_name": self.info})
 
         # Get combiner function from registry and execute
         combiner_func = get_combiner(combiner)
@@ -671,7 +671,7 @@ class DynamicEmbedding(torch.nn.Module):
             combiner_kwargs=combiner_kwargs,
         )
 
-        MetricReporter.report_bytes(
+        MonitorReporter.report_bytes(
             REDUCE_EMB_BYTES_NAME, emb, {"recis_ht_name": self.info}
         )
         return emb

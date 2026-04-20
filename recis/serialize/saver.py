@@ -2,7 +2,7 @@ from typing import Optional
 
 import torch
 
-from recis.metrics.metric_reporter import SAVE_TIME_NAME, MetricReporter
+from recis.monitor.monitor_reporter import SAVE_TIME_NAME, MonitorReporter
 
 
 class Saver:
@@ -67,7 +67,7 @@ class Saver:
             self._shard_index, self._shard_num, self._parallel, self._path
         )
 
-    @MetricReporter.report_time_wrapper(SAVE_TIME_NAME, force=True)
+    @MonitorReporter.report_time_wrapper(SAVE_TIME_NAME, force=True)
     def save(self):
         """Executes the saving process.
 
