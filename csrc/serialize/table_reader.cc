@@ -54,6 +54,7 @@ void TableReader::LoadMeta() {
     block_info->DecodeFromJson(obj_json);
     block_info->OffsetBeg(block_info->OffsetBeg() + offset_);
     block_info->OffsetEnd(block_info->OffsetEnd() + offset_);
+    block_info->DebugInfo(block_name);
     block_infos_[block_name] = block_info;
   }
 }

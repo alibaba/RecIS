@@ -21,9 +21,11 @@ result_queue = Queue(maxsize=1)
 def serialize_to_tensor(data):
     return torch.tensor(list(data), dtype=torch.uint8, device="cuda")
 
+
 def deserialize_from_tensor(tensor):
     data_bytes = bytes(tensor.tolist())
     return json.loads(data_bytes.decode("utf-8"))
+
 
 def get_random_port(num=1):
     ports = []
@@ -92,6 +94,7 @@ def server(orc_path, model, name_list, input_dataset):
 
             # 把json落到orc文件中
             from recis.framework.write_orc import write_single_sample_orc
+
             write_single_sample_orc(final_data, f"{orc_path}/tmp_orc.orc")
             # 创建orcdataset
             input_dataset.reset()

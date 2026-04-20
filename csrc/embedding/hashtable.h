@@ -88,7 +88,8 @@ class Hashtable : public torch::CustomClassHolder {
       const std::string &filter_name, torch::Dtype dtype, int64_t slot_dim,
       at::intrusive_ptr<recis::embedding::Generator> generator);
 
-  void IncrementBlocknum(int64_t ids_num);
+  void ReserveBlocksForIds(int64_t ids_num);
+  void IncrementBlocksForIds(int64_t additional_ids_num);
   void Reserve(size_t id_size);
   void Delete(const torch::Tensor &ids, const torch::Tensor &index,
               const std::string &preserve_slot = {});

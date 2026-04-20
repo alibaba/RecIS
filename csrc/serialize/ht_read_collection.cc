@@ -12,6 +12,22 @@
 #include "serialize/table_reader.h"
 namespace recis {
 namespace serialize {
+namespace {
+// split into chunks, each chunk is processed concurrently
+struct ChunkInfo {
+  int64_t slice_id;
+  int64_t beg_ids;    // beginning id index (sample number)
+  int64_t num_ids;    // number of ids (sample number)
+  int64_t beg_bytes;  // beginning byte offset
+  int64_t num_bytes;  // number of bytes
+  ChunkInfo(int64_t slice_id, int64_t beg_ids, int64_t num_ids)
+      : slice_id(slice_id),
+        beg_ids(beg_ids),
+        num_ids(num_ids),
+        beg_bytes(beg_ids * sizeof(int64_t)),
+        num_bytes(num_ids * sizeof(int64_t)) {}
+};
+}  // namespace
 
 at::intrusive_ptr<HTReadCollection> HTReadCollection::Make(
     const std::string &shared_name) {
@@ -37,31 +53,6 @@ void HTReadCollection::Append(HashTablePtr target_ht,
     block_reader_.push_back(HTSlotReadBlock::Make(
         target_ht->SlotGroup()->GetSlotByName(slot_name), block_info, reader));
   }
-}
-
-void HTReadCollection::LoadId() {
-  id_reader_->Read();
-  id_done_ = true;
-}
-
-void HTReadCollection::LoadSlots() {
-  TORCH_CHECK(id_done_, "id not load");
-  for (auto slot_reader : block_reader_) {
-    slot_reader->ExtractReadInfo(id_reader_);
-    slot_reader->Read();
-  }
-}
-
-c10::List<at::intrusive_ptr<at::ivalue::Future>>
-HTReadCollection::LoadSlotsAsync(at::PTThreadPool *pool) {
-  TORCH_CHECK(id_done_, "id not load");
-  c10::List<at::intrusive_ptr<at::ivalue::Future>> ret(
-      at::FutureType::create(at::NoneType::get()));
-  for (auto slot_reader : block_reader_) {
-    slot_reader->ExtractReadInfo(id_reader_);
-    ret.append(slot_reader->ReadAsync(pool));
-  }
-  return ret;
 }
 
 std::vector<at::intrusive_ptr<embedding::Slot>> HTReadCollection::ReadSlots() {
@@ -93,7 +84,7 @@ HTReadCollection::LoadChunksAsync(at::PTThreadPool *pool, int64_t chunk_size) {
   }
 
   auto target_ht = id_reader_->GetHT();
-  target_ht->IncrementBlocknum(total_ids);
+  target_ht->ReserveBlocksForIds(1);
 
   const int64_t id_bytes = sizeof(int64_t);
 
@@ -112,7 +103,7 @@ HTReadCollection::LoadChunksAsync(at::PTThreadPool *pool, int64_t chunk_size) {
   for (const auto &chunk : out_slices) {
     auto future = at::make_intrusive<at::ivalue::Future>(at::NoneType::get());
 
-    pool->run([this, chunk, target_ht, future, slice_id]() mutable {
+    pool->run([this, chunk, target_ht, future]() mutable {
       try {
         if (chunk.num_ids == 0) {
           future->markCompleted();
@@ -161,7 +152,18 @@ HTReadCollection::LoadChunksAsync(at::PTThreadPool *pool, int64_t chunk_size) {
               torch::empty(slot_shape, at::TensorOptions()
                                            .device(torch::kCPU)
                                            .dtype(slot_block_info->Dtype()));
-
+          TORCH_CHECK(
+              slot_block_info->Dtype() == slot_reader->GetSlot()->Dtype(),
+              "Slot dtype not match", "expected: ", slot_block_info->Dtype(),
+              " actual: ", slot_reader->GetSlot()->Dtype(), ";",
+              slot_block_info->DebugInfo());
+          TORCH_CHECK(
+              slot_tensor.sizes().vec() ==
+                  slot_reader->GetSlot()->FullShape(slot_tensor.size(0)),
+              "shape not match", "expected: ",
+              slot_reader->GetSlot()->FullShape(slot_tensor.size(0)),
+              " actual: ", slot_tensor.sizes(), ";",
+              slot_block_info->DebugInfo());
           auto slot_file = slot_reader->GetTableReader()->File();
           torch::string_view slot_ret;
           RECIS_STATUS_COND(slot_file->Read(final_file_offset, read_size_bytes,

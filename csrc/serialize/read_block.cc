@@ -45,8 +45,12 @@ at::intrusive_ptr<TensorReadBlock> TensorReadBlock::Make(
 void TensorReadBlock::Read() {
   size_counter_.AddSize(block_info_->Size());
   // to do: tensor name and filename
-  TORCH_CHECK(block_info_->Dtype() == tensor_.dtype(), "dtype not match");
-  TORCH_CHECK(block_info_->Shape() == tensor_.sizes().vec(), "shape not match");
+  TORCH_CHECK(block_info_->Dtype() == tensor_.dtype(), "dtype not match",
+              ";expected:", tensor_.dtype(), ";actual:", block_info_->Dtype(),
+              block_info_->DebugInfo());
+  TORCH_CHECK(block_info_->Shape() == tensor_.sizes().vec(), "shape not match",
+              ";expected:", tensor_.sizes().vec(),
+              ";actual:", block_info_->Shape(), block_info_->DebugInfo());
   torch::string_view ret;
   auto file = table_reader_->File();
   if (tensor_.device().type() == torch::kCPU) {

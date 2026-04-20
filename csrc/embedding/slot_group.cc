@@ -1,8 +1,10 @@
 #include "embedding/slot_group.h"
 
 #include <cstring>
+#include <mutex>
 #include <numeric>
 #include <string>
+#include <type_traits>
 
 #include "ATen/Dispatch.h"
 #include "ATen/SparseTensorImpl.h"
@@ -36,7 +38,10 @@ Slot::Slot(const std::string &name, int64_t block_size, torch::Dtype dtype,
                                1, std::multiplies<int64_t>());
 }
 
-void Slot::IncrementBlock() { values_->push_back(generator_->Generate()); }
+void Slot::IncrementBlock() {
+  std::lock_guard<std::mutex> l(mutex_);
+  values_->push_back(generator_->Generate());
+}
 
 void Slot::Clear() { values_->clear(); }
 
@@ -116,8 +121,13 @@ void Slot::IndexInsert(torch::Tensor index, torch::Tensor value,
               "accept_indicator must have the same size with index")
   TORCH_CHECK(accept_indicator.numel() == value.size(0),
               "accept_indicator must have the same size with value")
+  std::remove_reference_t<decltype(*values_)> values;
+  {
+    std::lock_guard<std::mutex> l(mutex_);
+    values = *values_;
+  }
   recis::functional::block_insert_with_mask(index, value, accept_indicator,
-                                            *values_, block_size_);
+                                            values, block_size_);
 }
 
 torch::Tensor Slot::GenVal(int64_t block_size) {

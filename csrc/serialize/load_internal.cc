@@ -22,7 +22,11 @@ namespace {
 class HTSlotsEmptyInitializerContext {
  public:
   AT_DISALLOW_COPY_AND_ASSIGN(HTSlotsEmptyInitializerContext);
-  HTSlotsEmptyInitializerContext(Hashtable *ht) : ht_(ht) {}
+
+  explicit HTSlotsEmptyInitializerContext(Hashtable *ht) : ht_(ht) {
+    TORCH_CHECK(ht != nullptr, "Hashtable cannot be null");
+  }
+
   void AppendSlot(at::intrusive_ptr<embedding::Slot> slot) {
     if (slot_initializer_map_.count(slot.get())) return;
     slot_initializer_map_[slot.get()] = slot->Generator();
@@ -33,21 +37,32 @@ class HTSlotsEmptyInitializerContext {
     slot->Generator(empty_generator);
   }
 
-  HTSlotsEmptyInitializerContext(HTSlotsEmptyInitializerContext &&other) {
-    ht_ = other.ht_;
-    slot_initializer_map_ = other.slot_initializer_map_;
-    other.slot_initializer_map_.clear();
+  HTSlotsEmptyInitializerContext(
+      HTSlotsEmptyInitializerContext &&other) noexcept
+      : ht_(other.ht_),
+        slot_initializer_map_(std::move(other.slot_initializer_map_)) {
+    other.ht_ = nullptr;
   }
 
   ~HTSlotsEmptyInitializerContext() {
-    int64_t last_copy_index = ht_->IdsNum() % ht_->SlotGroup()->BlockSize();
-    int64_t rest_num = ht_->SlotGroup()->BlockSize() - last_copy_index;
+    if (ht_ == nullptr) return;
+    auto ids_num = ht_->IdsNum();
+    auto first_init_block_idx = ids_num / ht_->SlotGroup()->BlockSize();
+    auto need_init_start_idx = ids_num % ht_->SlotGroup()->BlockSize();
     for (auto kv : slot_initializer_map_) {
       embedding::Slot *slot = (embedding::Slot *)kv.first;
+      auto values = slot->Values();
       slot->Generator(kv.second);
-      auto last_block = slot->Values()->back();
-      slot->Generator()->Initialize(
-          last_block.narrow(0, last_copy_index, rest_num));
+      for (auto block_index = first_init_block_idx;
+           block_index < values->size(); block_index++) {
+        auto block = values->at(block_index);
+        if (block_index > first_init_block_idx) {
+          slot->Generator()->Initialize(block);
+        } else {
+          slot->Generator()->Initialize(block.narrow(
+              0, need_init_start_idx, block.size(0) - need_init_start_idx));
+        }
+      }
     }
   }
 

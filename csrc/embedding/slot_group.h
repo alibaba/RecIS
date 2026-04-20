@@ -1,5 +1,6 @@
 #pragma once
 #include <memory>
+#include <mutex>
 
 #include "ATen/Utils.h"
 #include "ATen/core/TensorBody.h"
@@ -45,6 +46,7 @@ struct Slot : public torch::CustomClassHolder {
                    torch::Tensor accept_indicator);
 
  private:
+  std::mutex mutex_;  // a lock used to protect the values_ while loading.
   std::string name_;
   std::shared_ptr<std::vector<torch::Tensor>> values_;
   torch::Dtype dtype_;

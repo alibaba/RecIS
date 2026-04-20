@@ -24,6 +24,7 @@ struct BlockInfo : public torch::intrusive_ptr_target {
   TORCH_ARG(std::vector<int64_t>, Shape);
   TORCH_ARG(int64_t, OffsetBeg);
   TORCH_ARG(int64_t, OffsetEnd);
+  TORCH_ARG(std::string, DebugInfo);
 
  public:
   int64_t Size();

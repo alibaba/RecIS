@@ -183,7 +183,7 @@ std::tuple<torch::Tensor, torch::Tensor> Hashtable::EmbeddingLookup(
   torch::Tensor ids_t =
       ids.to(slot_group_->EmbSlot()->TensorOptions().device());
   torch::Tensor index = id_map_->Lookup(ids_t);
-  IncrementBlocknum(id_map_->GetIdNum());
+  ReserveBlocksForIds(id_map_->GetIdNum());
   auto emb_slot = slot_group_->EmbSlot();
   torch::Tensor out_embedding = recis::functional::block_gather(
       index, (*emb_slot->Values()), slot_group_->BlockSize(), kNullIndex,
@@ -232,7 +232,7 @@ std::tuple<torch::Tensor, torch::Tensor> Hashtable::EmbeddingLookupReadOnly(
   torch::Tensor ids_t =
       ids.to(slot_group_->EmbSlot()->TensorOptions().device());
   torch::Tensor index = id_map_->LookupReadOnly(ids_t);
-  IncrementBlocknum(id_map_->GetIdNum());
+  ReserveBlocksForIds(id_map_->GetIdNum());
   auto emb_slot = slot_group_->EmbSlot();
   torch::Tensor out_embedding = recis::functional::block_gather(
       index, (*emb_slot->Values()), slot_group_->BlockSize(), kNullIndex, true);
@@ -243,7 +243,7 @@ torch::Tensor Hashtable::InsertLookupIndex(const torch::Tensor &ids) {
   torch::Tensor ids_t =
       ids.to(slot_group_->EmbSlot()->TensorOptions().device());
   auto index = id_map_->InsertIds(ids_t);
-  IncrementBlocknum(id_map_->GetIdNum());
+  ReserveBlocksForIds(id_map_->GetIdNum());
   return index;
 }
 
@@ -278,11 +278,26 @@ torch::Tensor Hashtable::LookupIndexReadOnly(const torch::Tensor &ids) {
   return index;
 }
 
-void Hashtable::IncrementBlocknum(int64_t ids_num) {
+void Hashtable::ReserveBlocksForIds(int64_t ids_num) {
   std::lock_guard<std::mutex> lock(blocknum_mutex_);
   size_t block_num =
       (ids_num + slot_group_->BlockSize()) / slot_group_->BlockSize();
   while (slot_group_->BlockNum() < block_num) {
+    slot_group_->IncrementBlock();
+  }
+}
+
+void Hashtable::IncrementBlocksForIds(int64_t additional_ids_num) {
+  if (additional_ids_num <= 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(blocknum_mutex_);
+  // Calculate the number of additional blocks needed for the additional IDs
+  size_t additional_blocks =
+      (additional_ids_num + slot_group_->BlockSize() - 1) /
+      slot_group_->BlockSize();
+  // Increment the block count by the calculated additional blocks
+  for (size_t i = 0; i < additional_blocks; ++i) {
     slot_group_->IncrementBlock();
   }
 }
@@ -332,7 +347,7 @@ std::tuple<torch::Tensor, torch::Tensor, std::vector<torch::Tensor>>
 Hashtable::GatherChild(const std::string &child,
                        const std::vector<std::string> &slot_names) {
   auto [child_ids, child_index] = GatherChildIds(child);
-  IncrementBlocknum(id_map_->GetIdNum());
+  ReserveBlocksForIds(id_map_->GetIdNum());
   std::vector<torch::Tensor> child_slots;
   child_slots.reserve(slot_names.size());
   for (const auto &slot_name : slot_names) {

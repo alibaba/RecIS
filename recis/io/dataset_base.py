@@ -84,7 +84,9 @@ def _convert_raw_to_ragged(dense_column, dtype, compress=True):
                             data[0][0] = data[0][0].astype("U")
                     batch_list[table][fn] = data[0]
                 elif (
-                    fn in dense_column or (fn == "_indicator" and compress) or fn == "_sample_group_id"
+                    fn in dense_column
+                    or (fn == "_indicator" and compress)
+                    or fn == "_sample_group_id"
                 ):
                     values = torch.from_dlpack(data[0][0])
                     if torch.is_floating_point(values):
@@ -620,7 +622,7 @@ class DatasetBase(IterableDataset):
                 parallel=self._pack_threads_num,
                 pinned_result=(self._device == "pin"),
                 gpu_result=(self._device == "cuda"),
-                compress=self._is_compressed
+                compress=self._is_compressed,
             )
         else:
             self._dataset = self._dataset.pack(
@@ -632,7 +634,7 @@ class DatasetBase(IterableDataset):
                 user_define_module=self._user_define_module,
                 dense_columns=self._dense_column,
                 dense_default_value=self._dense_default_value,
-                compress=self._is_compressed
+                compress=self._is_compressed,
             )
         if self._prefetch:
             self._dataset = self._dataset.prefetch(self._prefetch)
