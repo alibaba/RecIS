@@ -11,12 +11,11 @@ import torch
 
 from recis.hooks import Hook
 from recis.info import is_internal_enabled
-from recis.utils.cluster import is_external_cluster
 from recis.utils.logger import Logger
 
 
 if is_internal_enabled():
-    from recis.utils.cluster import X_CLUSTER_TUNNEL_ENDPOINT
+    from recis.utils.cluster import get_odps_access_info
 
 
 if not os.environ.get("BUILD_DOCUMENT", None) == "1":
@@ -225,17 +224,8 @@ class TraceWriter(Process):
 
         # Handling ODPS
         if is_internal_enabled():
-            end_point = (
-                X_CLUSTER_TUNNEL_ENDPOINT
-                if is_external_cluster()
-                else config.get("end_point")
-                or "http://service.odps.aliyun-inc.com/api"  # TODO: AIDC singapore/korea compability
-            )
-            odps_args = [config["access_id"], config["access_key"], config["project"]]
-            odps_kwargs = (
-                {"tunnel_endpoint": X_CLUSTER_TUNNEL_ENDPOINT}
-                if is_external_cluster()
-                else {"endpoint": end_point}
+            odps_args, odps_kwargs, need_create_table_or_partition = (
+                get_odps_access_info(config)
             )
         else:
             odps_args = [
@@ -245,14 +235,11 @@ class TraceWriter(Process):
                 config["end_point"],
             ]
             odps_kwargs = {}
+            need_create_table_or_partition = True
         odps = ODPS(*odps_args, **odps_kwargs)
 
-        # Create table or not by is_external_cluster
-        if is_external_cluster():
-            logger.info(
-                f"In external cluster, skip create table and partition: {self.table_name}, {self.partition}"
-            )
-        else:
+        # Create table if need
+        if need_create_table_or_partition:
             partitions = []
             part_types = []
             if self.partition:
@@ -271,6 +258,10 @@ class TraceWriter(Process):
             )
             if self.partition:
                 table.create_partition(self.partition, if_not_exists=True)
+        else:
+            logger.info(
+                f"Skip create table and partition: {self.table_name}, {self.partition}"
+            )
 
         # Create upload session
         self._tunnel_client = TableTunnel(odps)
