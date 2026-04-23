@@ -406,7 +406,12 @@ class Saver:
                 sync_func,
             )
 
-        # save train and eval io states
+        # save train and eval io states (flush live iterator positions first)
+        for io in self._io_state.values():
+            flush_func = getattr(io, "_flush_io_state", None)
+            if flush_func is not None:
+                flush_func()
+
         io_states = {}
         for io_name, io in self._io_state.items():
             io_states[io_name] = io.dump_io_state()

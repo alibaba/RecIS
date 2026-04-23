@@ -260,6 +260,7 @@ class DatasetBase(IterableDataset):
         self._local_step = 0
         self._load_states = None
         self._shard_paths = None
+        self._state_dataset_flush_handle = None
         self._io_state = {}
         self.hash_types = []
         self.hash_buckets = []
@@ -503,6 +504,13 @@ class DatasetBase(IterableDataset):
         """
         raise NotImplementedError("_shard_path not implemented")
 
+    def _flush_io_state(self) -> None:
+        """Refresh ``_io_state`` so the next ``dump_io_state`` matches the live iterator."""
+        if not self._save_interval:
+            return
+        if self._state_dataset_flush_handle is not None:
+            self._state_dataset_flush_handle.flush_io_state()
+
     def dump_io_state(self):
         """Dumps the current IO state for checkpointing.
 
@@ -639,6 +647,7 @@ class DatasetBase(IterableDataset):
         if self._prefetch:
             self._dataset = self._dataset.prefetch(self._prefetch)
         self._dataset = self._create_state_dataset(self._dataset, sub_id, sub_num)
+        self._state_dataset_flush_handle = self._dataset
         map_funcs = [
             _convert_raw_to_ragged(self._dense_column, self._dtype, self._is_compressed)
         ] + self._transform_ragged_batch_funcs
