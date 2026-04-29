@@ -1,8 +1,11 @@
 #pragma once
-#include <fslib/common/common_type.h>
 #include <stdint.h>
 
+#include <array>
 #include <cstddef>
+
+#include "fslib/common/common_type.h"
+
 extern "C" {
 using TypeFslibFileHandle_C = void *;
 

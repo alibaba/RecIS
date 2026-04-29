@@ -9,7 +9,13 @@
 #include <string>
 #include <vector>
 
-#include "autil/Log.h"
+/* NOTE: recis 本身不依赖 alog，但 fslib 的运行日志能力依赖 alog。由于 alog
+    是公共基础库，容易被第三方间接依赖，从而引入包括其自身及衍生库在内的版本混乱问题。
+    因此，这里不允许 fslib.so 将自身使用的 alog ABI 暴露到 recis的进程公共空间。
+    为实现隔离，lake 构建出的 fslib.so 会额外提供一组干净的 alog
+    初始化函数(见void InitAlog()实现)，并隐藏 alog 自身的全部 ABI
+ */
+#include "fslib/alog_adapter.h"
 #include "fslib/fs/File.h"
 #include "fslib/fs/FileSystem.h"
 #include "fslib/fslib.h"
@@ -34,14 +40,17 @@ bool IsFslLogEnabled() {
 
 void InitAlog() {
   if (IsFslLogEnabled()) {
+    // TODO: 使用`APSARA_LOG_CONFIG_PATH`等开关 控制pangu log行为.
+    // 期望能按STD_LOG_DIR分rank地写log
     const char *default_log_conf = R"magic(alog.rootLogger=INFO, rootAppender
 alog.max_msg_len=2048
 alog.appender.rootAppender=ConsoleAppender
 alog.appender.rootAppender.layout=PatternLayout
 alog.appender.rootAppender.layout.LogPattern=[%%d] [%%l] [%%t,%%F -- %%f():%%n] %%m
 )magic";
-    alog::Configurator::configureLoggerFromString(default_log_conf);
-    AUTIL_ROOT_LOG_SETLEVEL(DEBUG);
+    fslib::configureLoggerFromStringAdapter(default_log_conf);
+    fslib::RootLogSetLevelAdapter(fslib::LOG_LEVEL_DEBUG);
+    // AUTIL_ROOT_LOG_SETLEVEL(DEBUG);
   }
 }
 std::once_flag once_flag;
