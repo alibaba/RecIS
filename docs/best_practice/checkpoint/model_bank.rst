@@ -110,7 +110,8 @@ load 和 exclude 除了写 tensor name 外，默认添加以下内容：
         },
         {
             "path": ckpt_3,
-            "load": ["*"],},
+            "load": ["*"],
+        },
         {
             "path": ckpt_4,
             "load": ["table_1*"],
@@ -122,6 +123,31 @@ load 和 exclude 除了写 tensor name 外，默认添加以下内容：
 - 第三条优先级最高，所以 table_1 相关的稀疏表内容从 ckpt_4 加载
 - 而后是第二条 model_bank，从 ckpt_3 加载 model 的其余内容
 - 第一条优先级最低，model 的所有内容已经从 ckpt_3 和 ckpt_4 加载，所以不会在 ckpt_2 中加载任何内容
+
+额外的，model_bank 位于 checkpoint 字段下。当 checkpoint 字段中 output_dir 不为空时，recis 会自动为 model_bank 添加一条配置，优先加载 output_dir 中的所有模型：
+
+.. code-block:: python
+
+    "model_bank": [
+        {
+            "path": ckpt_2,
+            "load": ["table_1*"],
+        },
+        {
+            "path": ckpt_3,
+            "load": ["*"],
+        },
+        {
+            "path": ckpt_4,
+            "load": ["table_1*"],
+        },
+        {
+            "path": "${checkpoint.output_dir}",
+            "load": ["*"],
+        }
+    ]
+
+其次才会从用户提供的 model_bank 中加载模型，达到断点续训的目的。
 
 一定会报错
 ~~~~~~~~~~~~~~
