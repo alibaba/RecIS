@@ -19,10 +19,24 @@ if is_internal_enabled():
 
 
 if not os.environ.get("BUILD_DOCUMENT", None) == "1":
-    from odps import ODPS
+    from odps import ODPS, __version__ as _PYODPS_VERSION
     from odps.models import Schema
     from odps.tunnel.io.writer import ArrowWriter
     from odps.tunnel.tabletunnel import TableTunnel
+
+    def _parse_pyodps_version(v):
+        try:
+            return tuple(int(x) for x in v.split(".")[:3])
+        except (ValueError, AttributeError):
+            return (0, 0, 0)
+
+    # Tunnel-side partition creation (`create_partition` kwarg on
+    # `create_upload_session`) was introduced in pyodps 0.12.3.
+    _TUNNEL_CAN_CREATE_PARTITION = _parse_pyodps_version(_PYODPS_VERSION) >= (
+        0,
+        12,
+        3,
+    )
 
 
 logger = Logger(__name__)
@@ -224,7 +238,7 @@ class TraceWriter(Process):
 
         # Handling ODPS
         if is_internal_enabled():
-            odps_args, odps_kwargs, need_create_table_or_partition = (
+            odps_args, odps_kwargs, need_create_table = (
                 get_odps_access_info(config)
             )
         else:
@@ -235,11 +249,11 @@ class TraceWriter(Process):
                 config["end_point"],
             ]
             odps_kwargs = {}
-            need_create_table_or_partition = True
+            need_create_table = True
         odps = ODPS(*odps_args, **odps_kwargs)
 
         # Create table if need
-        if need_create_table_or_partition:
+        if need_create_table:
             partitions = []
             part_types = []
             if self.partition:
@@ -256,18 +270,20 @@ class TraceWriter(Process):
                 lifecycle=365,
                 table_properties={"columnar.nested.type": "true"},
             )
-            if self.partition:
+            # Older pyodps cannot create the partition via tunnel; fall back to REST.
+            if self.partition and not _TUNNEL_CAN_CREATE_PARTITION:
                 table.create_partition(self.partition, if_not_exists=True)
         else:
             logger.info(
                 f"Skip create table and partition: {self.table_name}, {self.partition}"
             )
 
-        # Create upload session
+        # Create upload session (tunnel will create the partition if it doesn't exist)
         self._tunnel_client = TableTunnel(odps)
-        self._writer_session = self._tunnel_client.create_upload_session(
-            self.table_name, partition_spec=self.partition
+        self._create_partition_via_tunnel = (
+            bool(self.partition) and _TUNNEL_CAN_CREATE_PARTITION
         )
+        self._writer_session = self._open_upload_session()
 
         self.write_count = 0
         self.write_id = writer_id
@@ -278,6 +294,14 @@ class TraceWriter(Process):
         self.buffer = []  # list of dicts
         self.buffered_size = 0
         self.size_threshold = size_threshold
+
+    def _open_upload_session(self):
+        kwargs = {"partition_spec": self.partition}
+        if self._create_partition_via_tunnel:
+            kwargs["create_partition"] = True
+        return self._tunnel_client.create_upload_session(
+            self.table_name, **kwargs
+        )
 
     def run(self) -> None:
         """Main process loop for handling data writes.
@@ -362,9 +386,7 @@ class TraceWriter(Process):
         # update writer_session
         if self._block_id > 0:
             self._writer_session.commit(list(range(self._block_id)))
-            self._writer_session = self._tunnel_client.create_upload_session(
-                self.table_name, partition_spec=self.partition
-            )
+            self._writer_session = self._open_upload_session()
             self._block_id = 0
 
     def __del__(self):

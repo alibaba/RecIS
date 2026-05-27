@@ -6,6 +6,10 @@ from recis.info import is_internal_enabled
 
 if is_internal_enabled():
     X_CLUSTER_TUNNEL_ENDPOINT = "http://dt.xcluster.odps.aliyun-inc.com"
+    # Use a guaranteed-unreachable address so any accidental REST call fails
+    # fast (connection refused) instead of hitting an env-default endpoint
+    # and either hanging 120s or silently going somewhere unintended.
+    X_CLUSTER_UNREACHABLE_REST_ENDPOINT = "http://127.0.0.1:1/api"
     DOMESTIC_ODPS_ENDPOINT = "http://service.odps.aliyun-inc.com/api"
 
     # Oversea or special external-tannei clusters mapping
@@ -57,18 +61,19 @@ if is_internal_enabled():
                 or SPEC_CLUSTER_ODPS_ENDPOINT_MAPPING[cluster_name]
             )
             odps_kwargs["endpoint"] = primary_endpoint
-            need_create_table_or_partition = True
+            need_create_table = True
         elif is_normal_external:
+            odps_kwargs["endpoint"] = X_CLUSTER_UNREACHABLE_REST_ENDPOINT
             odps_kwargs["tunnel_endpoint"] = X_CLUSTER_TUNNEL_ENDPOINT
-            need_create_table_or_partition = False
+            need_create_table = False
         else:
             final_endpoint = config.get("end_point") or DOMESTIC_ODPS_ENDPOINT
             odps_kwargs["endpoint"] = final_endpoint
-            need_create_table_or_partition = True
+            need_create_table = True
 
         if not is_normal_external:
             user_provided_tunnel_ep = config.get("tunnel_endpoint")
             if user_provided_tunnel_ep:
                 odps_kwargs["tunnel_endpoint"] = user_provided_tunnel_ep
 
-        return odps_args, odps_kwargs, need_create_table_or_partition
+        return odps_args, odps_kwargs, need_create_table
