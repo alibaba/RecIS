@@ -238,9 +238,7 @@ class TraceWriter(Process):
 
         # Handling ODPS
         if is_internal_enabled():
-            odps_args, odps_kwargs, need_create_table = (
-                get_odps_access_info(config)
-            )
+            odps_args, odps_kwargs, need_create_table = get_odps_access_info(config)
         else:
             odps_args = [
                 config["access_id"],
@@ -299,9 +297,7 @@ class TraceWriter(Process):
         kwargs = {"partition_spec": self.partition}
         if self._create_partition_via_tunnel:
             kwargs["create_partition"] = True
-        return self._tunnel_client.create_upload_session(
-            self.table_name, **kwargs
-        )
+        return self._tunnel_client.create_upload_session(self.table_name, **kwargs)
 
     def run(self) -> None:
         """Main process loop for handling data writes.

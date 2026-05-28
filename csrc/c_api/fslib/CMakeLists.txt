@@ -1,6 +1,10 @@
 file(GLOB fslib_c_api_CC "*.cc")
 
-set(ZIP_URL "http://sample-lake.oss-cn-beijing.aliyuncs.com/deploy/xdl_fslib_dependency-1.0.2.tar.gz")
+if(DEFINED NEED_FSLIB_ABI AND NEED_FSLIB_ABI EQUAL 0)
+    set(ZIP_URL "http://sample-lake.oss-cn-beijing.aliyuncs.com/deploy/abi0/xdl_fslib_dependency-1.0.2.tar.gz")
+else()
+    set(ZIP_URL "http://sample-lake.oss-cn-beijing.aliyuncs.com/deploy/abi1/xdl_fslib_dependency-1.0.2.tar.gz")
+endif()
 set(ZIP_FILE "${CMAKE_BINARY_DIR}/xdl_fslib_dependency.tar.gz")
 set(DEPS_DIR "${CMAKE_BINARY_DIR}/fs_deps")
 
@@ -33,7 +37,9 @@ target_link_libraries(fslib_c_api PRIVATE
     ${DEPS_DIR}/lib64/libfslib-framework.so
 )
 
-target_compile_definitions(fslib_c_api PRIVATE -D_GLIBCXX_USE_CXX11_ABI=0)
+if(DEFINED NEED_FSLIB_ABI AND NEED_FSLIB_ABI EQUAL 0)
+    target_compile_definitions(fslib_c_api PRIVATE -D_GLIBCXX_USE_CXX11_ABI=0)
+endif()
 target_compile_options(fslib_c_api PRIVATE -std=c++17)
 target_compile_options(fslib_c_api PRIVATE -g)
 install(TARGETS fslib_c_api DESTINATION ${RECIS_LIB_INSTALL_DIR})

@@ -3,7 +3,7 @@ import os
 import torch
 
 
-__version__ = "1.1.49"
+__version__ = "1.1.60"
 
 pkg_path = os.path.dirname(os.path.realpath(__file__))
 lib_path = os.path.join(pkg_path, "lib")
@@ -51,10 +51,14 @@ def get_build_info():
 
 def append_fslib_library_path():
     import os
+
     old_library_path = os.getenv("LD_LIBRARY_PATH", "")
 
-    os.environ["LD_LIBRARY_PATH"] = f"{os.path.join(pkg_path, 'lib')}:{old_library_path}".rstrip(":")
+    os.environ["LD_LIBRARY_PATH"] = (
+        f"{os.path.join(pkg_path, 'lib')}:{old_library_path}".rstrip(":")
+    )
     print("[INFO] recis reloaded LD_LIBRARY_PATH as: ", os.environ["LD_LIBRARY_PATH"])
+
 
 if get_build_info().get("build", {}).get("internal_version", "0") == "1":
     """
@@ -64,4 +68,3 @@ if get_build_info().get("build", {}).get("internal_version", "0") == "1":
         append_fslib_library_path()
     except Exception:
         pass
-

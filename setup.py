@@ -4,7 +4,7 @@ import subprocess
 from setuptools import find_packages, setup
 from torch.cuda import get_device_name
 from torch.utils import cpp_extension
-from version import get_version
+from version import get_wheel_version
 
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
@@ -95,6 +95,9 @@ def get_main_extension():
     source_files = get_source_files(source_dirs, "csrc", set(delete_files), True)
 
     gcc_args = ["-g", "-fopenmp"]
+    if os.getenv("NEED_FSLIB_ABI", "1") == "0":
+        gcc_args.append("-DNEED_FSLIB_ABI=0")
+
     nvcc_args = [
         "-O2",
     ]
@@ -195,8 +198,10 @@ def build_fslib():
 
 prepare_build()
 
+version = get_wheel_version()
+print(f"[INFO] version: {version}")
 setup(
-    version=get_version(),
+    version=version,
     ext_modules=[get_main_extension()],
     data_files=[],
     packages=find_packages(),
