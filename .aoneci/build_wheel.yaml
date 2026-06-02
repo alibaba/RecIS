@@ -1,0 +1,140 @@
+name: build_wheel 
+
+triggers:
+  push:
+    branches:
+      - 'master'
+jobs:
+  build-wheel:
+    matrix:
+      params:
+        - name: docker_name
+          value:
+            - "hub.docker.alibaba-inc.com/mdl/mdl0.6:user_cu121_gcc10_py3.10.13_torch240_20241203163346_hz_c4d_hdfs_lake_fixed_v4"
+            - "hub.docker.alibaba-inc.com/mdl/mdl0.6:user_cu121_gcc10_py3.10.13_torch251_20250225174848_sglang_v3"
+            - "hub.docker.alibaba-inc.com/mdl/mdl0.6:user_cu128_gcc13_py3.10.13_torch260_20250619164439_hotfix_te"
+            - "hub.docker.alibaba-inc.com/mdl/mdl0.6:user_cu128_gcc13_py3.10.13_torch271_20251104182507"
+            - "hub.docker.alibaba-inc.com/mdl/mdl0.6:user_cu128_gcc13_py3.10.13_torch280_20251021182611_accelerated"
+            - "hub.docker.alibaba-inc.com/mdl/mdl0.6:user_cuppu153_gcc10_py3.10.13_torch260_20250827120800_lake_accelerated"
+            - "hub.docker.alibaba-inc.com/mdl/mdl0.6:user_cuppu161_gcc10_py3.10.13_torch270_20250925221442_accelerated"
+            - "hub.docker.alibaba-inc.com/mdl/mdl0.6:user_curocm702_gcc10_py3.10.13_torch280_20251030132103_eic_aiter_6b586ae_vllm_a8e7c3e"
+    runs-on: [aone-hosted, amd8, 32-128Gi]
+    image: ${{matrix.docker_name}}
+    steps:
+      - uses: checkout
+        inputs:
+          submodules: true
+          username: zengqingtao.zqt
+          token: ${{secrets.aone_token}}
+      - id: version
+        run: |
+            /opt/conda/envs/python3.10/bin/python .aoneci/scripts/wheel_utils.py --input ${{matrix.docker_name}} --parse_type torch_version  > ${{outputs.torch_version.path}}
+            /opt/conda/envs/python3.10/bin/python .aoneci/scripts/wheel_utils.py --input ${{matrix.docker_name}} --parse_type platform  > ${{outputs.platform.path}}
+            /opt/conda/envs/python3.10/bin/python .aoneci/scripts/wheel_utils.py --input ${{matrix.docker_name}} --parse_type is_nv  > ${{outputs.is_nv.path}}
+            /opt/conda/envs/python3.10/bin/python .aoneci/scripts/wheel_utils.py --input ${{matrix.docker_name}} --parse_type is_amd  > ${{outputs.is_amd.path}}
+      - id: build_wheel
+        envs:
+          INTERNAL_VERSION: 1
+          TORCH_CUDA_ARCH_LIST: '6.0;7.0;7.5;8.0;8.6;8.9;9.0'
+          MAX_JOBS: 8
+          NV_PLATFORM: "${{steps.version.outputs.is_nv}}"
+          AMD_PLATFORM: "${{steps.version.outputs.is_amd}}"
+        run: |
+          cd ../ && cp -r ./source ./tmp && cd tmp
+          /opt/conda/envs/python3.10/bin/python -m pip install --upgrade cmake==3.30.1 -i https://pypi.tuna.tsinghua.edu.cn/simple --extra-index-url https://pypi.antfin-inc.com/simple/
+          export CMAKE_BIN_PATH=`/opt/conda/envs/python3.10/bin/python -c "import os,cmake; print(os.path.join(os.path.dirname(cmake.__file__),'data','bin','cmake'))"`
+          $CMAKE_BIN_PATH --version
+          /opt/conda/envs/python3.10/bin/python setup.py bdist_wheel
+      - id: upload-my-oss
+        uses: upload-oss
+        inputs:
+          path: ../tmp/dist/*.whl
+          storage-path: package/${{steps.version.outputs.torch_version}}/${{steps.version.outputs.platform}}/
+          oss-bucket: ${{vars.oss_bucket}}
+          oss-endpoint: https://oss-cn-hangzhou-zmf.aliyuncs.com
+          access-key-id: ${{secrets.oss_access_id}}
+          access-key-secret: ${{secrets.oss_access_key}}
+      - id: echo-uri
+        image: hub.docker.alibaba-inc.com/mdl/mdl0.6:user_cu121_gcc10_py3.10.13_torch240_20241203163346_hz_c4d_hdfs_lake_fixed_v4
+        run: |
+          echo `/opt/conda/envs/python3.10/bin/python -c 'import urllib.parse; r = ${{steps.upload-my-oss.outputs.result}}; V = r[0]["remote"][8:].split("recis-")[1].split("-cp310")[0]; print("| ${{steps.version.outputs.platform}} | ${{steps.version.outputs.torch_version}} | http://yum.tbsite.net/mirrors/ppypi/nebula-ai/packages/recis/" + V + "/recis-" + V + "-cp310-cp310-linux_x86_64.whl | " + V + " |")'` > ${{outputs.tbsite_summary.path}}
+          echo `/opt/conda/envs/python3.10/bin/python -c 'import urllib.parse; r = ${{steps.upload-my-oss.outputs.result}}; V = r[0]["remote"][8:].split("recis-")[1].split("-cp310")[0]; print("| ${{steps.version.outputs.platform}} | ${{steps.version.outputs.torch_version}} | https://"+urllib.parse.quote(r[0]["remote"][8:])+" | "+ V +" |")'` > ${{outputs.oss_summary.path}}
+          echo `/opt/conda/envs/python3.10/bin/python -c 'r = ${{steps.upload-my-oss.outputs.result}}; print(r[0]["remote"])'` > ${{outputs.url.path}}
+    outputs:
+      tbsite_aggregate_summary: ${{steps.echo-uri.outputs.tbsite_summary}}
+      oss_aggregate_summary: ${{steps.echo-uri.outputs.oss_summary}}
+      aggregate_download: ${{steps.echo-uri.outputs.url}}
+  upload-pypi:
+    needs: 
+      - build-wheel
+    steps:
+      - id: download-wheel
+        retry:
+          limit: 3
+        run: |
+          rm -rf dist && mkdir dist && cd dist && pip install wget
+          python -c $'print( ${{jobs.build-wheel.outputs.aggregate_download}})\nfor wh in ${{jobs.build-wheel.outputs.aggregate_download}}:\n  print(wh)'
+          python -c $'import wget\nfor wh in ${{jobs.build-wheel.outputs.aggregate_download}}:\n  wget.download(wh)'
+      - id: upload-tbsite
+        run: |
+          pip install -U twine
+          cd dist
+
+          cat > ~/.pypirc <<'EOF'
+          [distutils]
+          index-servers = nebula-ai
+
+          [nebula-ai]
+          repository: http://opsx.vip.tbsite.net/ecs-pypi/nebula-ai/simple/
+          username: ${{secrets.tbsite_username}}
+          password: ${{secrets.tbsite_password}}
+          EOF
+
+          set -o pipefail
+          upload_one() {
+            set -o pipefail
+            local whl="$1"
+            echo "[$whl] ==== uploading ===="
+            for i in 1 2 3 4 5; do
+              echo "[$whl] attempt $i/5"
+              if timeout 6m twine upload -r nebula-ai "$whl" --verbose 2>&1 | sed "s|^|[$whl] |"; then
+                return 0
+              fi
+              echo "[$whl] upload failed, retrying..."
+              sleep 20
+            done
+            echo "[$whl] upload failed after 5 attempts"
+            return 1
+          }
+          export -f upload_one
+
+          ls ./*.whl | xargs -n 1 -P 8 -I {} bash -c 'upload_one "$@"' _ {}
+
+  echo-result:
+    needs: 
+      - upload-pypi
+    steps:
+      - id: table_message
+        run: |
+          echo "| Platform | Pytorch | URL | Pypi Version |" > ${{outputs.column_labels_str.path}}
+          echo "| Platform | Pytorch | URL | Pypi Version |" >> $AONE_CI_SUMMARY_MD
+          echo "| ------ | ------ | ------ | ------ |" >> $AONE_CI_SUMMARY_MD
+          python -c 'import os; out_file=os.getenv("AONE_CI_SUMMARY_MD"); line="\n".join(${{jobs.build-wheel.outputs.tbsite_aggregate_summary}}); f=open(out_file, "a+"); f.write(line); f.close()'
+    outputs:
+      column_labels_str: ${{steps.table_message.outputs.column_labels_str}}
+  update-yuque-docs:
+    when: ${{git.branch == "master"}}
+    needs: 
+      - echo-result
+    steps:
+      - uses: checkout
+        inputs:
+          submodules: true
+          ssh-key: ${{secrets.id_rsa}}
+      - run: |
+          set -e
+          echo "update yuque docs"
+          python -m pip install requests packaging wget
+          export YUQUE_TOKEN=${{secrets.yuque_token}}
+          python .aoneci/scripts/docs_utils.py --package_message '${{jobs.build-wheel.outputs.tbsite_aggregate_summary}}' --column_labels_str '${{jobs.echo-result.outputs.column_labels_str}}' --doc_id 479478532
+          python .aoneci/scripts/docs_utils.py --package_message '${{jobs.build-wheel.outputs.oss_aggregate_summary}}' --column_labels_str '${{jobs.echo-result.outputs.column_labels_str}}' --doc_id 526498391
