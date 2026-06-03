@@ -20,6 +20,7 @@
 #include "ops/block_apply_adamw_op.h"
 #include "ops/block_ops.h"
 #include "ops/bucketize_op.h"
+#include "ops/compute_real_length.h"
 #include "ops/dense_to_ragged.h"
 #include "ops/embedding_segment_reduce.h"
 #include "ops/feature_cross_ragged.h"
@@ -336,4 +337,5 @@ TORCH_LIBRARY(recis, m) {
       .def("get_client", &recis::monitor::Factory::get_client_py);
   m.def("make_MonitorFactory", &recis::monitor::Factory::MakeInstancePy);
   m.def("parse_sample_id", recis::functional::parse_sample_id);
+  m.def("compute_real_length", recis::functional::compute_real_length);
 }
