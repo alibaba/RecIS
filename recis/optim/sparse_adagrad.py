@@ -61,7 +61,8 @@ class SparseAdagrad(SparseOptimizer):
         lr=1e-3,
         lr_decay: float = 0,
         initial_accumulator_value: float = 0,
-        eps=1e-10,
+        eps: float = 1e-10,
+        weight_decay: float = 0,
     ) -> None:
         """Initialize SparseAdam optimizer with specified hyperparameters.
 
@@ -85,6 +86,7 @@ class SparseAdagrad(SparseOptimizer):
         self._lr = lr
         self._lr_decay = lr_decay
         self._eps = eps
+        self._weight_decay = weight_decay
         self._initial_accumulator_value = initial_accumulator_value
 
         # Create the underlying C++ optimizer implementation
@@ -95,4 +97,5 @@ class SparseAdagrad(SparseOptimizer):
             self._lr_decay,
             self._initial_accumulator_value,
             self._eps,
+            self._weight_decay,
         )

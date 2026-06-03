@@ -63,7 +63,8 @@ void fused_sparse_adagrad(torch::Tensor grad, SparseAdagradOptions &options,
   auto grad_emb = utils::get_sparse_impl(grad)->values();
   recis::functional::block_apply_adagrad(
       index, grad_emb, (*param->Values()), state.step(), (*state_sum->Values()),
-      options.lr(), options.lr_decay(), options.eps(), block_size);
+      options.lr(), options.lr_decay(), options.eps(), options.weight_decay(),
+      block_size);
 }
 
 void SparseAdagrad::add_param_group(
@@ -150,16 +151,19 @@ SparseAdagrad::state_dict() {
 
 c10::intrusive_ptr<SparseAdagrad> SparseAdagrad::Make(
     const torch::Dict<std::string, HashTablePtr> &hashtables, double lr,
-    double lr_decay, double initial_accumulator_value, double eps) {
+    double lr_decay, double initial_accumulator_value, double eps,
+    double weight_decay) {
   LOG(WARNING) << "SparseAdagrad Make: " << at::get_parallel_info()
                << "; lr is " << lr << "; lr_decay is " << lr_decay
                << "; option.initial_accumulator_value is "
-               << initial_accumulator_value << "; eps is " << eps;
+               << initial_accumulator_value << "; eps is " << eps
+               << "; weight_decay is " << weight_decay;
   SparseAdagradOptions option;
   option.lr(lr);
   option.lr_decay(lr_decay);
   option.initial_accumulator_value(initial_accumulator_value);
   option.eps(eps);
+  option.weight_decay(weight_decay);
   std::unordered_map<std::string, HashTablePtr> input;
   for (auto it = hashtables.begin(); it != hashtables.end(); it++) {
     input[it->key()] = it->value();

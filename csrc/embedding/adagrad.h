@@ -13,15 +13,18 @@ namespace {
 struct SparseAdagradOptions
     : public SparseOptimizerCloneableOptions<SparseAdagradOptions> {
   SparseAdagradOptions(double lr = 1e-2, double lr_decay = 0,
-                       double initial_accumulator_value = 0, double eps = 1e-10)
+                       double initial_accumulator_value = 0, double eps = 1e-10,
+                       double weight_decay = 0)
       : lr_(lr),
         lr_decay_(lr_decay),
         initial_accumulator_value_(initial_accumulator_value),
-        eps_(eps) {}
+        eps_(eps),
+        weight_decay_(weight_decay) {}
   TORCH_ARG(double, lr) = 1e-2;
   TORCH_ARG(double, lr_decay) = 0;
   TORCH_ARG(double, initial_accumulator_value) = 0;
   TORCH_ARG(double, eps) = 1e-10;
+  TORCH_ARG(double, weight_decay) = 0;
 
  public:
   double get_lr() const override;
@@ -77,7 +80,8 @@ class SparseAdagrad : public SparseOptimizer {
   void step() override;
   static c10::intrusive_ptr<SparseAdagrad> Make(
       const torch::Dict<std::string, HashTablePtr> &hashtables, double lr,
-      double lr_decay, double initial_accumulator_value, double eps);
+      double lr_decay, double initial_accumulator_value, double eps,
+      double weight_decay);
   void reset_state_dict();
 
  private:

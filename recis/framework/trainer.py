@@ -622,6 +622,8 @@ class Trainer:
         add_metric("epoch", epoch, report_to_mos=True)
         add_metric("loss", loss.item(), report_to_mos=True)
         self.accelerator.backward(loss)
+        for hook in self.hooks:
+            hook.after_backward(is_train=True)
         # order must be step before zero grad
         self.dense_optimizer.step()
         if self.sparse_optimizer is not None:

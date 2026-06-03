@@ -77,3 +77,6 @@ class Hook:
 
     def after_train(self, *args, **kwargs):
         """Called after each training run loop."""
+
+    def after_backward(self, *args, **kwargs):
+        """Called after each backward pass."""
