@@ -14,6 +14,7 @@ from torch.utils.data import Dataset
 
 from recis.framework.checkpoint_manager import ExtraFields, Saver, SaverOptions
 from recis.framework.metrics import add_metric, get_log_metrics
+from recis.framework.request_adapter import RequestAdapter
 from recis.framework.server import server
 from recis.hooks import Hook, LoggerHook
 from recis.hooks.checkpoint_hooks import (
@@ -455,10 +456,23 @@ class Trainer:
         dist.all_reduce(self.stop_state, op=dist.ReduceOp.MAX)
         return bool(self.stop_state.item())
 
-    def server(self, orc_path, name_list):
+    def server(
+        self,
+        orc_path,
+        name_list,
+        request_adapter: Optional[RequestAdapter] = None,
+        need_flatten=False,
+    ):
         for hook in self.hooks:
             hook.start(is_train=True)
-        server(orc_path, self.model, name_list, self.train_dataset)
+        server(
+            orc_path,
+            self.model,
+            name_list,
+            self.train_dataset,
+            request_adapter=request_adapter,
+            need_flatten=need_flatten,
+        )
 
     def _train_loop_by_window(self, max_steps=None, epoch=1):
         window_iter = 0

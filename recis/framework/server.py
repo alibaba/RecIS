@@ -5,11 +5,13 @@ import socket
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from queue import Queue
+from typing import Optional
 
 import torch
 import torch.distributed as dist
 from column_io.dataset.log_util import logger
 
+from recis.framework.request_adapter import RequestAdapter, adapt_request_payload
 from recis.ragged.tensor import RaggedTensor
 from recis.utils.data_utils import copy_data_to_device
 
@@ -50,11 +52,19 @@ def run_http_server():
     port = get_random_port()
     server_address = ("", port)
     httpd = HTTPServer(server_address, handler_class)
-    logger.info(f"Starting httpd server on port {port}...")
+    ip = socket.gethostbyname(socket.gethostname())
+    logger.info(f"Starting httpd server on {ip}:{port}...")
     httpd.serve_forever()
 
 
-def server(orc_path, model, name_list, input_dataset):
+def server(
+    orc_path,
+    model,
+    name_list,
+    input_dataset,
+    request_adapter: Optional[RequestAdapter] = None,
+    need_flatten=False,
+):
     """
     Args:
         model: user define module to forward
@@ -90,6 +100,7 @@ def server(orc_path, model, name_list, input_dataset):
                 # 广播实际数据 (跨机器)
             dist.broadcast(data_tensor, src=0)
             final_data = deserialize_from_tensor(data_tensor)
+            final_data = adapt_request_payload(final_data, request_adapter)
             logger.info(f"final_data: {final_data}")
 
             # 把json落到orc文件中
@@ -106,7 +117,7 @@ def server(orc_path, model, name_list, input_dataset):
             logger.info(
                 f"[Rank {dist.get_rank()}] Received broadcasted task. Data size: {data_tensor.numel()}"
             )
-            rst["data"] = extractor.extract(input_dict)
+            rst["data"] = extractor.extract(input_dict, need_flatten=need_flatten)
             rst["success"] = True
             if dist.get_rank() == 0:
                 result_queue.put(rst)
@@ -116,6 +127,31 @@ def server(orc_path, model, name_list, input_dataset):
             print(f"catch error: {rst}")
             if dist.get_rank() == 0:
                 result_queue.put(rst)
+
+
+def to_jsonable(obj):
+    import numpy as np
+    import torch
+
+    if isinstance(obj, dict):
+        return {k: to_jsonable(v) for k, v in obj.items()}
+
+    if isinstance(obj, (list, tuple)):
+        return [to_jsonable(v) for v in obj]
+
+    if isinstance(obj, np.ndarray):
+        return to_jsonable(obj.tolist())
+
+    if isinstance(obj, np.generic):
+        return obj.item()
+
+    if isinstance(obj, torch.Tensor):
+        return obj.detach().cpu().tolist()
+
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", errors="ignore")
+
+    return obj
 
 
 def create_handler():
@@ -149,6 +185,7 @@ def create_handler():
             logger.info("[Rank 0 HTTP] Waiting for distributed processing result...")
             outputs = result_queue.get()  # 这会阻塞，直到主进程放入结果
             logger.info(f"outputs: {outputs}")
+            outputs = to_jsonable(outputs)
             response = json.dumps(outputs)
             self.wfile.write(response.encode("utf-8"))
 
@@ -167,10 +204,34 @@ class FeatureExtractor:
         self.features = {}
         self.hooks = []
 
+    def deep_clone(self, obj):
+        if isinstance(obj, torch.Tensor):
+            return obj.detach().clone()
+        elif isinstance(obj, dict):
+            return {k: self.deep_clone(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self.deep_clone(v) for v in obj]
+        elif isinstance(obj, tuple):
+            return tuple(self.deep_clone(v) for v in obj)
+        elif isinstance(obj, RaggedTensor):
+            return {
+                "values": self.deep_clone(obj.values()),
+                "offsets": self.deep_clone(obj.offsets()),
+                "weight": self.deep_clone(obj.weight()),
+                "dense_shape": list(obj.shape),
+                "dtype": str(obj.dtype),
+                "device": str(obj.device),
+            }
+        else:
+            return obj
+
     def _get_hook(self, name: str):
         def hook(module, input, output):
             # 将这个模块的输出保存下来，用模块名作为 key
-            self.features[name] = output
+            if isinstance(output, torch.Tensor):
+                self.features[name] = output.detach().clone()
+            else:
+                self.features[name] = self.deep_clone(output)
 
         return hook
 
@@ -203,6 +264,8 @@ class FeatureExtractor:
         logger.info("--- 所有钩子已移除 ---")
 
     def tensor_to_json_list(self, tensor):
+        import numpy as np
+
         if isinstance(tensor, torch.Tensor):
             return tensor.detach().cpu().tolist()
 
@@ -211,10 +274,16 @@ class FeatureExtractor:
                 "values": self.tensor_to_json_list(tensor.values()),
                 "offsets": self.tensor_to_json_list(tensor.offsets()),
                 "weight": self.tensor_to_json_list(tensor.weight()),
-                "dense_shape": list(tensor.shape),  # 或 tensor._dense_shape
+                "dense_shape": list(tensor.shape),
                 "dtype": str(tensor.dtype),
                 "device": str(tensor.device),
             }
+
+        elif isinstance(tensor, np.ndarray):
+            return tensor.tolist()
+
+        elif isinstance(tensor, bytes):
+            return tensor.decode("utf-8", errors="ignore")
 
         elif isinstance(tensor, (list, tuple)):
             return [self.tensor_to_json_list(v) for v in tensor]
@@ -222,18 +291,52 @@ class FeatureExtractor:
         elif isinstance(tensor, dict):
             return {k: self.tensor_to_json_list(v) for k, v in tensor.items()}
 
+        elif isinstance(tensor, np.generic):
+            return tensor.item()
+
         else:
             return tensor
 
+    def flatten(self, final_model_output, final_features):
+        score_dict = None
+        if isinstance(final_model_output, list) and final_model_output:
+            for item in final_model_output:
+                if isinstance(item, dict):
+                    score_dict = item
+                    break
+        elif isinstance(final_model_output, dict):
+            score_dict = final_model_output
+
+        data = {}
+        if isinstance(score_dict, dict):
+            data.update(score_dict)
+
+        data.update(final_features)
+
+        return data
+
     def extract(self, *args, **kwargs):
-        """执行模型前向传播并返回最终输出和捕获的特征"""
-        # 在每次提取前清空之前的特征
+        need_flatten = kwargs.pop("need_flatten", False)
         self.features = {}
+        out = self.forward_func(*args, **kwargs)
 
-        # 执行模型的前向传播
-        model_output = self.forward_func(*args, **kwargs)
+        # 归一化 out -> (score, emb_or_none)
+        if isinstance(out, (tuple, list)):
+            if len(out) == 2:
+                score, emb = out
+            elif len(out) == 1:
+                (score,) = out
+                emb = None
+            else:
+                raise ValueError(
+                    "forward_func must return (score, emb) or (score,) or score"
+                )
+        else:
+            # 直接返回 score
+            score, emb = out, None
 
-        final_model_output = self.tensor_to_json_list(model_output)
+        score = self.tensor_to_json_list(score)
+        emb = None if emb is None else self.tensor_to_json_list(emb)
 
         final_features = {}
         for k, v in self.features.items():
@@ -243,6 +346,7 @@ class FeatureExtractor:
             else:
                 final_features[k] = self.tensor_to_json_list(v)
 
-        # 返回模型的原始输出和我们捕获的中间层特征
-        output = {"score": final_model_output, "embedding": final_features}
-        return output
+        if need_flatten:
+            return self.flatten(score, final_features)
+
+        return {"score": score, "embedding": final_features, "agg_embedding": emb}
