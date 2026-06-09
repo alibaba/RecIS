@@ -3,11 +3,13 @@ import os
 import time
 
 import torch
+import torch.distributed as dist
 
 from recis.framework.filesystem import get_file_system
 from recis.info import is_internal_enabled
 from recis.nn.modules.hashtable import filter_out_sparse_param
 from recis.serialize import Loader, Saver
+from recis.utils.logger import Logger
 from recis.utils.torch_fx_tool.ExportTorchFxTool import ExportTorchFxTool
 
 
@@ -19,7 +21,7 @@ else:
     PanguException = None
     Mos = None
 
-
+logger = Logger(__name__)
 TMP_EXPORT_LOCAL_PATH = "./__tmp_export_path__/"
 
 
@@ -73,6 +75,7 @@ class Exporter:
         mc_conf_or_path=None,
         filter_sparse_opt=False,
         add_subfolder=False,
+        need_export_sparse=True,
     ):
         """Initialize the model exporter with configuration parameters.
 
@@ -121,7 +124,8 @@ class Exporter:
 
         # add subfolder for export_dir
         if add_subfolder and not export_dir.endswith("data"):
-            current_time = time.strftime("%Y%m%d%H%M%S", time.localtime(time.time()))
+            current_time = time.strftime("%Y%m%d", time.localtime(time.time()))
+            current_time = current_time + "000000"
             export_dir = os.path.join(export_dir, current_time, "data")
 
         self.export_dir = export_dir
@@ -130,6 +134,7 @@ class Exporter:
         self.export_model_name = export_model_name
         self.export_outputs = export_outputs
         self.filter_sparse_opt = filter_sparse_opt
+        self.need_export_sparse = need_export_sparse
 
         assert fg is not None or fg_conf_or_path is not None, (
             "one of fg or fg_config must be not None"
@@ -177,7 +182,8 @@ class Exporter:
             File operations are automatically partitioned based on worker rank.
         """
         self.prepare_model()
-        self.export_sparse()
+        if self.need_export_sparse:
+            self.export_sparse()
         self.export_dense()
         self.export_meta()
 
@@ -210,9 +216,13 @@ class Exporter:
         state_dict = {
             k.replace(f"{self.dense_model_name}.", ""): v for k, v in state_dict.items()
         }
-        self.dense_model.load_state_dict(state_dict, strict=False)
+        incompatible_keys = self.dense_model.load_state_dict(state_dict, strict=False)
+        if incompatible_keys.missing_keys:
+            logger.warning("⚠️ Missing keys (not loaded from checkpoint):")
+            for key in incompatible_keys.missing_keys:
+                logger.warning(f"  - {key}")
         # maybe load sparse model
-        if self.filter_sparse_opt:
+        if self.need_export_sparse and self.filter_sparse_opt:
             sparse_params = filter_out_sparse_param(self.sparse_model)
             loader = Loader(self.ckpt_dir, hashtables=sparse_params, tensors={})
             loader.load()
@@ -240,6 +250,7 @@ class Exporter:
         if self.dense_optimizer:
             self.dense_optimizer.zero_grad()
         self.fx_tool.export_fx_model(self.dense_model, dense_data[0], self.mc_conf)
+        dist.barrier()
         if self.rank == 0:
             # copy local tmp dir to dst dir
             fs = get_file_system(self.export_dir)
