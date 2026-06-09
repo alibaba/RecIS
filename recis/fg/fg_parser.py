@@ -24,6 +24,7 @@ shared_name_key = "shared_name"
 feature_type_key = "feature_type"
 value_dim_key = "value_dimension"
 boundaries_key = "boundaries"
+mask_value_key = "mask_out"
 compress_strategy_key = "compress_strategy"
 combiner_key = "combiner"
 emb_dim_key = "embedding_dimension"
@@ -37,7 +38,7 @@ gen_key_type_key = "gen_key_type"
 gen_value_type_key = "gen_val_type"
 from_feature_key = "from_feature"
 
-HASH_TYPE_MAP = {"farmhash": "farm", "murmur": "murmur"}
+HASH_TYPE_MAP = {"farmhash": "farm", "murmur": "murmur", "ev_hash": "ev_farm"}
 VALUE_TYPE_MAP = {"string": torch.int8, "double": torch.float32, "integer": torch.int64}
 EMB_TYPE_MAP = {
     "float": torch.float32,
@@ -71,7 +72,7 @@ class IdTransformType(IntEnum):
     BUCKETIZE = 2
     HASH = 3
     MOD = 4
-    MASK = 5  # TODO(yuhuan.zh) not support
+    MASK = 5
     MULTIHASH = 6
     HASH_MULTIHASH = 7
     MOD_MULTIHASH = 8
@@ -142,6 +143,7 @@ class FGConf:
     embedding_dim: Optional[int] = None
     value_type: Optional[str] = None
     boundaries: Optional[List[float]] = None
+    mask_value: Optional[List[str]] = None
     compress_strategy: Optional[str] = None
     shared_name: Optional[str] = None
     from_feature: Optional[str] = None
@@ -194,6 +196,7 @@ class FeatureEmbConf:
     embedding_dim: Optional[int] = None
     dtype: Optional["torch.dtype"] = None
     boundaries: Optional[List[float]] = None
+    mask_value: Optional[List[str]] = None
     compress_strategy: Optional[str] = None
     shared_name: Optional[str] = None
     emb_device: Optional[str] = None
@@ -201,6 +204,7 @@ class FeatureEmbConf:
     trainable: bool = True
     admit_hook: Optional[Dict[str, str]] = None
     filter_hook: Optional[Dict[str, str]] = None
+    fill_seq: bool = False
 
 
 class FGParser:
@@ -240,6 +244,7 @@ class FGParser:
         hash_in_io=False,
         lower_case=False,
         devel_mode=False,
+        io_name_lower_case=False,
     ):
         """Initialize the FG Parser.
 
@@ -262,6 +267,7 @@ class FGParser:
         self.multihash_conf_ = {}
         self.fg_path = conf_file_path
         self.lower_case = lower_case
+        self.io_name_lower_case = io_name_lower_case
         self.fg_conf = self._init_fg(conf_file_path, lower_case)
         self.parsed_conf_ = self._parse_feature_conf()
         self.io_conf_ = self._init_io_conf()
@@ -476,6 +482,7 @@ class FGParser:
             FGConf: Parsed feature configuration object.
         """
         name = fea_conf[FEATURE_NAME_KEY]
+        raw_name = name
         if seq_len > 0:
             name = seq_prefix + "_" + name
         is_sparse = fea_conf[feature_type_key].lower() != "raw_feature"
@@ -484,9 +491,16 @@ class FGParser:
         # TODO(yuhuan.zh) maybe no need hash?
         need_hash = fea_conf[value_type_key].lower() == "string"
         hash_type = fea_conf.get(hash_type_key, "farmhash")
-        hash_type = HASH_TYPE_MAP[hash_type]
-        # TODO(yuhuan.zh) support change conflict to non-conf
         hash_bucket_size = fea_conf.get(hash_bucket_key, 0)
+        # deal with ev_hash
+        if gen_key_type == "ev_hash":
+            gen_key_type = "hash"
+            hash_type = "ev_hash"
+            hash_bucket_size = 0
+        if gen_key_type == "ev_hash_mod":
+            gen_key_type = "hash"
+            hash_type = "ev_hash"
+        hash_type = HASH_TYPE_MAP[hash_type]
         is_seq = seq_len > 0
         seq_length = seq_len
         value_dimension = fea_conf.get(value_dim_key, 1)
@@ -499,11 +513,13 @@ class FGParser:
             if boundaries is None
             else list(map(float, boundaries.split(",")))
         )
+        mask_value = str(fea_conf.get(mask_value_key, "0"))
+        mask_value = mask_value if mask_value is None else list(mask_value.split(";"))
         compress_strategy = fea_conf.get(compress_strategy_key, None)
         # add to multihash configs
         if compress_strategy is not None:
             self.multihash_conf_[name] = compress_strategy
-        shared_name = fea_conf.get(shared_name_key, name)
+        shared_name = fea_conf.get(shared_name_key, raw_name)
         _, from_feature = self._is_feature_copy(fea_conf)
         emb_device = fea_conf.get(emb_device_key, None)
         emb_type = fea_conf.get(emb_type_key, None)
@@ -525,6 +541,7 @@ class FGParser:
             embedding_dim=embedding_dim,
             value_type=value_type,
             boundaries=boundaries,
+            mask_value=mask_value,
             compress_strategy=compress_strategy,
             shared_name=shared_name,
             from_feature=from_feature,
@@ -593,12 +610,11 @@ class FGParser:
             else:
                 trans_t = IdTransformType.HASH
         elif fea_conf.gen_key_type == "mask":
-            # TODO(yuhuan.zh) support mask feature
-            if self.devel_mode:
-                trans_t = IdTransformType.RAW
-            else:
-                trans_t = IdTransformType.MASK
-                raise NotImplementedError("not support gen_key type: mask yet!")
+            if self.already_hashed or self.hash_in_io:
+                raise ValueError(
+                    "Not support gen_key_type mask, when already_hashed or hash_in_io is True"
+                )
+            trans_t = IdTransformType.MASK
         elif fea_conf.gen_key_type == "multihash":
             if self.already_hashed:
                 if fea_conf.hash_bucket_size > 0:
@@ -637,16 +653,18 @@ class FGParser:
             dim = None
             if self.already_hashed or self.hash_in_io:
                 dtype = torch.int64
-            # TODO(yuhuan.zh) support string input raw / mask feature
-            if fea_conf.gen_key_type in ["idle", "mask"]:
+            elif fea_conf.gen_key_type == "mask":
+                dim = fea_conf.value_dimension
+            # TODO(yuhuan.zh) support string input raw feature
+            if fea_conf.gen_key_type in ["idle"]:
                 dim = fea_conf.value_dimension
                 if self.devel_mode:
                     logger.warning(
-                        f"String type feature: {fea_conf} not support idle or mask yet, maybe get wrong value"
+                        f"String type feature: {fea_conf} not support idle yet, maybe get wrong value"
                     )
                 else:
                     raise NotImplementedError(
-                        f"String type feature: {fea_conf} not support idle or mask yet."
+                        f"String type feature: {fea_conf} not support idle yet."
                     )
         return dtype, dim
 
@@ -665,10 +683,15 @@ class FGParser:
             id_type = self._parse_id_type(fea_conf)
             emb_type = self._parse_emb_type(fea_conf)
             dtype, dim = self._parse_dtype_dim(fea_conf)
+            io_name = (
+                fea_conf.name
+                if fea_conf.from_feature is None
+                else fea_conf.from_feature
+            )
+            io_name = io_name.lower() if self.io_name_lower_case else io_name
+            is_float = dtype in (torch.float32, torch.float64)
             ec = FeatureEmbConf(
-                io_name=fea_conf.from_feature
-                if fea_conf.from_feature is not None
-                else fea_conf.name,
+                io_name=io_name,
                 out_name=fea_conf.name,
                 id_transform_type=id_type,
                 emb_transform_type=emb_type,
@@ -678,6 +701,7 @@ class FGParser:
                 hash_bucket_size=fea_conf.hash_bucket_size,
                 hash_type=fea_conf.hash_type,
                 boundaries=fea_conf.boundaries,
+                mask_value=fea_conf.mask_value,
                 compress_strategy=fea_conf.compress_strategy,
                 combiner=fea_conf.combiner,
                 seq_length=fea_conf.seq_length,
@@ -689,6 +713,7 @@ class FGParser:
                 trainable=fea_conf.trainable,
                 admit_hook=fea_conf.admit_hook,
                 filter_hook=fea_conf.filter_hook,
+                fill_seq=(fea_conf.seq_length > 0 and is_float),
             )
             emb_conf[fea_conf.name] = ec
         return emb_conf
@@ -710,8 +735,12 @@ class FGParser:
                 if fea_conf.from_feature is None
                 else fea_conf.from_feature
             )
+            real_name = real_name.lower() if self.io_name_lower_case else real_name
             varlen = self._is_io_sparse(fea_conf)
             hash_type, trans_int, hash_bucket = self._get_io_hash_args(fea_conf)
+            dtype, _ = self._parse_dtype_dim(fea_conf)
+            is_float = dtype in (torch.float32, torch.float64)
+            seq_length = fea_conf.seq_length if fea_conf.seq_length else None
             fc = FeatureIOConf(
                 name=real_name,
                 varlen=varlen,
@@ -719,6 +748,8 @@ class FGParser:
                 hash_bucket_size=hash_bucket,
                 trans_int=trans_int,
                 dim=fea_conf.value_dimension,
+                seq_length=seq_length,
+                fill_seq=(seq_length is not None and is_float),
             )
             io_conf[real_name] = fc
         return io_conf

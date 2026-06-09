@@ -396,12 +396,16 @@ class RuntimeGroupFeature:
             else:
                 shape = input_tensor.real_shape(0, -1) + (dim,)
         elif isinstance(input_tensor, torch.Tensor):
+            if input_tensor.dim() > 2:
+                input_tensor_tmp = input_tensor.view(-1, input_tensor.shape[-1])
+            else:
+                input_tensor_tmp = input_tensor
             if input_tensor.is_sparse:
                 raise TypeError("EmbeddingEngine doesn't support sparse ids")
             val = input_tensor.view(-1)
             weight = None
-            bs = input_tensor.shape[0]
-            fea_dim = input_tensor.shape[1]
+            bs = input_tensor_tmp.shape[0]
+            fea_dim = input_tensor_tmp.shape[1]
             offsets = torch.arange(
                 0,
                 (bs + 1) * fea_dim,
@@ -702,7 +706,7 @@ class EmbeddingEngine(nn.Module):
         """
         outs = {}
         for k, v in ori_outs.items():
-            if isinstance(v, RaggedTensor):
+            if isinstance(v, RaggedTensor) and (not v._values.dtype == torch.int8):
                 outs[k] = v.to_dense()
             elif isinstance(v, torch.Tensor):
                 if v.is_sparse:

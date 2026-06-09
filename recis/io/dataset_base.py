@@ -50,8 +50,46 @@ def _convert_ragged_to_sparse():
     return _wrapper_
 
 
-def _convert_raw_to_ragged(dense_column, dtype, compress=True):
-    # TODO(yzs): change this doc
+def _fill_seq_features(batch_list, seq_fill_features):
+    """Pad or truncate sequence features to a fixed length.
+
+    For each feature in ``seq_fill_features``, converts the dense tensor to a
+    fixed-length representation by truncating or zero-padding along the
+    sequence dimension (dim=-2).
+
+    Args:
+        batch_list (List[dict]): List of batch dictionaries to process in-place.
+        seq_fill_features (dict): Mapping of feature name to target sequence length.
+    """
+    for table_batch in batch_list:
+        for feature_name, seq_len in seq_fill_features.items():
+            if feature_name not in table_batch:
+                continue
+            fea = table_batch[feature_name]
+            if (
+                (not isinstance(fea, RaggedTensor))
+                or (not len(fea._dense_shape) == 3)
+                or (fea.values().dtype not in (torch.float32, torch.float64))
+            ):
+                raise ValueError(
+                    f"feature [{feature_name}] not support fill sequence, shape: {fea._dense_shape}, dtype: {fea.values().dtype}, feature: {fea}"
+                )
+            ori_shape = list(fea._dense_shape)
+            fea = fea.to_dense()
+            if fea.numel() == 0:
+                new_shape = ori_shape
+                new_shape[1] = seq_len
+                new_shape[-1] = 1
+                fea = torch.zeros(new_shape, dtype=fea.dtype, device=fea.device)
+            if fea.shape[1] >= seq_len:
+                fea = fea[:, :seq_len, :]
+            else:
+                pad_size = seq_len - fea.shape[1]
+                fea = torch.nn.functional.pad(fea, (0, 0, 0, pad_size), "constant", 0)
+            table_batch[feature_name] = fea
+
+
+def _convert_raw_to_ragged(dense_column, dtype, compress=True, seq_fill_features=None):
     """Creates a batch conversion function for processing raw data into PyTorch tensors.
 
     This function returns a wrapper that converts raw batch data from the column IO
@@ -60,15 +98,13 @@ def _convert_raw_to_ragged(dense_column, dtype, compress=True):
 
     Args:
         dense_column (List[str]): List of column names that should be treated as dense tensors.
-        ragged_format (bool): Whether to use RaggedTensor format for variable-length data.
         dtype (torch.dtype): Target data type for floating-point tensors.
+        compress (bool): Whether compression is enabled. Defaults to True.
+        seq_fill_features (dict, optional): Mapping of feature name to target sequence
+            length. Features listed here will be padded/truncated to the given length.
 
     Returns:
         callable: A wrapper function that processes raw batch data.
-
-    Example:
-        >>> converter = _batch_convert(["age", "score"], True, torch.float32)
-        >>> processed_batch = converter(raw_input_data)
     """
 
     def _wrapper_(input_data):
@@ -133,6 +169,8 @@ def _convert_raw_to_ragged(dense_column, dtype, compress=True):
                             weight=w_values,
                             dense_shape=dense_shape,
                         )
+        if seq_fill_features:
+            _fill_seq_features(batch_list, seq_fill_features)
         return batch_list
 
     return _wrapper_
@@ -256,6 +294,7 @@ class DatasetBase(IterableDataset):
         self._transform_ragged_batch_funcs = []
         self._filter_funcs = []
 
+        self._seq_fill_features = {}
         self._save_interval = save_interval
         self._local_step = 0
         self._load_states = None
@@ -335,16 +374,22 @@ class DatasetBase(IterableDataset):
                 self.hash_buckets.append(hash_bucket)
                 self.hash_types.append("no_hash")
 
-    def fixedlen_feature(self, name, default_value):
+    def fixedlen_feature(self, name, default_value, seq_length=None):
         """Defines a fixed-length feature column with default values.
 
         Fixed-length features are columns that have a consistent shape across all samples.
         Default values are used when the feature is missing or incomplete in the data.
 
+        When ``seq_length`` is specified, the feature is treated as a sequence feature
+        that should be padded or truncated to the given length in the IO layer.
+
         Args:
             name (str): Name of the feature column.
             default_value (List): Default value(s) to use when the feature is missing.
                 Should be a list even for scalar values.
+            seq_length (int, optional): Target sequence length for padding/truncation.
+                If not None, the feature will be padded with zeros or truncated
+                to this length along the sequence dimension. Defaults to None.
 
         Example:
 
@@ -353,15 +398,22 @@ class DatasetBase(IterableDataset):
             dataset.fixedlen_feature("age", default_value=[25.0])
             dataset.fixedlen_feature("gender", default_value=[0])
             dataset.fixedlen_feature("embedding", default_value=[0.0] * 128)
+            dataset.fixedlen_feature(
+                "click_seq_price", default_value=[0.0], seq_length=50
+            )
 
         """
-        if name not in self._select_column:
-            self._select_column.append(name)
-        if name not in self._dense_column:
-            self._dense_column.append(name)
-            self._dense_default_value.append(default_value)
+        if seq_length is not None:
+            self._seq_fill_features[name] = seq_length
+            self.varlen_feature(name)
+        else:
+            if name not in self._select_column:
+                self._select_column.append(name)
+            if name not in self._dense_column:
+                self._dense_column.append(name)
+                self._dense_default_value.append(default_value)
 
-    def parse_from(self, io_confs):
+    def parse_from(self, io_confs, fill_seq=False):
         """Parse and configure features from a collection of I/O configuration objects.
 
         This method processes a collection of FeatureIOConf objects and automatically
@@ -369,18 +421,29 @@ class DatasetBase(IterableDataset):
         whether each feature should be treated as variable-length (sparse) or fixed-length
         (dense) based on the configuration and applies the corresponding setup.
 
-        The method serves as a bridge between the feature configuration system and
-        the dataset's feature registration methods, enabling batch configuration of
-        multiple features from structured configuration objects.
+        When ``fill_seq`` is True, features marked with ``fill_seq=True`` in their
+        configuration will be registered as fixed-length features with sequence
+        padding/truncation handled in the IO layer.
 
         Args:
             io_confs (Iterable[FeatureIOConf]): Collection of feature I/O configuration
                 objects. Each configuration object should contain the feature name,
                 format type (varlen/fixedlen), and associated parameters such as
                 hashing settings, dimensions, and data types.
+            fill_seq (bool): Whether to enable IO-layer sequence filling for
+                float-type sequence features. Defaults to False.
         """
         for conf in io_confs:
-            if conf.varlen:
+            if fill_seq and conf.fill_seq and conf.seq_length is not None:
+                self.fixedlen_feature(
+                    conf.name,
+                    default_value=[0.0] * conf.dim,
+                    seq_length=conf.seq_length,
+                )
+                logger.info(
+                    f"add fixlen fea (fill_seq): {conf.name}, seq_length={conf.seq_length}"
+                )
+            elif conf.varlen:
                 self.varlen_feature(
                     name=conf.name,
                     hash_type=conf.hash_type,
@@ -649,7 +712,12 @@ class DatasetBase(IterableDataset):
         self._dataset = self._create_state_dataset(self._dataset, sub_id, sub_num)
         self._state_dataset_flush_handle = self._dataset
         map_funcs = [
-            _convert_raw_to_ragged(self._dense_column, self._dtype, self._is_compressed)
+            _convert_raw_to_ragged(
+                self._dense_column,
+                self._dtype,
+                self._is_compressed,
+                seq_fill_features=self._seq_fill_features or None,
+            )
         ] + self._transform_ragged_batch_funcs
         if not self._ragged_format:
             map_funcs.append(_convert_ragged_to_sparse())

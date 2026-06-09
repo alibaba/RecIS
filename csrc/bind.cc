@@ -26,6 +26,7 @@
 #include "ops/feature_cross_ragged.h"
 #include "ops/fused_bucketized.h"
 #include "ops/fused_hash.h"
+#include "ops/fused_mask_op.h"
 #include "ops/fused_ragged_cutoff.h"
 #include "ops/fused_uint64_mod.h"
 #include "ops/gather_ragged_by_padded_index.h"
@@ -316,6 +317,8 @@ TORCH_LIBRARY(recis, m) {
         recis::functional::fused_int64_to_string_int8);
   m.def("gather_ragged_by_padded_index",
         recis::functional::gather_ragged_by_padded_index);
+  m.def("fused_string_mask", recis::functional::fused_string_mask);
+  m.def("fused_number_mask", recis::functional::fused_number_mask);
 
   m.class_<recis::monitor::Client>("MonitorClient")
       .def(torch::init([](const std::string& name) {

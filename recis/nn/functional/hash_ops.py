@@ -50,6 +50,10 @@ def farmhash(inputs, splits):
     return torch.ops.recis.fused_hash(inputs, splits, "farm")
 
 
+def ev_farmhash(inputs, splits):
+    return torch.ops.recis.fused_hash(inputs, splits, "ev_farm")
+
+
 def murmurhash(inputs, splits):
     """Apply MurmurHash algorithm to multiple input tensors.
 

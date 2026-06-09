@@ -133,6 +133,8 @@ namespace farmhash {
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+static const int64_t kint64max = ((int64_t)0x7FFFFFFFFFFFFFFFll);
+
 template <typename T1, typename T2>
 struct pair {
   T1 first;
@@ -379,6 +381,18 @@ struct FarmhashFactory {
   }
 };
 
+template <typename scalar_t>
+struct EVFarmhashFactory {
+  __device__ int64_t operator()(scalar_t* offsets, int8_t* inputs,
+                                int64_t index) {
+    scalar_t offset = offsets[index];
+    scalar_t len = offsets[index + 1] - offset;
+    char* s = reinterpret_cast<char*>(inputs + offset);
+    auto farm_result = Fingerprint64(s, len);
+    return farm_result & kint64max;
+  }
+};
+
 }  // namespace farmhash
 
 namespace djb2hash {
@@ -491,6 +505,10 @@ void fused_hash_cuda(const std::vector<torch::Tensor>& inputs,
           fused_hash_launcher(d_inputs_ptrs, d_input_offsets_ptrs,
                               d_outputs_ptrs, sizes.data(), N,
                               farmhash::FarmhashFactory<scalar_t>(), stream);
+        } else if (hash_type == "ev_farm") {
+          fused_hash_launcher(d_inputs_ptrs, d_input_offsets_ptrs,
+                              d_outputs_ptrs, sizes.data(), N,
+                              farmhash::EVFarmhashFactory<scalar_t>(), stream);
         } else if (hash_type == "murmur") {
           fused_hash_launcher(
               d_inputs_ptrs, d_input_offsets_ptrs, d_outputs_ptrs, sizes.data(),

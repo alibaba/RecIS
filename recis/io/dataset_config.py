@@ -43,3 +43,5 @@ class FeatureIOConf:
     hash_bucket_size: int = 0
     trans_int: bool = False
     dim: int = 1
+    seq_length: Optional[int] = None
+    fill_seq: bool = False

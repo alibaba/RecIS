@@ -202,3 +202,127 @@ def fused_int64_to_string_int8(
         )
 
     return torch.ops.recis.fused_int64_to_string_int8(inputs)
+
+
+def fused_string_mask(
+    inputs: List[torch.Tensor],
+    input_offsets: List[torch.Tensor],
+    masks: List[List[str]],
+) -> List[torch.Tensor]:
+    """Fused operation to check if int8-encoded strings match any mask string.
+
+    For each input tensor (which stores multiple strings as concatenated int8 bytes),
+    this function checks whether each string (delimited by offsets) exactly matches
+    any string in the corresponding mask list. If matched, the output is 0.0;
+    otherwise, the output is 1.0.
+
+    Args:
+        inputs (List[torch.Tensor]): List of 1D int8 tensors, each containing
+            concatenated string bytes. Must be on CUDA.
+        input_offsets (List[torch.Tensor]): List of 1D integer tensors indicating
+            the start/end positions of each string within the corresponding input tensor.
+            Each offset tensor has length `num_strings + 1`.
+        masks (List[List[str]]): List of mask string lists. `masks[i]` contains
+            the set of strings to match against for `inputs[i]`.
+
+    Returns:
+        List[torch.Tensor]: List of 1D float32 tensors. For each string position:
+            - **0.0** if the string matches any mask string.
+            - **1.0** if the string does not match any mask string.
+
+    Raises:
+        AssertionError: If inputs are not int8, not 1D, or not on CUDA.
+
+    Example:
+        >>> # "abc" = [97, 98, 99], "de" = [100, 101]
+        >>> inputs = [
+        ...     torch.tensor([97, 98, 99, 100, 101], dtype=torch.int8, device="cuda")
+        ... ]
+        >>> input_offsets = [torch.tensor([0, 3, 5], dtype=torch.int64, device="cuda")]
+        >>> masks = [["abc"]]
+        >>> result = fused_string_mask(inputs, input_offsets, masks)
+        >>> # result[0]: tensor([0.0, 1.0])  # "abc" matched, "de" not matched
+    """
+    assert isinstance(inputs, list) and len(inputs) > 0, (
+        "inputs must be a non-empty list"
+    )
+    assert len(inputs) == len(input_offsets) == len(masks), (
+        "inputs, input_offsets, and masks must have the same length"
+    )
+
+    _check_device_all(inputs, "cuda")
+    _check_dtype_all(inputs, torch.int8)
+
+    for i, input_tensor in enumerate(inputs):
+        assert input_tensor.dim() == 1, (
+            f"All inputs must be 1-dimensional, but inputs[{i}] is {input_tensor.dim()}D"
+        )
+
+    return torch.ops.recis.fused_string_mask(inputs, input_offsets, masks)
+
+
+def fused_number_mask(
+    inputs: List[torch.Tensor],
+    masks: List[List[float]],
+) -> List[torch.Tensor]:
+    """Fused operation to check if numeric values match any mask value.
+
+    For each input tensor, this function checks whether each value exactly matches
+    any value in the corresponding mask list. If matched, the output is 0.0;
+    otherwise, the output is 1.0.
+
+    Args:
+        inputs (List[torch.Tensor]): List of 1D numeric tensors. Supported dtypes:
+            torch.float32, torch.float64, torch.int32, torch.int64.
+            All tensors must be on CUDA.
+        masks (List[List[float]]): List of mask value lists. `masks[i]` contains
+            the set of values to match against for `inputs[i]`. Values should be
+            provided as floats (integers will be compared after float conversion).
+
+    Returns:
+        List[torch.Tensor]: List of 1D float32 tensors. For each value position:
+            - **0.0** if the value matches any mask value.
+            - **1.0** if the value does not match any mask value.
+
+    Raises:
+        AssertionError: If inputs are not 1D, not supported dtype, or not on CUDA.
+
+    Example:
+        >>> inputs = [
+        >>>     torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32, device='cuda'),
+        >>>     torch.tensor([10, 20, 30], dtype=torch.int64, device='cuda')
+        >>> ]
+        >>> masks = [[1.0, 3.0], [20.0]]
+        >>> result = fused_number_mask(inputs, masks)
+        >>> # result[0]: tensor([0.0, 1.0, 0.0])  # 1.0 and 3.0 matched
+        >>> # result[1]: tensor([1.0, 0.0, 1.0])  # 20 matched
+    """
+    assert isinstance(inputs, list) and len(inputs) > 0, (
+        "inputs must be a non-empty list"
+    )
+    assert len(inputs) == len(masks), "inputs and masks must have the same length"
+
+    _check_device_all(inputs, "cuda")
+
+    supported_dtypes = {torch.float32, torch.float64, torch.int32, torch.int64}
+    one_dtype = inputs[0].dtype
+    assert one_dtype in supported_dtypes, (
+        f"inputs[0] has unsupported dtype {one_dtype}, "
+        f"supported: float32, float64, int32, int64"
+    )
+    _check_dtype_all(inputs, one_dtype)
+
+    input_shapes = []
+    format_inputs = []
+    for inp in inputs:
+        input_shapes.append(inp.shape)
+        format_inputs.append(inp.view(-1))
+    for i, input_tensor in enumerate(format_inputs):
+        assert input_tensor.dim() == 1, (
+            f"All inputs must be 1-dimensional, but inputs[{i}] is {input_tensor.dim()}D"
+        )
+    outputs = torch.ops.recis.fused_number_mask(format_inputs, masks)
+    format_out = []
+    for i, out in enumerate(outputs):
+        format_out.append(out.view(input_shapes[i]))
+    return format_out

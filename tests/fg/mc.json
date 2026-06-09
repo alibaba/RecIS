@@ -10,13 +10,6 @@
   "attention_user": [
     "usersex_d"
   ],
-  "predict_features": [
-    "queryseg_norm_d_raw",
-    "uid_raw"
-  ],
-  "raw_longpay_seq_item_id_d": [
-    "longpay_seq_item_id_d_raw"
-  ],
   "longpay_seq": [
     "item_id_d",
     "pricerank"

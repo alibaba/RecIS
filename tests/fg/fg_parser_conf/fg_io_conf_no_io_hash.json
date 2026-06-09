@@ -1,119 +1,112 @@
 {
-  "s_nid_pv30_c2c":
-  {
-    "name": "s_nid_pv30_c2c",
-    "varlen": false,
-    "hash_type": null,
-    "hash_bucket_size": 0,
-    "trans_int": false,
-    "dim": 1
-  },
-  "s_nid_ipv30_c2c":
-  {
-    "name": "s_nid_ipv30_c2c",
-    "varlen": false,
-    "hash_type": null,
-    "hash_bucket_size": 0,
-    "trans_int": false,
-    "dim": 1
-  },
-  "usersex_d":
-  {
-    "name": "usersex_d",
-    "varlen": true,
-    "hash_type": null,
-    "hash_bucket_size": 0,
-    "trans_int": true,
-    "dim": 1
-  },
-  "usersex_d_multihash":
-  {
-    "name": "usersex_d_multihash",
-    "varlen": true,
-    "hash_type": null,
-    "hash_bucket_size": 0,
-    "trans_int": true,
-    "dim": 1
-  },
-  "queryseg_norm_d":
-  {
-    "name": "queryseg_norm_d",
-    "varlen": true,
-    "hash_type": null,
-    "hash_bucket_size": 0,
-    "trans_int": true,
-    "dim": 1
-  },
-  "uid":
-  {
-    "name": "uid",
-    "varlen": true,
-    "hash_type": null,
-    "hash_bucket_size": 0,
-    "trans_int": true,
-    "dim": 1
-  },
-  "longpay_seq_item_id_d":
-  {
-    "name": "longpay_seq_item_id_d",
-    "varlen": true,
-    "hash_type": null,
-    "hash_bucket_size": 0,
-    "trans_int": true,
-    "dim": 1
-  },
-  "longpay_seq_pricerank":
-  {
-    "name": "longpay_seq_pricerank",
-    "varlen": true,
-    "hash_type": null,
-    "hash_bucket_size": 0,
-    "trans_int": false,
-    "dim": 1
-  },
-  "longpay_seq_lp_cnt":
-  {
-    "name": "longpay_seq_lp_cnt",
-    "varlen": true,
-    "hash_type": null,
-    "hash_bucket_size": 0,
-    "trans_int": false,
-    "dim": 1
-  },
-  "longpay_seq_lp_time":
-  {
-    "name": "longpay_seq_lp_time",
-    "varlen": true,
-    "hash_type": null,
-    "hash_bucket_size": 0,
-    "trans_int": false,
-    "dim": 1
-  },
-  "longpay_seq_length":
-  {
-    "name": "longpay_seq_length",
-    "varlen": false,
-    "hash_type": null,
-    "hash_bucket_size": 0,
-    "trans_int": false,
-    "dim": 1
-  },
-  "multimodal_correl_score_v2":
-  {
-    "name": "multimodal_correl_score_v2",
-    "varlen": false,
-    "hash_type": null,
-    "hash_bucket_size": 0,
-    "trans_int": false,
-    "dim": 50
-  },
-  "item_candidate_seq_item_id":
-  {
-    "name": "item_candidate_seq_item_id",
-    "varlen": true,
-    "hash_type": null,
-    "hash_bucket_size": 0,
-    "trans_int": false,
-    "dim": 1
-  }
+    "s_nid_pv30_c2c": {
+        "name": "s_nid_pv30_c2c",
+        "varlen": false,
+        "hash_type": null,
+        "hash_bucket_size": 0,
+        "trans_int": false,
+        "dim": 1,
+        "seq_length": null,
+        "fill_seq": false
+    },
+    "s_nid_ipv30_c2c": {
+        "name": "s_nid_ipv30_c2c",
+        "varlen": false,
+        "hash_type": null,
+        "hash_bucket_size": 0,
+        "trans_int": false,
+        "dim": 1,
+        "seq_length": null,
+        "fill_seq": false
+    },
+    "usersex_d": {
+        "name": "usersex_d",
+        "varlen": true,
+        "hash_type": null,
+        "hash_bucket_size": 0,
+        "trans_int": true,
+        "dim": 1,
+        "seq_length": null,
+        "fill_seq": false
+    },
+    "usersex_d_multihash": {
+        "name": "usersex_d_multihash",
+        "varlen": true,
+        "hash_type": null,
+        "hash_bucket_size": 0,
+        "trans_int": true,
+        "dim": 1,
+        "seq_length": null,
+        "fill_seq": false
+    },
+    "longpay_seq_item_id_d": {
+        "name": "longpay_seq_item_id_d",
+        "varlen": true,
+        "hash_type": null,
+        "hash_bucket_size": 0,
+        "trans_int": true,
+        "dim": 1,
+        "seq_length": 200,
+        "fill_seq": false
+    },
+    "longpay_seq_pricerank": {
+        "name": "longpay_seq_pricerank",
+        "varlen": true,
+        "hash_type": null,
+        "hash_bucket_size": 0,
+        "trans_int": false,
+        "dim": 1,
+        "seq_length": 200,
+        "fill_seq": true
+    },
+    "longpay_seq_lp_cnt": {
+        "name": "longpay_seq_lp_cnt",
+        "varlen": true,
+        "hash_type": null,
+        "hash_bucket_size": 0,
+        "trans_int": false,
+        "dim": 1,
+        "seq_length": 200,
+        "fill_seq": true
+    },
+    "longpay_seq_lp_time": {
+        "name": "longpay_seq_lp_time",
+        "varlen": true,
+        "hash_type": null,
+        "hash_bucket_size": 0,
+        "trans_int": false,
+        "dim": 1,
+        "seq_length": 200,
+        "fill_seq": true
+    },
+    "longpay_seq_length": {
+        "name": "longpay_seq_length",
+        "varlen": false,
+        "hash_type": null,
+        "hash_bucket_size": 0,
+        "trans_int": false,
+        "dim": 1,
+        "seq_length": null,
+        "fill_seq": false
+    },
+    "multimodal_correl_score_v2": {
+        "name": "multimodal_correl_score_v2",
+        "varlen": false,
+        "hash_type": null,
+        "hash_bucket_size": 0,
+        "trans_int": false,
+        "dim": 50,
+        "seq_length": null,
+        "fill_seq": false
+    },
+    "item_candidate_seq_item_id": {
+        "name": "item_candidate_seq_item_id",
+        "varlen": true,
+        "hash_type": null,
+        "hash_bucket_size": 0,
+        "trans_int": false,
+        "dim": 1,
+        "seq_length": 2000,
+        "fill_seq": false
+    }
 }

@@ -7,6 +7,7 @@ from recis.features.op import (
     Bucketize,
     Hash,
     IDMultiHash,
+    Mask,
     Mod,
     SelectField,
     SequenceTruncate,
@@ -92,6 +93,7 @@ class FG:
         emb_default_class="hash_table",
         emb_default_device="cuda",
         emb_default_type=torch.float32,
+        fill_seq=False,
     ):
         """Initialize the Feature Generator.
 
@@ -141,6 +143,7 @@ class FG:
         if init_kwargs is None:
             init_kwargs = INITIALIZER_DEFAULT_KWARGS[initializer]
         self.init_kwargs = init_kwargs
+        self._fill_seq = fill_seq
         self._labels = dict()
         self._ids = set()
 
@@ -366,7 +369,7 @@ class FG:
         Args:
             dataset (DatasetBase): Dataset to configure with features.
         """
-        dataset.parse_from(self.fg_parser.io_configs.values())
+        dataset.parse_from(self.fg_parser.io_configs.values(), fill_seq=self._fill_seq)
         for label_name, label_conf in self._labels.items():
             dataset.fixedlen_feature(
                 label_name, default_value=[label_conf[1]] * label_conf[0]
@@ -471,7 +474,7 @@ class FG:
         feature_confs = []
         for conf in self.fg_parser.emb_configs.values():
             fea_conf = Feature(conf.out_name).add_op(
-                SelectField(conf.io_name, dim=conf.raw_dim)
+                SelectField(conf.io_name.lower(), dim=conf.raw_dim)
             )
             dtype = conf.dtype
             if conf.id_transform_type in [
@@ -495,9 +498,12 @@ class FG:
                 IdTransformType.MOD_MULTIHASH,
             ]:
                 fea_conf = fea_conf.add_op(Mod(conf.hash_bucket_size))
+            elif conf.id_transform_type == IdTransformType.MASK:
+                fea_conf = fea_conf.add_op(Mask(conf.mask_value, dtype=dtype))
+                dtype = torch.float32
             else:
                 raise RuntimeError(f"Not support transform config: {conf}")
-            if conf.seq_length:
+            if conf.seq_length and not (self._fill_seq and conf.fill_seq):
                 fea_conf = fea_conf.add_op(
                     SequenceTruncate(
                         seq_len=conf.seq_length,
@@ -539,6 +545,8 @@ def build_fg(
     already_hashed=False,
     hash_in_io=False,
     devel_mode=False,
+    io_name_lower_case=False,
+    fill_seq=False,
     **kwargs,
 ):
     """Build a complete Feature Generator with all necessary components.
@@ -609,8 +617,9 @@ def build_fg(
         already_hashed=already_hashed,
         hash_in_io=hash_in_io,
         lower_case=lower_case,
+        io_name_lower_case=io_name_lower_case,
         devel_mode=devel_mode,
     )
     shape_manager = shape_manager_class(fg_parser)
-    fg = fg_class(fg_parser, shape_manager, **kwargs)
+    fg = fg_class(fg_parser, shape_manager, fill_seq=fill_seq, **kwargs)
     return fg

@@ -40,34 +40,6 @@
       "gen_val_type": "lookup"
     },
     {
-      "feature_name": "uid_raw",
-      "feature_type": "id_feature",
-      "from_feature": "uid",
-      "value_type": "String",
-      "expression": "user:user_id",
-      "hash_bucket_size": 200000000,
-      "embedding_dimension": 16,
-      "column_type": "share_emb",
-      "shared_name": "uid",
-      "need_prefix": false,
-      "gen_key_type": "idle",
-      "gen_val_type": "idle"
-    },
-    {
-      "feature_name": "queryseg_norm_d_raw",
-      "feature_type": "id_feature",
-      "from_feature": "queryseg_norm_d",
-      "value_type": "String",
-      "expression": "user:queryseg_norm_encode",
-      "hash_bucket_size": 100000000,
-      "embedding_dimension": 64,
-      "column_type": "share_emb",
-      "shared_name": "queryseg_norm_d",
-      "need_prefix": false,
-      "gen_key_type": "idle",
-      "gen_val_type": "idle"
-    },
-    {
       "feature_name": "is_new_item",
       "shared_name": "is_new_item",
       "feature_type": "id_feature",

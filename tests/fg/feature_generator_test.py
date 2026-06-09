@@ -13,9 +13,13 @@ class TestFG(unittest.TestCase):
     def setUp(self):
         mc_file_name = os.path.join(os.path.split(__file__)[0], "./mc.json")
         self.mc_parser = MCParser(mc_config_path=mc_file_name, lower_case=True)
+        with open(mc_file_name) as f:
+            mc_conf = json.load(f)
+        mc_conf["raw_longpay_seq_item_id_d"] = ["longpay_seq_item_id_d_raw"]
+        self.mc_parser_mask = MCParser(mc_config=mc_conf, lower_case=True)
         fg_file_name = os.path.join(os.path.split(__file__)[0], "./fg.json")
         self.fg_parser_no_io_hash = FGParser(
-            fg_file_name, self.mc_parser, lower_case=True, devel_mode=True
+            fg_file_name, self.mc_parser_mask, lower_case=True
         )
         self.shape_manager_no_io_hash = ShapeManager(self.fg_parser_no_io_hash)
 
@@ -23,7 +27,6 @@ class TestFG(unittest.TestCase):
             fg_file_name,
             self.mc_parser,
             lower_case=True,
-            devel_mode=True,
             hash_in_io=True,
         )
         self.shape_manager_io_hash = ShapeManager(self.fg_parser_io_hash)
@@ -32,7 +35,6 @@ class TestFG(unittest.TestCase):
             fg_file_name,
             self.mc_parser,
             lower_case=True,
-            devel_mode=True,
             hash_in_io=False,
             already_hashed=True,
         )
@@ -41,7 +43,7 @@ class TestFG(unittest.TestCase):
     def test_feature_blocks(self):
         # same as mc parser
         fg = FG(self.fg_parser_no_io_hash, self.shape_manager_no_io_hash)
-        self.assertTrue(fg.feature_blocks == self.mc_parser.feature_blocks)
+        self.assertTrue(fg.feature_blocks == self.mc_parser_mask.feature_blocks)
 
     def test_block_seq_len(self):
         # like fg parser

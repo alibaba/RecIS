@@ -8,9 +8,17 @@ from recis.nn.functional.fused_ops import (
     fused_bucketize_gpu,
     fused_int64_to_string_int8,
     fused_multi_hash,
+    fused_number_mask,
+    fused_string_mask,
     fused_uint64_mod_gpu,
 )
-from recis.nn.functional.hash_ops import djb2hash, farmhash, murmurhash, sdbmhash
+from recis.nn.functional.hash_ops import (
+    djb2hash,
+    ev_farmhash,
+    farmhash,
+    murmurhash,
+    sdbmhash,
+)
 from recis.nn.functional.ragged_ops import (
     fused_ragged_cutoff_2D,
     fused_ragged_cutoff_3D,
@@ -23,6 +31,7 @@ from .op import (
     DataValueProcessor,
     Hash,
     IDMultiHash,
+    Mask,
     Mod,
     SequenceTruncate,
     StringMultiHash,
@@ -236,6 +245,7 @@ class FusedHashOP(_FusedOP):
             assert isinstance(op, Hash)
         self._hash_func = {
             "farm": farmhash,
+            "ev_farm": ev_farmhash,
             "murmur": murmurhash,
         }
         self._precompute_grouping()
@@ -420,7 +430,6 @@ class FusedCutoffOP(_FusedOP):
                             drop_nums[j], pad_nums[j], drop_sides[j], pad_sides[j]
                         )
                     )
-                # TODO: set pad info for 3D
         return outputs
 
 
@@ -685,6 +694,139 @@ class FusedStringMultiHashOP(_FusedOP):
         return outputs
 
 
+class FusedMaskOP(_FusedOP):
+    """Fused implementation for mask operations.
+
+    This class batches multiple Mask operations together, grouping by dtype
+    and processing each group in a single fused kernel call for improved performance.
+
+    Supports:
+    - String mask (dtype="string"): For int8-encoded string data
+    - Number mask (dtype=torch.float32/float64/int32/int64): For numeric data
+
+    Attributes:
+        _groups (defaultdict): Grouping of operations by dtype.
+        _group_params (dict): Parameters for each operation group.
+    """
+
+    def __init__(self, ops: Optional[List[Mask]] = None):
+        """Initialize the fused mask operation.
+
+        Args:
+            ops (Optional[List[Mask]]): Initial list of mask operations.
+        """
+        super().__init__()
+        self._ops = ops if ops else []
+        for op in self._ops:
+            assert isinstance(op, Mask)
+        self._precompute_groups_and_params()
+
+    def _precompute_groups_and_params(self):
+        """Precompute grouping and parameters for all operations."""
+        self._groups = defaultdict(list)
+        self._group_params = {}
+
+        for i, op in enumerate(self._ops):
+            group_key = op.dtype
+            self._groups[group_key].append(
+                {
+                    "op": op,
+                    "index": i,
+                    "masks": op.masks,
+                }
+            )
+
+        for group_key, group_items in self._groups.items():
+            masks_list = [item["masks"] for item in group_items]
+            self._group_params[group_key] = {
+                "masks_list": masks_list,
+                "items": group_items,
+            }
+
+    def add_op(self, op: Mask):
+        """Add a Mask operation to the fused batch.
+
+        Args:
+            op (Mask): The mask operation to add.
+        """
+        super().add_op(op)
+        self._precompute_groups_and_params()
+
+    def process(self, inputs: List):
+        """Process inputs using fused mask operations grouped by dtype.
+
+        Args:
+            inputs (List): List of input data (RaggedTensor or torch.Tensor).
+
+        Returns:
+            List: List of output tensors with mask results
+                (0.0 for matched, 1.0 for unmatched).
+        """
+        if not self._ops or not inputs:
+            return []
+
+        outputs = [None] * len(inputs)
+
+        for group_key, params in self._group_params.items():
+            dtype = group_key
+            group_items = params["items"]
+            masks_list = params["masks_list"]
+
+            if dtype == torch.int8:
+                # Process string mask group
+                fused_values = []
+                fused_offsets = []
+                for item in group_items:
+                    data = inputs[item["index"]]
+                    assert isinstance(data, RaggedTensor), (
+                        "String mask only supports RaggedTensor inputs"
+                    )
+                    fused_values.append(data.values())
+                    fused_offsets.append(data.offsets()[-1])
+
+                mask_results = fused_string_mask(
+                    fused_values, fused_offsets, masks_list
+                )
+
+                for j, item in enumerate(group_items):
+                    original_index = item["index"]
+                    original_data = inputs[original_index]
+                    outputs[original_index] = RaggedTensor(
+                        values=mask_results[j],
+                        offsets=original_data.offsets()[:-1],
+                        weight=original_data.weight(),
+                        dense_shape=original_data._dense_shape[:-1],
+                    )
+            else:
+                # Process number mask group (float32/float64/int32/int64)
+                fused_values = []
+                for item in group_items:
+                    data = inputs[item["index"]]
+                    if isinstance(data, RaggedTensor):
+                        fused_values.append(data.values())
+                    else:
+                        fused_values.append(data)
+
+                # Convert masks to float for comparison
+                float_masks_list = [[float(m) for m in masks] for masks in masks_list]
+                mask_results = fused_number_mask(fused_values, float_masks_list)
+
+                for j, item in enumerate(group_items):
+                    original_index = item["index"]
+                    original_data = inputs[original_index]
+                    if isinstance(original_data, RaggedTensor):
+                        outputs[original_index] = RaggedTensor(
+                            values=mask_results[j],
+                            offsets=original_data.offsets(),
+                            weight=original_data.weight(),
+                            dense_shape=original_data._dense_shape,
+                        )
+                    else:
+                        outputs[original_index] = mask_results[j]
+
+        return outputs
+
+
 # Register fused operation implementations with the factory
 FusedOpFactory.register(Bucketize, FusedBoundaryOP)
 FusedOpFactory.register(Mod, FusedModOP)
@@ -692,3 +834,4 @@ FusedOpFactory.register(Hash, FusedHashOP)
 FusedOpFactory.register(SequenceTruncate, FusedCutoffOP)
 FusedOpFactory.register(IDMultiHash, FusedMultiHashOP)
 FusedOpFactory.register(StringMultiHash, FusedStringMultiHashOP)
+FusedOpFactory.register(Mask, FusedMaskOP)

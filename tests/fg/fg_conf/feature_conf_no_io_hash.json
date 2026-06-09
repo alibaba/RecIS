@@ -54,22 +54,6 @@
       "multi_mods": [29, 47, 67, 83]
     }
   ],
-  "queryseg_norm_d_raw":
-  [
-    {
-      "name": "queryseg_norm_d",
-      "dim": 1,
-      "from_dict": true
-    }
-  ],
-  "uid_raw":
-  [
-    {
-      "name": "uid",
-      "dim": 1,
-      "from_dict": true
-    }
-  ],
   "longpay_seq_item_id_d_raw":
   [
     {
@@ -78,12 +62,16 @@
       "from_dict": true
     },
     {
+      "masks": ["0"],
+      "dtype": "torch.int8"
+    },
+    {
       "seq_len": 200,
       "check_length": false,
       "truncate": true,
       "truncate_side": "right",
       "n_dims": 3,
-      "dtype": "torch.int8"
+      "dtype": "torch.float32"
     }
   ],
   "longpay_seq_item_id_d":

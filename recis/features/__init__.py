@@ -4,6 +4,7 @@ from .op import (
     FeatureCross as FeatureCross,
     Hash as Hash,
     IDMultiHash as IDMultiHash,
+    Mask as Mask,
     Mod as Mod,
     SelectField as SelectField,
     SelectFields as SelectFields,
@@ -21,4 +22,5 @@ __all__ = [
     "SequenceTruncate",
     "Mod",
     "IDMultiHash",
+    "Mask",
 ]

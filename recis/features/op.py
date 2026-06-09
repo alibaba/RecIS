@@ -6,9 +6,15 @@ import torch
 from torch import nn
 
 from recis.nn.functional.array_ops import bucketize, bucketize_mod
-from recis.nn.functional.fused_ops import fused_int64_to_string_int8, fused_multi_hash
+from recis.nn.functional.fused_ops import (
+    fused_int64_to_string_int8,
+    fused_multi_hash,
+    fused_number_mask,
+    fused_string_mask,
+)
 from recis.nn.functional.hash_ops import (
     djb2hash as djb2hash_gpu,
+    ev_farmhash as ev_farmhash_gpu,
     farmhash as farmhash_gpu,
     murmurhash as murmurhash_gpu,
     sdbmhash as sdbmhash_gpu,
@@ -54,7 +60,7 @@ class DataValueProcessor:
         elif isinstance(self._data, torch.Tensor):
             if self._data.is_sparse:
                 return self._data._values()
-            return self._data
+            return self._data.reshape(-1)
         else:
             raise ValueError(f"Unsupported data type: {type(self._data)}")
 
@@ -667,7 +673,7 @@ class Hash(_OP):
             AssertionError: If hash_type is not "farm" or "murmur".
         """
         super().__init__()
-        assert hash_type in ["farm", "murmur"]
+        assert hash_type in ["farm", "murmur", "ev_farm"]
         self.hash_type = hash_type
         self.hash_type
 
@@ -683,6 +689,8 @@ class Hash(_OP):
         assert isinstance(x, RaggedTensor)
         if self.hash_type == "farm":
             output = farmhash_gpu([x.values()], [x.offsets()[-1].int()])
+        elif self.hash_type == "ev_farm":
+            output = ev_farmhash_gpu([x.values()], [x.offsets()[-1].int()])
         else:
             output = murmurhash_gpu([x.values()], [x.offsets()[-1].int()])
         return RaggedTensor(
@@ -744,4 +752,135 @@ class StringMultiHash(_OP):
         return {
             "num_buckets": self.num_buckets,
             "hash_types": self.hash_types,
+        }
+
+
+class Mask(_OP):
+    """Mask operation for filtering string or numeric features.
+
+    This operation checks whether each value in the input matches any value
+    in a given mask list. Matched values produce 0.0, unmatched values produce 1.0.
+    This is useful for filtering out specific feature values (e.g., default values,
+    invalid entries).
+
+    Supports two types of masks:
+    - String mask: For int8-encoded string data (dtype="string")
+    - Number mask: For numeric data (dtype=torch.float32/float64/int32/int64)
+
+    Attributes:
+        masks (Union[List[str], List[float]]): List of mask values to match against.
+        dtype (torch.dtype): Data type of the mask. Use torch.int8/float32/float64/int32/int64 for numeric masks.
+
+    Examples:
+
+    .. code-block:: python
+
+        from recis.features.op import Mask
+
+        # String mask for filtering default values
+        string_mask = Mask(masks=["default", "null", ""], dtype=torch.int8)
+
+        # Numeric mask for filtering zero values
+        number_mask = Mask(masks=[0.0], dtype=torch.float32)
+
+        # Integer mask for filtering specific IDs
+        int_mask = Mask(masks=[-1, 0], dtype=torch.int64)
+    """
+
+    def __init__(
+        self,
+        masks: Union[List[str], List[float]],
+        dtype: torch.dtype = torch.int8,
+    ):
+        """Initialize the mask operation.
+
+        Args:
+            masks (Union[List[str], List[float]]): List of values to mask.
+                If a value matches any entry in this list, its output will be
+                0.0; otherwise 1.0. For string masks, provide List[str]; for
+                numeric masks, provide List[float].
+            dtype (Union[str, torch.dtype]): Data type of the mask.
+                - "string": For int8-encoded string data (default)
+                - torch.float32, torch.float64, torch.int32, torch.int64: For numeric data
+
+        Raises:
+            AssertionError: If dtype is not supported.
+        """
+        super().__init__()
+        self.masks = masks
+        self.dtype = dtype
+
+        if dtype == torch.int8:
+            self._mask_func = self._mask_string
+        elif dtype in [torch.float32, torch.float64, torch.int32, torch.int64]:
+            self._mask_func = self._mask_number
+        else:
+            raise ValueError(
+                f"Unsupported dtype: {dtype}. Supported: 'string', "
+                f"torch.float32, torch.float64, torch.int32, torch.int64"
+            )
+
+    def _mask_string(self, x: RaggedTensor) -> torch.Tensor:
+        """Apply string mask to input RaggedTensor.
+
+        Args:
+            x (RaggedTensor): Input RaggedTensor with int8 string values
+                and offsets indicating string boundaries.
+
+        Returns:
+            torch.Tensor: 1D float32 tensor where each element is 0.0
+                if the corresponding string matches any mask, 1.0 otherwise.
+        """
+        results = fused_string_mask(
+            [x.values()],
+            [x.offsets()[-1]],
+            [self.masks],
+        )
+        return results[0]
+
+    def _mask_number(self, x: Union[RaggedTensor, torch.Tensor]) -> torch.Tensor:
+        """Apply numeric mask to input data.
+
+        Args:
+            x (Union[RaggedTensor, torch.Tensor]): Input tensor with numeric values.
+
+        Returns:
+            torch.Tensor: 1D float32 tensor where each element is 0.0
+                if the corresponding value matches any mask, 1.0 otherwise.
+        """
+        if isinstance(x, RaggedTensor):
+            values = x.values()
+        else:
+            values = x
+
+        # Convert masks to float for comparison (as required by fused_number_mask)
+        mask_values = [float(m) for m in self.masks]
+        results = fused_number_mask([values], [mask_values])
+        return results[0]
+
+    def forward(self, x: Union[RaggedTensor, torch.Tensor]) -> torch.Tensor:
+        """Apply mask to input data based on dtype.
+
+        Args:
+            x (Union[RaggedTensor, torch.Tensor]): Input data to mask.
+                For string masks, must be RaggedTensor with int8 values.
+                For numeric masks, can be RaggedTensor or torch.Tensor.
+
+        Returns:
+            torch.Tensor: 1D float32 tensor where each element is 0.0
+                if the corresponding value matches any mask, 1.0 otherwise.
+
+        Raises:
+            AssertionError: For string mask, if input is not RaggedTensor.
+        """
+        if self.dtype == torch.int8:
+            assert isinstance(x, RaggedTensor), (
+                "String mask only supports RaggedTensor inputs"
+            )
+        return self._mask_func(x)
+
+    def _get_config(self) -> Dict:
+        return {
+            "masks": self.masks,
+            "dtype": str(self.dtype),
         }
