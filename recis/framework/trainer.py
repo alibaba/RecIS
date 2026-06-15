@@ -626,8 +626,9 @@ class Trainer:
 
     @property
     def output_dir(self):
+        """转发 Saver.output_dir. openlm_hub 模式下返回 MOS URI 而非文件路径."""
         if self.saver is not None:
-            return self.saver._output_dir
+            return self.saver.output_dir
         return None
 
     def _train_step(self, data, epoch):

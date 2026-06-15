@@ -297,10 +297,11 @@ def pickle_to_torch(obj):
     return obj
 
 
-def load_pt_file(ckpt_dir: str, file_name: str):
+def load_pt_file(ckpt_dir: str, file_name: str, fs=None):
     pt_path = os.path.join(ckpt_dir, file_name + ".pt")
     pk_path = os.path.join(ckpt_dir, file_name + ".pkl")
-    fs = get_file_system(os.path.join(ckpt_dir, "index"))
+    if fs is None:
+        fs = get_file_system(os.path.join(ckpt_dir, "index"))
     data = {}
     from_pickle = False
     if fs.exists(pt_path):

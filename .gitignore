@@ -21,3 +21,4 @@ results.json
 *.LOG
 pangu_client*
 py_pangu*
+__pycache__/

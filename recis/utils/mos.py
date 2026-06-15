@@ -16,17 +16,24 @@ if not os.environ.get("BUILD_DOCUMENT", None) == "1":
         get_mos_ckpt_info,
         get_or_create_mos_version,
     )
+    from openlm_hub.utils.storage import get_ckpt_access_path
 
 logger = Logger(__name__)
 
 
 def format_physical_path(path: str):
-    prefix = ""
-    local_path = path
-    if path.startswith("xpfs://"):
-        # "xpfs://xxx/data/.../" -> "/data/.../"
-        index = path.find("/data/")
-        prefix, local_path = path[:index], path[index:]
+    """把 MOS 返回的 physical_path 拆成 (xpfs_cluster_prefix, fsspec 可路由的 local_path).
+
+    XPFS 路径里 ``xpfs://cluster`` 段 fsspec 不识别, caller 拿 local_path 做 I/O;
+    prefix 仅在老协议 ``Mos.ckpt_update`` 里用来重拼回完整 xpfs 路径上报 MOS server.
+    """
+    if not path.startswith("xpfs://"):
+        return "", path
+    local_path = get_ckpt_access_path(path)
+    if path.endswith(local_path):
+        prefix = path[: len(path) - len(local_path)]
+    else:
+        prefix = ""
     return prefix, local_path
 
 
