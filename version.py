@@ -82,7 +82,7 @@ def get_wheel_tag_device_type():
             match = re.search(r"version:\s*(\d+)\.(\d+)(?:\.(\d+))?", content)
             if match:
                 version = "".join(filter(None, match.groups()))
-                return f"ppu{version}"
+                return f"cuppu{version}"
 
     # Check CUDA: /usr/local/cuda-12.8 -> cu128
     cuda_dirs = sorted(glob.glob("/usr/local/cuda-*"), key=len, reverse=True)
