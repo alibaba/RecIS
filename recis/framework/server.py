@@ -1,8 +1,9 @@
-import cgi
 import json
 import os
 import socket
 import threading
+from email import policy
+from email.parser import BytesParser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from queue import Queue
 from typing import Optional
@@ -155,6 +156,25 @@ def to_jsonable(obj):
 
 
 def create_handler():
+    def parse_multipart_file_uploads(headers, rfile):
+        content_length = int(headers.get("Content-Length", 0))
+        content_type = headers.get("Content-Type", "")
+        body = rfile.read(content_length)
+        raw_message = (
+            b"Content-Type: "
+            + content_type.encode("latin-1")
+            + b"\r\nMIME-Version: 1.0\r\n\r\n"
+            + body
+        )
+        message = BytesParser(policy=policy.default).parsebytes(raw_message)
+
+        file_uploads = []
+        for part in message.walk():
+            if part.is_multipart() or not part.get_filename():
+                continue
+            file_uploads.append(part.get_payload(decode=True) or b"")
+        return file_uploads
+
     class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
             self.model_forward = None
@@ -167,21 +187,16 @@ def create_handler():
                 self.send_response(400)
                 self.end_headers()
                 self.wfile.write(
-                    "Only multipart/form-data is supported for file uploads."
+                    b"Only multipart/form-data is supported for file uploads."
                 )
                 return
-            form = cgi.FieldStorage(
-                fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"}
-            )
+            file_uploads = parse_multipart_file_uploads(self.headers, self.rfile)
             self.send_response(200)
             self.send_header("Content-type", "text/plain")
             self.end_headers()
 
-            for field in form.keys():
-                field_item = form[field]
-                if (not isinstance(field_item, (tuple, list))) and field_item.filename:
-                    file_data = field_item.file.read()
-                    task_queue.put(file_data)
+            for file_data in file_uploads:
+                task_queue.put(file_data)
             logger.info("[Rank 0 HTTP] Waiting for distributed processing result...")
             outputs = result_queue.get()  # 这会阻塞，直到主进程放入结果
             logger.info(f"outputs: {outputs}")

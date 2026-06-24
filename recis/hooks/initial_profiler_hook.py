@@ -86,5 +86,6 @@ class _InitialProfilerHook(Hook):
                 total_flops += int(event.flops)
             step_flops = total_flops / (self.active * self.repeat)
             MetricReportHook._internal_profs[FLOPS_NAME] = step_flops
+            self.logger.info(f"flops per step is set as: {step_flops}")
             self.prof.__exit__(None, None, None)
             self.prof = None

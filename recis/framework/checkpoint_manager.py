@@ -299,7 +299,11 @@ class Saver:
             return model_bank_content
         resume_path, ckpt_physical_path = result
         current_app = os.environ.get("HIPPO_APP", "")
-        tag = " (cross-app)" if current_app and current_app not in ckpt_physical_path else ""
+        tag = (
+            " (cross-app)"
+            if current_app and current_app not in ckpt_physical_path
+            else ""
+        )
         logger.info(f"Auto-resume entry resolved via openlm_hub{tag}: {resume_path}")
         # entry schema 对齐 _complete_model_bank, parser 视作老路径查找等价物
         entry = {
@@ -451,7 +455,9 @@ class Saver:
             # 仅 rank 0 调用 MOS，避免多 rank 独立调 MosCkptFileManager 时因
             # 时序差异（如 pangu 切换）导致各 worker 拿到不同的写入路径。
             if self._shard_id == 0:
-                self._ckpt_file_manager, ckpt_path, fs = self.openlm_hub_helper.get_save_context(ckpt_id)
+                self._ckpt_file_manager, ckpt_path, fs = (
+                    self.openlm_hub_helper.get_save_context(ckpt_id)
+                )
             else:
                 ckpt_path = ""
             if self._shard_num > 1:
@@ -544,9 +550,7 @@ class Saver:
             self._save_rank0_states(ckpt_path, fs, io_states)
             self._update_ckpt_index(ckpt_id, ckpt_path, fs)
             if len(self._checkpoint_version_list) > self._max_keep:
-                self._evict_old_ckpt(
-                    self._checkpoint_version_list[0], ckpt_path, fs
-                )
+                self._evict_old_ckpt(self._checkpoint_version_list[0], ckpt_path, fs)
             self._register_ckpt(
                 self._ckpt_file_manager, ckpt_id, ckpt_path, label_key, label_value
             )
@@ -731,9 +735,7 @@ class Saver:
         """淘汰旧 ckpt: 删文件 + 注销 MOS 记录."""
         if self._is_openlm_hub_ckpt:
             old_ckpt_path = self.openlm_hub_helper.pop_write_path(ckpt_id_to_remove)
-            logger.info(
-                f"Remove checkpoint {ckpt_id_to_remove}: {old_ckpt_path}"
-            )
+            logger.info(f"Remove checkpoint {ckpt_id_to_remove}: {old_ckpt_path}")
             if old_ckpt_path is not None:
                 fs.rm(old_ckpt_path + "/", recursive=True)
         else:

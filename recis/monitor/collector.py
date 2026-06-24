@@ -422,7 +422,7 @@ class HardwareInfo:
             with HardwareInfo._lock:
                 if not HardwareInfo._initialized:
                     HardwareInfo._sample_thread = threading.Thread(
-                        target=HardwareInfo._async_sample, args=(7.0,), daemon=True
+                        target=HardwareInfo._async_sample, args=(27.0,), daemon=True
                     )
                     HardwareInfo._sample_thread.start()
                     HardwareInfo._initialized = True
@@ -471,8 +471,16 @@ class HardwareInfo:
             time.sleep(interval_sec)
 
 
+_last_generate_time: float = time.time()
+
+
 def _generate_pod_events() -> list[Event]:
+    global _last_generate_time
     event_list: list[Event] = []
+    if time.time() - _last_generate_time < 57:
+        # monitor db 要求submit不能太频繁, 硬件指标约1min汇报一次即可
+        return event_list
+    _last_generate_time = time.time()
     hardware_info = HardwareInfo.get()
     # iter basic hardware_info fields
     for field in hardware_info.__dict__:

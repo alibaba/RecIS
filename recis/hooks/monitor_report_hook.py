@@ -47,15 +47,20 @@ class ReportArguments:
     #     when report_metrics, use map[step_name] to multiply the original flops
 
     def __post_init__(self):
-        if self.tflops_peak > 0:
+        if self.tflops_peak and float(self.tflops_peak) > 0:
             self.tflops_peak = float(self.tflops_peak)
             return
 
-        self.tflops_peak = Inquirer.get_peak_tflops(
+        detected_tflops_peak = Inquirer.get_peak_tflops(
             device_index=0, precision=Precision.fp32
         )
-        if self.tflops_peak is None:
-            self.tflops_peak = 148.0
+        if detected_tflops_peak is None:
+            detected_tflops_peak = 148.0
+            logger.warning(
+                f"Tflops peak detect none as default: {detected_tflops_peak}"
+            )
+
+        self.tflops_peak = float(detected_tflops_peak)
 
 
 class MetricReportHook(Hook):
@@ -111,7 +116,8 @@ class MetricReportHook(Hook):
     def _report_metrics(self):
         # qps, train qps, eval qps
         spend_time = time.time() - self.interval_time
-        qps = self.args.interval_step / spend_time
+        # qps = self.args.interval_step / spend_time # unprecise when window exchange
+        qps = (self.train_steps + self.eval_steps) / spend_time
         train_qps = self.train_steps / spend_time
         eval_qps = self.eval_steps / spend_time
         flops_peak = self.args.tflops_peak * 1e12
