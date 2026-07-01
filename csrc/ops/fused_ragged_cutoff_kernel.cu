@@ -197,12 +197,13 @@ cudaError_t ragged_tile_state_init(
   ScanTileStateT::AllocationSize(max_tiles, alloc_sz[0]);
   size_t align_sz = 0;
   void* allocations[1] = {(void*)0x1};
-#ifdef NV_PLATFORM
+  // AliasTemporaries moved from cub:: to cub::detail:: in CUB 3.0.0
+#if defined(NV_PLATFORM) || CUB_VERSION >= 300000
   err = cub::detail::AliasTemporaries((void*)NULL, align_sz, allocations,
-#else
-  err = cub::AliasTemporaries((void*)NULL, align_sz, allocations,
-#endif
                                       alloc_sz);
+#else
+  err = cub::AliasTemporaries((void*)NULL, align_sz, allocations, alloc_sz);
+#endif
   TORCH_CHECK(cudaSuccess == err, cudaGetErrorString(err));
 
   size_t align_sz_pad = (align_sz + ALIGN_BYTES - 1) & ALIGN_MASK;

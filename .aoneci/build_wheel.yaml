@@ -17,6 +17,7 @@ jobs:
             - "hub.docker.alibaba-inc.com/mdl/mdl0.6:user_cu128_gcc13_py3.10.13_torch280_20251021182611_accelerated"
             - "hub.docker.alibaba-inc.com/mdl/mdl0.6:user_cuppu153_gcc10_py3.10.13_torch260_20250827120800_lake_accelerated"
             - "hub.docker.alibaba-inc.com/mdl/mdl0.6:user_cuppu161_gcc10_py3.10.13_torch270_20250925221442_accelerated"
+            - "hub.docker.alibaba-inc.com/mdl/mdl0.6:user_cuppu170_gcc10_py3.10.13_torch280_20251225150600_accelerated"
             - "hub.docker.alibaba-inc.com/mdl/mdl0.6:user_curocm702_gcc10_py3.10.13_torch280_20251030132103_eic_aiter_6b586ae_vllm_a8e7c3e"
     runs-on: [aone-hosted, amd8, 32-128Gi]
     image: ${{matrix.docker_name}}
