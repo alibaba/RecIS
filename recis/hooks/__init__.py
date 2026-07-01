@@ -24,11 +24,16 @@ if is_internal_enabled():
         MLTrackerHook as MLTrackerHook,
         add_to_ml_tracker as add_to_ml_tracker,
     )
-    from .trace_to_odps_hook import (
-        TraceToOdpsHook as TraceToOdpsHook,
+    from .trace_to_odps_hook import (  # noqa: F401
+        TraceToOdpsHook as TraceToOdpsHookV1,
         add_to_trace as add_to_trace,
     )
+    from .trace_to_odps_hook_v2 import TraceToOdpsHookV2
+
+    TraceToOdpsHook = TraceToOdpsHookV2
 
     __all__.extend(
-        ["MLTrackerHook", "add_to_ml_tracker", "TraceToOdpsHook", "add_to_trace"]
+        ["MLTrackerHook", "add_to_ml_tracker",
+         "TraceToOdpsHook", "TraceToOdpsHookV1", "TraceToOdpsHookV2",
+         "add_to_trace"]
     )
