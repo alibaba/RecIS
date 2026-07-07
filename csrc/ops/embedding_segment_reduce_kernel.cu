@@ -297,16 +297,8 @@ at::Tensor segment_reduce_forward(at::Tensor unique_emb,
   }
 
   at::Tensor output;
-  // AT_DISPATCH_FLOATING_TYPES(
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half, at::ScalarType::BFloat16,  // fp64,fp32,fp16,bf16
-#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
-  AT_DISPATCH_FLOATING_TYPES_AND(
-      at::ScalarType::Half,  // fp64,fp32,fp16
-#else
-  AT_DISPATCH_FLOATING_TYPES(  // fp64,fp32
-#endif
       unique_emb.scalar_type(), "segmented_reduce", [&] {
         AT_DISPATCH_INDEX_TYPES(
             offsets.scalar_type(), "segmented_reduce_offset", [&] {
@@ -376,16 +368,8 @@ at::Tensor segment_reduce_backward(at::Tensor grad_output,
   }
   auto options = grad_output.options();
   auto grad_unique_emb = torch::zeros({unique_size, D}, options);
-// AT_DISPATCH_FLOATING_TYPES(
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half, at::ScalarType::BFloat16,  // fp64,fp32,fp16,bf16
-#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
-  AT_DISPATCH_FLOATING_TYPES_AND(
-      at::ScalarType::Half,  // fp64,fp32,fp16
-#else
-  AT_DISPATCH_FLOATING_TYPES(  // fp64,fp32
-#endif
       grad_output.scalar_type(), "segmented_reduce_backward", [&] {
         AT_DISPATCH_INDEX_TYPES(
             offsets.scalar_type(), "segmented_reduce_backward_offset", [&] {
@@ -421,7 +405,6 @@ at::Tensor segment_reduce_backward(at::Tensor grad_output,
               }
             });
       });
-
   return grad_unique_emb;
 }
 

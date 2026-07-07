@@ -253,16 +253,8 @@ bool segment_mean_cuda(torch::Tensor weight, bool use_weight,
   AT_DISPATCH_INTEGRAL_TYPES(
       segment_ids.scalar_type(), "segment_weight_mean_indices", ([&] {
         using index_t = scalar_t;
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
         AT_DISPATCH_FLOATING_TYPES_AND2(
-            at::ScalarType::Half,
-            at::ScalarType::BFloat16,  // fp64,fp32,fp16,bf16
-#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
-        AT_DISPATCH_FLOATING_TYPES_AND(
-            at::ScalarType::Half,  // fp64,fp32,fp16
-#else
-        AT_DISPATCH_FLOATING_TYPES(  // fp64,fp32
-#endif
+            at::ScalarType::Half, at::ScalarType::BFloat16,
             weight.scalar_type(), "segment_weight_sum_kernel", ([&] {
               segment_weight_sum_kernel<scalar_t, index_t>
                   <<<block_weight, threads, 0, stream>>>(

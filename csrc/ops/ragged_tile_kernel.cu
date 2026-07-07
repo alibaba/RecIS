@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdint>
 
+#include "ATen/cuda/CUDAContext.h"
 #include "c10/core/DeviceType.h"
 #include "c10/util/Optional.h"
 #include "cuda/atomic_fast.cuh"
@@ -200,17 +201,9 @@ void ragged_tile_back_impl(torch::Tensor batch_dev, const int64_t batch_num,
         AT_DISPATCH_INDEX_TYPES(
             offset.scalar_type(), "ragged_tile_backward_OT", ([&] {
               using OT = index_t;
-#if defined(__CUDA_ARCH__) && \
-    __CUDA_ARCH__ >= 800  // atomic fp16>=SM70, bf16>=SM80
               AT_DISPATCH_FLOATING_TYPES_AND2(
                   at::ScalarType::Half,
                   at::ScalarType::BFloat16,  // fp64,fp32,fp16,bf16
-#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
-              AT_DISPATCH_FLOATING_TYPES_AND(
-                  at::ScalarType::Half,  // fp64,fp32,fp16
-#else
-              AT_DISPATCH_FLOATING_TYPES(  // fp64,fp32
-#endif
                   dy.scalar_type(), "ragged_tile_backward", ([&] {
                     using TT = scalar_t;
                     ragged_tile_back_kernel<BT, VT, OT, TT>
