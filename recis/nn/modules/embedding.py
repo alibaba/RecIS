@@ -149,6 +149,29 @@ class ExchangeIDsResults:
 
 
 @dataclass
+class NoReduceEmbedding:
+    """A2A 完成但未做 segment reduce 的 embedding 结果。
+
+    当 ``EmbeddingOption.no_reduce=True`` 时，对应 feature 在 ``EmbeddingEngine``
+    forward 的输出里就是这个 dataclass，用户可以拿到去做自定义聚合（attention、
+    MoE、序列建模等）。
+
+    原始输入的 dense shape 不在这里返回——调用方一般可以从 ``offsets``
+    （batch 维 = ``offsets.numel() - 1``）或自己持有的输入张量推出。
+
+    Attributes:
+        emb (torch.Tensor): all-to-all 后的 unique embedding，形状 ``[N_unique, dim]``。
+        reverse_index (torch.Tensor): 把原始 ids 映射到 ``emb`` 行的索引，
+            ``emb[reverse_index]`` 即每个原始 id 对应的 embedding。
+        offsets (torch.Tensor): 原始输入的 segment 边界，形状 ``[batch_size+1]``。
+    """
+
+    emb: torch.Tensor
+    reverse_index: torch.Tensor
+    offsets: torch.Tensor
+
+
+@dataclass
 class ExchangeEmbResults:
     """Data class for storing embedding exchange results.
 
@@ -239,6 +262,10 @@ class EmbeddingOption:
     admit_hook: Optional[AdmitHook] = None
     # Convert embeddings of int8 type to fp16; otherwise, convert them to fp32
     fp16_enabled: bool = False
+    # If True, EmbeddingEngine returns the post-all-to-all embedding directly
+    # (wrapped in NoReduceEmbedding) without segment reduction or per-feature split.
+    # The feature must have a unique shared_name (cannot share a hashtable).
+    no_reduce: bool = False
 
     def __post_init__(self):
         """Post-initialization validation and setup.
@@ -253,6 +280,8 @@ class EmbeddingOption:
             self.initializer = ConstantInitializer(init_val=0)
         if self.fp16_enabled:
             assert self.dtype in (torch.int8,), "only int8 emb can set fp16_enabled"
+        if self.no_reduce:
+            return
         assert self.combiner in _COMBINER_REGISTRY_INSTANCE.list_combiners(), (
             f"Combiner '{self.combiner}' not registered. Available combiners: {list(_COMBINER_REGISTRY_INSTANCE.list_combiners())}"
         )

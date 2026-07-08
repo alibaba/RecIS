@@ -3,9 +3,10 @@ Embedding嵌入使用
 
 .. toctree::
    :maxdepth: 2
-   
+
    define_embedding
    engine
+   no_reduce
    filter
 
 简单示例

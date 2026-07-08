@@ -11,7 +11,11 @@ from recis.monitor.monitor_reporter import (
     SPARSE_FWD_NAME,
     MonitorReporter,
 )
-from recis.nn.modules.embedding import DynamicEmbedding, EmbeddingOption
+from recis.nn.modules.embedding import (
+    DynamicEmbedding,
+    EmbeddingOption,
+    NoReduceEmbedding,
+)
 from recis.ragged.tensor import RaggedTensor
 from recis.utils.logger import Logger
 
@@ -90,9 +94,16 @@ class HashTableCoalescedGroup:
         combiner_kwargs = emb_opt.combiner_kwargs
         admit_hook = emb_opt.admit_hook
         fp16_enabled = emb_opt.fp16_enabled
-        if emb_opt.runtime_info() not in self._runtime_info:
-            self._runtime_info.add(emb_opt.runtime_info())
-        self._fea_to_runtime[fea_name] = emb_opt.runtime_info()
+        no_reduce = emb_opt.no_reduce
+        # A no_reduce feature must own its RuntimeGroupFeature (cannot share
+        # the per-sample all-to-all batch with any other feature), so we tag
+        # the runtime_key with the feature name to make it unique.
+        runtime_key = emb_opt.runtime_info()
+        if no_reduce:
+            runtime_key = f"{runtime_key}|no_reduce={fea_name}"
+        if runtime_key not in self._runtime_info:
+            self._runtime_info.add(runtime_key)
+        self._fea_to_runtime[fea_name] = runtime_key
         self._fea_to_encode_id[fea_name] = encode_id
         self._fea_to_info[fea_name] = {
             "combiner": combiner,
@@ -101,6 +112,7 @@ class HashTableCoalescedGroup:
             "combiner_kwargs": combiner_kwargs,
             "admit_hook": admit_hook,
             "fp16_enabled": fp16_enabled,
+            "no_reduce": no_reduce,
         }
 
     def runtime_info(self, fea_name):
@@ -226,6 +238,7 @@ class RuntimeGroupFeature:
         offset_dtype,
         admit_hook,
         fp16_enabled,
+        no_reduce=False,
         **kwargs,
     ):
         """Initialize runtime group feature.
@@ -237,6 +250,8 @@ class RuntimeGroupFeature:
             offset_dtype (torch.dtype): Data type for offsets.
             admit_hook: Admission hook for feature control.
             fp16_enabled: (bool): Whether use fp16 for int emb.
+            no_reduce (bool): Whether to skip segment reduction and per-feature
+                split. When True, this group must contain exactly one feature.
             **kwargs: Additional keyword arguments.
         """
         self._dim = dim
@@ -245,6 +260,7 @@ class RuntimeGroupFeature:
         self._use_weight = use_weight
         self._offset_dtype = offset_dtype
         self._fp16_enabled = fp16_enabled
+        self._no_reduce = no_reduce
         # feature names
         self._names = []
         # coalesced ids
@@ -285,6 +301,10 @@ class RuntimeGroupFeature:
 
     def fp16_enabled(self):
         return self._fp16_enabled
+
+    def no_reduce(self):
+        """Whether this group skips segment reduction and per-feature split."""
+        return self._no_reduce
 
     def names(self):
         """Get the list of feature names.
@@ -797,51 +817,79 @@ class EmbeddingEngine(nn.Module):
     def group_reduce(self, group_exchange_embs, group_features):
         """Reduce embeddings using specified combiners.
 
+        For groups whose feature is configured with ``no_reduce=True``, this
+        method skips the segment reduction and instead waits on the embedding
+        all-to-all and returns the raw post-a2a tensor. The caller is expected
+        to detect and forward these as :class:`NoReduceEmbedding` in
+        ``split_group_embs``.
+
         Args:
             group_exchange_embs (dict): Exchange embedding results.
             group_features (dict): Grouped features for processing.
 
         Returns:
-            dict: Dictionary containing reduced embeddings for each group.
+            dict: Dictionary containing reduced embeddings (or raw post-a2a
+                tensors for no_reduce groups) for each group.
         """
         group_embs = defaultdict(dict)
         for ht_name, exchange_emb in group_exchange_embs.items():
             group_fea = group_features[ht_name]
             ht = self._ht[ht_name]
             for run_name in exchange_emb.keys():
-                group_embs[ht_name][run_name] = ht.emb_reduce(
-                    exchange_emb[run_name],
-                    group_fea[run_name].coalesced_weights(),
-                    group_fea[run_name].combiner(),
-                    group_fea[run_name].combiner_kwargs(),
-                    group_fea[run_name].fp16_enabled(),
-                )
+                run_fea = group_fea[run_name]
+                if run_fea.no_reduce():
+                    exch = exchange_emb[run_name]
+                    emb = ht.wait_exchange_emb(exch)
+                    group_embs[ht_name][run_name] = NoReduceEmbedding(
+                        emb=emb,
+                        reverse_index=exch.reverse_index,
+                        offsets=exch.offsets,
+                    )
+                else:
+                    group_embs[ht_name][run_name] = ht.emb_reduce(
+                        exchange_emb[run_name],
+                        run_fea.coalesced_weights(),
+                        run_fea.combiner(),
+                        run_fea.combiner_kwargs(),
+                        run_fea.fp16_enabled(),
+                    )
         return group_embs
 
     def split_group_embs(self, group_embs, group_features):
         """Split group embeddings back to individual feature embeddings.
+
+        For no_reduce groups (which always contain exactly one feature) the
+        :class:`NoReduceEmbedding` is forwarded as-is, with no splitting or
+        reshape applied to the post-a2a tensor.
 
         Args:
             group_embs (dict): Reduced group embeddings.
             group_features (dict): Grouped features for processing.
 
         Returns:
-            dict[str, torch.Tensor]: Dictionary mapping feature names to
-                their individual embedding tensors.
+            dict[str, Union[torch.Tensor, NoReduceEmbedding]]: Dictionary mapping
+                feature names to their individual outputs.
         """
         emb_outs = {}
         for ht_name, group_emb in group_embs.items():
             group_fea = group_features[ht_name]
             for run_name, run_emb in group_emb.items():
+                run_fea = group_fea[run_name]
+                if run_fea.no_reduce():
+                    name = run_fea.names()[0]
+                    if not self._emb_opts[name].trainable:
+                        run_emb.emb = run_emb.emb.detach()
+                    emb_outs[name] = run_emb
+                    continue
                 emb_list = list(
-                    torch.split(run_emb, group_fea[run_name].split_size(), dim=0)
+                    torch.split(run_emb, run_fea.split_size(), dim=0)
                 )
 
                 for name, emb, out_shape in zip(
                     *(
-                        group_fea[run_name].names(),
+                        run_fea.names(),
                         emb_list,
-                        group_fea[run_name].shapes(),
+                        run_fea.shapes(),
                     )
                 ):
                     if not self._emb_opts[name].trainable:
