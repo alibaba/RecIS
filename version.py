@@ -9,8 +9,10 @@ def get_package_version():
     pwd = os.path.dirname(os.path.realpath(__file__))
     with open(os.path.join(pwd, "recis", "__init__.py")) as f:
         content = f.read()
+        # 捕获 major.minor.patch 及其后可选的 PEP440 后缀 (.postN / .devN / rcN / aN / bN 等)
+        # 例: 1.1.71 / 1.1.72.post3 / 1.1.72.dev2607001 / 1.1.72rc1
         match = re.search(
-            r'__version__\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+(?:\.post[0-9]+)?)"', content
+            r'__version__\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.]*)"', content
         )
         version = match.group(1)
         print(f"RecIS version {version}")

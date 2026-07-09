@@ -65,8 +65,8 @@ def generate_version_info_file(output_path="recis/version_info.py"):
     try:
         from version import get_package_version
 
-        main_version, minor_version, patch_version = get_package_version()
-        version = f"{main_version}.{minor_version}.{patch_version}"
+        # get_package_version() 返回完整版本字符串 (可能含 .dev/.post 等后缀), 不可再拆成三段
+        version = get_package_version()
     except Exception as e:
         print(f"Warning: Could not get package version: {e}")
         version = "unknown"

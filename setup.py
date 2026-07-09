@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 
 from setuptools import find_packages, setup
 from torch.cuda import get_device_name
@@ -149,8 +150,9 @@ def is_internal_enabled():
 def generate_version_info():
     try:
         print("Generating version_info.py...")
+        # 用运行 setup.py 的解释器自身 (sys.executable), 避免裸 `python` 落到 PATH 上不带 torch 的解释器
         subprocess.check_call(
-            ["python", os.path.join(BASEDIR, "generate_version_info.py")]
+            [sys.executable, os.path.join(BASEDIR, "generate_version_info.py")]
         )
         print("version_info.py generated successfully")
     except subprocess.CalledProcessError as e:
