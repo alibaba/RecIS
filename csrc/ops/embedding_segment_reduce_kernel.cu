@@ -462,13 +462,10 @@ __global__ void gen_segment_indices_cuda_kernel(const scalar_t* offset,
   }
 }
 
-at::Tensor gen_segment_indices_by_offset(torch::Tensor offset) {
+at::Tensor gen_segment_indices_by_offset(torch::Tensor offset,
+                                         int64_t total_size) {
   auto stream = at::cuda::getCurrentCUDAStream();
-  int64_t segment_size;
-  AT_DISPATCH_INTEGRAL_TYPES(
-      offset.scalar_type(), "cal_segment_size",
-      ([&] { segment_size = offset[offset.numel() - 1].item<scalar_t>(); }));
-  at::Tensor output = torch::empty({segment_size}, offset.options());
+  at::Tensor output = torch::empty({total_size}, offset.options());
   AT_DISPATCH_INTEGRAL_TYPES(
       offset.scalar_type(), "gen_segment_indices_by_offset_cuda_impl", ([&] {
         const int64_t threads = 128;

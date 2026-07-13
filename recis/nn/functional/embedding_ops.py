@@ -412,7 +412,9 @@ def ragged_embedding_segment_reduce(
 
     if sparse_mode:
         num_segments = offsets.numel() - 1
-        segment_ids = torch.ops.recis.gen_segment_indices_by_offset(offsets)
+        segment_ids = torch.ops.recis.gen_segment_indices_by_offset(
+            offsets, reverse_indices.numel()
+        )
         return EmbeddingSegmentReduceSparse.apply(
             unique_emb,
             weight,

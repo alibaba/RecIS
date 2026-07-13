@@ -680,6 +680,7 @@ class GradWorkerMeanFunction(torch.autograd.Function):
             torch.Tensor: Gathered embeddings.
         """
         ctx.save_for_backward(index, slice_num)
+        ctx.grad_shape = embedding.shape
         return torch.ops.recis.gather(index, embedding)
 
     @staticmethod
@@ -695,6 +696,7 @@ class GradWorkerMeanFunction(torch.autograd.Function):
         """
         grad_outputs = grad_outputs.cuda()
         (index, slice_num) = ctx.saved_tensors
+        grad_shape = ctx.grad_shape
         if index.numel() == 0:
             return (
                 torch.zeros(
@@ -704,15 +706,12 @@ class GradWorkerMeanFunction(torch.autograd.Function):
                 None,
             )
         grad_outputs = grad_outputs / slice_num
-        index_unique, index_reverse = torch.unique(
-            index.view((-1,)), return_inverse=True, sorted=False
-        )
         reduce_grad = torch.zeros(
-            [index_unique.numel()] + list(grad_outputs.shape)[1:],
+            grad_shape,
             dtype=grad_outputs.dtype,
             device=grad_outputs.device,
         )
-        reduce_grad.index_add_(0, index_reverse, grad_outputs)
+        reduce_grad.index_add_(0, index, grad_outputs)
         return reduce_grad, None, None
 
 

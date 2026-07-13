@@ -127,13 +127,13 @@ class SegmentReduceTest(unittest.TestCase):
 class GenSegmentIndicesTest(unittest.TestCase):
     def test_gen_segment_indices(self):
         offsets = torch.tensor([0, 2, 5]).cuda()
-        ret = torch.ops.recis.gen_segment_indices_by_offset(offsets)
+        ret = torch.ops.recis.gen_segment_indices_by_offset(offsets, 5)
         ans = torch.tensor([0, 0, 1, 1, 1]).cuda()
         self.assertTrue(torch.equal(ret, ans))
 
     def test_empty_gen_segment_indices(self):
         offsets = torch.tensor([0]).cuda()
-        ret = torch.ops.recis.gen_segment_indices_by_offset(offsets)
+        ret = torch.ops.recis.gen_segment_indices_by_offset(offsets, 0)
         ans = torch.tensor([]).cuda()
         self.assertTrue(torch.equal(ret, ans))
 

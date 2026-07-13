@@ -19,7 +19,8 @@ at::Tensor segment_reduce_backward(at::Tensor grad_output,
 at::Tensor merge_offsets(const std::vector<at::Tensor>& offsets,
                          torch::Tensor& max_value);
 
-at::Tensor gen_segment_indices_by_offset(torch::Tensor offset);
+at::Tensor gen_segment_indices_by_offset(torch::Tensor offset,
+                                         int64_t total_size);
 
 // void embedding_segment_reduce_backward();
 }  // namespace functional
