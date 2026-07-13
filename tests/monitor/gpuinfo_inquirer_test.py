@@ -29,6 +29,7 @@ GpuVendor = _module.GpuVendor
 Precision = _module.Precision
 _normalize_gpu_name = _module._normalize_gpu_name
 _query_devices_via_torch = _module._query_devices_via_torch
+_ppu_fp32_tensor_override = _module._ppu_fp32_tensor_override
 # Handle done
 
 
@@ -87,7 +88,10 @@ class GpuInfoInquirerTest(unittest.TestCase):
                 GpuDevice(index=0, name="AMD Instinct MI308X", vendor=GpuVendor.AMD),
             ]
         )
-        self.assertEqual(inquirer.get_peak_tflops(0, Precision.fp16), 653.7)
+        self.assertEqual(inquirer.get_peak_tflops(0, Precision.fp16), 204.0)
+        self.assertEqual(inquirer.get_peak_tflops(0, Precision.fp32), 26.0)
+        self.assertEqual(inquirer.get_peak_tflops(0, Precision.bf16), 204.0)
+        self.assertEqual(inquirer.get_peak_tflops(0, Precision.int8), 408.0)
 
     def test_peak_tflops_ppu(self):
         inquirer = self._make_inquirer(
@@ -95,15 +99,52 @@ class GpuInfoInquirerTest(unittest.TestCase):
                 GpuDevice(index=0, name="PPU-ZW810E", vendor=GpuVendor.PPU),
             ]
         )
-        self.assertEqual(inquirer.get_peak_tflops(0, Precision.bf16), 148.0)
+        self.assertEqual(inquirer.get_peak_tflops(0, Precision.bf16), 123.0)
+        self.assertEqual(inquirer.get_peak_tflops(0, Precision.fp16), 123.0)
+        self.assertEqual(inquirer.get_peak_tflops(0, Precision.int8), 246.0)
 
-    def test_peak_tflops_fuzzy_match(self):
+    def test_peak_tflops_ppu_fp32_tensor_override(self):
+        """PPU ZW810E fp32 depends on PPU_FP32_TENSOR_OVERRIDE env var."""
+        inquirer = self._make_inquirer(
+            [
+                GpuDevice(index=0, name="PPU-ZW810E", vendor=GpuVendor.PPU),
+            ]
+        )
+        with patch.dict("os.environ", {"PPU_FP32_TENSOR_OVERRIDE": "1"}):
+            self.assertEqual(inquirer.get_peak_tflops(0, Precision.fp32), 61.5)
+        with patch.dict("os.environ", {"PPU_FP32_TENSOR_OVERRIDE": "0"}):
+            # Module-level dict was already built at import time, so the
+            # fp32 value is fixed.  We verify the helper function instead.
+            self.assertFalse(_ppu_fp32_tensor_override())
+        with patch.dict("os.environ", {"PPU_FP32_TENSOR_OVERRIDE": "1"}):
+            self.assertTrue(_ppu_fp32_tensor_override())
+
+    def test_ppu_fp32_tensor_override_default(self):
+        """When env var is unset, the default is '1' (enabled)."""
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertTrue(_ppu_fp32_tensor_override())
+
+    def test_peak_tflops_h100_sxm(self):
         inquirer = self._make_inquirer(
             [
                 GpuDevice(index=0, name="NVIDIA H100 SXM5", vendor=GpuVendor.NVIDIA),
             ]
         )
-        self.assertEqual(inquirer.get_peak_tflops(0, Precision.fp32), 67.0)
+        self.assertEqual(inquirer.get_peak_tflops(0, Precision.fp32), 60.0)
+        self.assertEqual(inquirer.get_peak_tflops(0, Precision.fp16), 990.0)
+        self.assertEqual(inquirer.get_peak_tflops(0, Precision.bf16), 990.0)
+        self.assertEqual(inquirer.get_peak_tflops(0, Precision.int8), 1980.0)
+
+    def test_peak_tflops_l40s(self):
+        inquirer = self._make_inquirer(
+            [
+                GpuDevice(index=0, name="NVIDIA L40S", vendor=GpuVendor.NVIDIA),
+            ]
+        )
+        self.assertEqual(inquirer.get_peak_tflops(0, Precision.fp32), 91.6)
+        self.assertEqual(inquirer.get_peak_tflops(0, Precision.fp16), 362.0)
+        self.assertEqual(inquirer.get_peak_tflops(0, Precision.bf16), 362.0)
+        self.assertEqual(inquirer.get_peak_tflops(0, Precision.int8), 724.0)
 
     def test_unknown_model_returns_none(self):
         inquirer = self._make_inquirer(

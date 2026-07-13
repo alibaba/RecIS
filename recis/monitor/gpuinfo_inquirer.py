@@ -5,6 +5,7 @@ retrieves GPU name and model, and provides peak FLOPS lookup based on GPU
 model and data precision.
 """
 
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -47,6 +48,17 @@ class GpuDevice:
     memory_total_mb: int = 0
 
 
+def _ppu_fp32_tensor_override() -> bool:
+    """Check whether PPU fp32 tensor-core override is enabled.
+
+    When the environment variable ``PPU_FP32_TENSOR_OVERRIDE`` is set to
+    ``"1"`` (default), the PPU device reports the higher fp32 peak FLOPS
+    achieved via tensor-core mode.  Otherwise it falls back to the
+    non-tensor-core baseline.
+    """
+    return os.environ.get("PPU_FP32_TENSOR_OVERRIDE", "1") == "1"
+
+
 # ---------------------------------------------------------------------------
 # Peak FLOPS in TFLOPS for each GPU model and precision.
 # Sources: official NVIDIA / AMD spec sheets.
@@ -55,10 +67,10 @@ class GpuDevice:
 _PEAK_TFLOP_DATASHEET: dict[GpuVendor, dict[str, dict[Precision, float]]] = {}
 _PEAK_TFLOP_DATASHEET[GpuVendor.NVIDIA] = {
     "H100 SXM": {
-        Precision.fp32: 67.0,
-        Precision.fp16: 1979.0,
-        Precision.bf16: 1979.0,
-        Precision.int8: 3958.0,
+        Precision.fp32: 60.0,
+        Precision.fp16: 990.0,
+        Precision.bf16: 990.0,
+        Precision.int8: 1980.0,
     },
     "H20": {
         Precision.fp32: 44.0,
@@ -79,10 +91,10 @@ _PEAK_TFLOP_DATASHEET[GpuVendor.NVIDIA] = {
         Precision.int8: 250.0,
     },
     "L40S": {
-        Precision.fp32: 90.5,
-        Precision.fp16: 181.0,
-        Precision.bf16: 181.0,
-        Precision.int8: 362.0,
+        Precision.fp32: 91.6,
+        Precision.fp16: 362.0,
+        Precision.bf16: 362.0,
+        Precision.int8: 724.0,
     },
     "L20": {
         Precision.fp32: 59.8,
@@ -105,14 +117,19 @@ _PEAK_TFLOP_DATASHEET[GpuVendor.NVIDIA] = {
     },
 }
 _PEAK_TFLOP_DATASHEET[GpuVendor.PPU] = {
-    "ZW810E": _PEAK_TFLOP_DATASHEET[GpuVendor.NVIDIA]["H20"],
+    "ZW810E": {
+        Precision.fp32: 61.5 if _ppu_fp32_tensor_override() else 25.0,
+        Precision.fp16: 123.0,
+        Precision.bf16: 123.0,
+        Precision.int8: 246.0,
+    },
 }
 _PEAK_TFLOP_DATASHEET[GpuVendor.AMD] = {
     "MI308X": {
-        Precision.fp32: 81.7,
-        Precision.fp16: 653.7,
-        Precision.bf16: 653.7,
-        Precision.int8: 1307.0,
+        Precision.fp32: 26.0,
+        Precision.fp16: 204.0,
+        Precision.bf16: 204.0,
+        Precision.int8: 408.0,
     },
 }
 
