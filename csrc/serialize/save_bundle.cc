@@ -1,6 +1,7 @@
 #include "serialize/save_bundle.h"
 
 #include <chrono>
+#include <cstdint>
 #include <exception>
 #include <memory>
 #include <set>
@@ -288,6 +289,8 @@ int SaveBundle::GenJsonInfo(const std::string &json_file,
 void SaveBundle::GetSubFileData(const std::vector<std::string> &json_files,
                                 nlohmann::json &json_data) {
   std::unordered_map<std::string, int> record_files;
+  uint32_t wait_secs = 0;
+  const uint32_t log_interval_secs = 60;
   while (record_files.size() != json_files.size()) {
     for (const auto &json_file : json_files) {
       if (0 == record_files.count(json_file)) {
@@ -297,8 +300,13 @@ void SaveBundle::GetSubFileData(const std::vector<std::string> &json_files,
       }
     }
     if (record_files.size() != json_files.size()) {
-      LOG(ERROR) << "Not all worker save done, wait 10s ...";
-      std::this_thread::sleep_for(std::chrono::milliseconds(10000));
+      if (wait_secs % log_interval_secs == 0) {
+        LOG(ERROR) << "Waiting for " << json_files.size() - record_files.size()
+                   << "/" << json_files.size() << " workers, elapsed "
+                   << wait_secs << "s";
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+      wait_secs++;
     }
   }
 }

@@ -668,8 +668,9 @@ class Saver:
             with fs.open(meta_file_path, "r") as f:
                 existing_data = json.load(f)
         existing_data.update(data)
+        json_str = json.dumps(existing_data, indent=4)
         with fs.open(meta_file_path, "w") as out_f:
-            json.dump(existing_data, out_f, indent=4)
+            out_f.write(json_str)  # 1次 write，全部内容
 
     def _save_rank0_states(self, ckpt_path: str, fs, io_states: dict):
         """rank-0 专属的状态落盘: 补空索引 + dense 参数 + extra 参数.
