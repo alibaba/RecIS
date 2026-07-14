@@ -32,6 +32,8 @@
 #endif
 
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <type_traits>
 #include <utility>
@@ -507,7 +509,9 @@ class flat_hash_map {
     template <typename CG, typename ProbeKey, typename Hash>
     __device__ iterator initial_slot(CG g, ProbeKey const& k, Hash hash) noexcept
     {
-      return &slots_[(hash(k) + g.thread_rank()) % capacity_];
+      return &slots_[(static_cast<std::size_t>(hash(k)) +
+                      static_cast<std::size_t>(g.thread_rank())) %
+                     capacity_];
     }
 
     /**
@@ -527,7 +531,9 @@ class flat_hash_map {
     template <typename CG, typename ProbeKey, typename Hash>
     __device__ const_iterator initial_slot(CG g, ProbeKey const& k, Hash hash) const noexcept
     {
-      return &slots_[(hash(k) + g.thread_rank()) % capacity_];
+      return &slots_[(static_cast<std::size_t>(hash(k)) +
+                      static_cast<std::size_t>(g.thread_rank())) %
+                     capacity_];
     }
 
     /**
@@ -567,8 +573,8 @@ class flat_hash_map {
     template <typename CG>
     __device__ iterator next_slot(CG g, iterator s) noexcept
     {
-      uint32_t index = s - slots_;
-      return &slots_[(index + g.size()) % capacity_];
+      auto const index = static_cast<std::size_t>(s - slots_);
+      return &slots_[(index + static_cast<std::size_t>(g.size())) % capacity_];
     }
 
     /**
@@ -585,8 +591,8 @@ class flat_hash_map {
     template <typename CG>
     __device__ const_iterator next_slot(CG g, const_iterator s) const noexcept
     {
-      uint32_t index = s - slots_;
-      return &slots_[(index + g.size()) % capacity_];
+      auto const index = static_cast<std::size_t>(s - slots_);
+      return &slots_[(index + static_cast<std::size_t>(g.size())) % capacity_];
     }
 
     /**

@@ -64,6 +64,10 @@ flat_hash_map<Key, Value, Scope, Allocator>::flat_hash_map(std::size_t initial_c
     erased_key_sentinel_{empty_key_sentinel.value},
     allocator_{alloc}
 {
+  CUCO_EXPECTS(capacity_ <= std::numeric_limits<std::uint32_t>::max(),
+               "flat_hash_map capacity must not exceed UINT32_MAX.",
+               std::runtime_error);
+
   slots_ = std::allocator_traits<slot_allocator_type>::allocate(allocator_, capacity_);
 
   auto constexpr block_size = 256;
@@ -92,6 +96,9 @@ flat_hash_map<Key, Value, Scope, Allocator>::flat_hash_map(std::size_t initial_c
 {
   CUCO_EXPECTS(empty_key_sentinel_ != erased_key_sentinel_,
                "The empty key sentinel and erased key sentinel cannot be the same value.",
+               std::runtime_error);
+  CUCO_EXPECTS(capacity_ <= std::numeric_limits<std::uint32_t>::max(),
+               "flat_hash_map capacity must not exceed UINT32_MAX.",
                std::runtime_error);
 
   slots_ = std::allocator_traits<slot_allocator_type>::allocate(allocator_, capacity_);
@@ -332,6 +339,10 @@ void flat_hash_map<Key, Value, Scope, Allocator>::rehash(size_t capacity,
   auto const old_slots    = this->slots_;
   auto const old_capacity = capacity_;
   capacity                = std::max(std::size_t{1}, capacity);
+  // CG bulk probing supports at most the uint32_t slot-index domain.
+  CUCO_EXPECTS(capacity <= std::numeric_limits<std::uint32_t>::max(),
+               "flat_hash_map capacity must not exceed UINT32_MAX.",
+               std::runtime_error);
   slots_    = std::allocator_traits<slot_allocator_type>::allocate(allocator_, capacity);
   capacity_ = capacity;
 
@@ -732,7 +743,9 @@ __device__ bool flat_hash_map<Key, Value, Scope, Allocator>::device_mutable_view
     if (exists) {
       uint32_t src_lane = __ffs(static_cast<int>(exists)) - 1;
 
-      bool status;
+      // All lanes execute shfl below; only src_lane writes the result.
+      // Initialize the other lanes' local value so the cast passed to shfl is defined.
+      bool status{false};
       if (g.thread_rank() == src_lane) {
         if constexpr (cuco::detail::is_packable<value_type>()) {
           auto slot = reinterpret_cast<
