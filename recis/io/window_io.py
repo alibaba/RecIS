@@ -858,11 +858,8 @@ def make_lake_stream_window_io(step_mins=60, repeat_mins=None, name="train"):
                 logging_str += f" repeat_mins[{self._repeat / (60 * _US):.0f}] repeat_times[{self._epochs}]"
             logging_str += "."
             logger.info(logging_str)
-            try:
-                next(iter(self))
-            except StopIteration:
-                return True
-            return False
+            reach_end, _ = next(iter(self))
+            return reach_end
 
     return _LakeStreamWindowIO
 
