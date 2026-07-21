@@ -28,9 +28,10 @@ class IdMap : public torch::CustomClassHolder {
 
   int64_t GetIdNum() { return id_allocator_->GetSize(); }
   int64_t GetActiveIdNum() { return id_allocator_->GetActiveSize(); }
-  virtual torch::Tensor Lookup(const torch::Tensor &ids) = 0;
-  virtual torch::Tensor LookupReadOnly(const torch::Tensor &ids) = 0;
-  virtual torch::Tensor InsertIds(const torch::Tensor &ids) = 0;
+  virtual void Lookup(const torch::Tensor &ids, torch::Tensor &output) = 0;
+  virtual void LookupReadOnly(const torch::Tensor &ids,
+                              torch::Tensor &output) = 0;
+  virtual void InsertIds(const torch::Tensor &ids, torch::Tensor &output) = 0;
   virtual torch::Tensor Ids() = 0;
   virtual torch::Tensor Index() = 0;
   virtual void DeleteIds(const torch::Tensor &ids,

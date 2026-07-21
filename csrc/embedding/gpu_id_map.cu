@@ -18,17 +18,16 @@ GpuIdMap::GpuIdMap(torch::Device id_device) {
                                          cuco::erased_key{ErasedKey}});
 }
 
-torch::Tensor GpuIdMap::Lookup(const torch::Tensor &ids) {
+void GpuIdMap::Lookup(const torch::Tensor &ids, torch::Tensor &output) {
   std::lock_guard<std::mutex> lock(mu_);
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  torch::Tensor index = torch::empty_like(ids, torch::dtype(torch::kInt64));
-  if (ids.numel() == 0) return index;
+  if (ids.numel() == 0) return;
   torch::Tensor not_find_mask =
       torch::empty_like(ids, torch::dtype(torch::kBool));
   // lookup in cuco map
   ids_map_->find_and_mask(
       ids.data_ptr<int64_t>(), ids.data_ptr<int64_t>() + ids.numel(),
-      index.data_ptr<int64_t>(), not_find_mask.data_ptr<bool>(),
+      output.data_ptr<int64_t>(), not_find_mask.data_ptr<bool>(),
       cuco::default_hash_function<int64_t>{}, cuda::std::equal_to<int64_t>{},
       stream);
   // generate index for not exist ids
@@ -38,8 +37,10 @@ torch::Tensor GpuIdMap::Lookup(const torch::Tensor &ids) {
   // fill new index to index result
   auto new_ids_tuple = recis::functional::mask_key_index_op(
       ids, not_find_mask, mask_index, gen_num);
-  index = recis::functional::scatter_ids_with_mask_op(
-      index, new_index, std::get<1>(new_ids_tuple));
+  // scatter_ids_with_mask_op modifies output in-place (torch::Tensor is
+  // reference-semantic), so no extra copy_ is needed.
+  recis::functional::scatter_ids_with_mask_op(output, new_index,
+                                              std::get<1>(new_ids_tuple));
   // insert ids and index not exist into cuco map
   auto pairs = thrust::make_transform_iterator(
       thrust::counting_iterator<std::size_t>{0},
@@ -51,29 +52,25 @@ torch::Tensor GpuIdMap::Lookup(const torch::Tensor &ids) {
   ids_map_->insert(pairs, pairs + gen_num,
                    cuco::default_hash_function<int64_t>{},
                    cuda::std::equal_to<int64_t>{}, stream);
-  return index;
 }
 
-torch::Tensor GpuIdMap::LookupReadOnly(const torch::Tensor &ids) {
+void GpuIdMap::LookupReadOnly(const torch::Tensor &ids, torch::Tensor &output) {
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  torch::Tensor index = torch::empty_like(ids, torch::dtype(torch::kInt64));
-  if (ids.numel() == 0) return index;
+  if (ids.numel() == 0) return;
   torch::Tensor not_find_mask =
       torch::empty_like(ids, torch::dtype(torch::kBool));
   // lookup in cuco map
   ids_map_->find_and_mask(
       ids.data_ptr<int64_t>(), ids.data_ptr<int64_t>() + ids.numel(),
-      index.data_ptr<int64_t>(), not_find_mask.data_ptr<bool>(),
+      output.data_ptr<int64_t>(), not_find_mask.data_ptr<bool>(),
       cuco::default_hash_function<int64_t>{}, cuda::std::equal_to<int64_t>{},
       stream);
-  // generate index for not exist ids
-  auto out_index = torch::where(not_find_mask, kNullIndex, index);
-  return out_index;
+  // set not found ids to kNullIndex in-place
+  output.masked_fill_(not_find_mask, kNullIndex);
 }
 
-torch::Tensor GpuIdMap::InsertIds(const torch::Tensor &ids) {
-  auto index = Lookup(ids);
-  return index;
+void GpuIdMap::InsertIds(const torch::Tensor &ids, torch::Tensor &output) {
+  Lookup(ids, output);
 }
 
 std::pair<torch::Tensor, torch::Tensor> GpuIdMap::SnapShot() {

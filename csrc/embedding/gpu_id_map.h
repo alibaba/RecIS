@@ -17,9 +17,9 @@ class GpuIdMap : public IdMap {
   const float LoadFactor{0.6};
 
   GpuIdMap(torch::Device id_device);
-  torch::Tensor Lookup(const torch::Tensor &ids) override;
-  torch::Tensor LookupReadOnly(const torch::Tensor &ids) override;
-  torch::Tensor InsertIds(const torch::Tensor &ids) override;
+  void Lookup(const torch::Tensor &ids, torch::Tensor &output) override;
+  void LookupReadOnly(const torch::Tensor &ids, torch::Tensor &output) override;
+  void InsertIds(const torch::Tensor &ids, torch::Tensor &output) override;
   torch::Tensor Ids() override;
   torch::Tensor Index() override;
   void DeleteIds(const torch::Tensor &ids, const torch::Tensor &index) override;

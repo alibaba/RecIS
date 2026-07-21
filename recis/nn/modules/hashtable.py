@@ -162,6 +162,7 @@ class HashTable(torch.nn.Module):
         name: str = "hashtable",
         grad_reduce_by: str = "worker",
         filter_hook: Optional[FilterHook] = None,
+        use_pinned_memory: bool = False,
     ):
         """Initialize hash table module.
 
@@ -177,6 +178,9 @@ class HashTable(torch.nn.Module):
             name (str, optional): Table name. Defaults to "hashtable".
             grad_reduce_by (str, optional): Gradient reduction. Defaults to "worker".
             filter_hook (Optional[FilterHook], optional): Filter hook. Defaults to None.
+            use_pinned_memory (bool, optional): Whether to use pinned memory for
+                CPU intermediate tensors to accelerate H2D/D2H transfers.
+                Defaults to False. Set to True to enable pinned memory.
 
         Raises:
             AssertionError: If grad_reduce_by is not "id" or "worker".
@@ -219,6 +223,7 @@ class HashTable(torch.nn.Module):
             slice.slice_begin,
             slice.slice_end,
             slice.slice_size,
+            use_pinned_memory,
         )
         self._backward_holder = torch.tensor([0.0], requires_grad=True)
         self._worker_num = int(os.environ.get("WORLD_SIZE", 1))
@@ -295,7 +300,7 @@ class HashTable(torch.nn.Module):
         else:
             ids = ids.detach()
             _, embedding = self._hashtable_impl.embedding_lookup(ids, True)
-            embedding = embedding.cuda()
+            embedding = embedding.to(device="cuda", non_blocking=True)
             embedding = torch.ops.recis.gather(index, embedding)
         return embedding
 
@@ -589,7 +594,9 @@ class HashTableLookupHelpFunction(torch.autograd.Function):
         index, embedding = hashtable.embedding_lookup(ids, admit_hook_impl is not None)
         ctx.save_for_backward(index)
         ctx.hashtable = hashtable
-        return index.to(device="cuda"), embedding.to(device="cuda")
+        return index.to(device="cuda", non_blocking=True), embedding.to(
+            device="cuda", non_blocking=True
+        )
 
     @staticmethod
     def backward(ctx, grad_output_index, grad_output_emb) -> torch.Tensor:
@@ -605,8 +612,8 @@ class HashTableLookupHelpFunction(torch.autograd.Function):
         """
         (index,) = ctx.saved_tensors
         ctx.hashtable.accept_grad(
-            index.to(device="cuda"),
-            grad_output_emb.to(device="cuda"),
+            index.to(device="cuda", non_blocking=True),
+            grad_output_emb.to(device="cuda", non_blocking=True),
         )
         return (None, None, None, None, None)
 
@@ -644,7 +651,7 @@ class GradIDMeanFunction(torch.autograd.Function):
         Returns:
             Tuple[torch.Tensor, None]: (reduced_gradients, None)
         """
-        grad_outputs = grad_outputs.cuda()
+        grad_outputs = grad_outputs.to(device="cuda", non_blocking=True)
         (index,) = ctx.saved_tensors
         if index.numel() == 0:
             return (
@@ -694,7 +701,7 @@ class GradWorkerMeanFunction(torch.autograd.Function):
         Returns:
             Tuple[torch.Tensor, None, None]: (reduced_gradients, None, None)
         """
-        grad_outputs = grad_outputs.cuda()
+        grad_outputs = grad_outputs.to(device="cuda", non_blocking=True)
         (index, slice_num) = ctx.saved_tensors
         grad_shape = ctx.grad_shape
         if index.numel() == 0:

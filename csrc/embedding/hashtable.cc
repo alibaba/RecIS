@@ -65,9 +65,11 @@ Hashtable::Hashtable(int64_t block_size,
                      torch::Dtype dtype, torch::Device device, bool coalesce,
                      const std::vector<std::string> &children,
                      at::intrusive_ptr<recis::embedding::Generator> generator,
-                     int64_t slice_begin, int64_t slice_end, int64_t slice_size)
+                     int64_t slice_begin, int64_t slice_end, int64_t slice_size,
+                     bool use_pinned_memory)
     : config_(block_size, embedding_shape, dtype, device, coalesce, children,
-              generator, slice_begin, slice_end, slice_size) {
+              generator, slice_begin, slice_end, slice_size,
+              use_pinned_memory) {
   ResetInternalState();
 }
 
@@ -76,10 +78,11 @@ c10::intrusive_ptr<Hashtable> Hashtable::Make(
     torch::Dtype dtype, torch::Device device, bool coalesce,
     const std::vector<std::string> &children,
     at::intrusive_ptr<recis::embedding::Generator> generator,
-    int64_t slice_begin, int64_t slice_end, int64_t slice_size) {
+    int64_t slice_begin, int64_t slice_end, int64_t slice_size,
+    bool use_pinned_memory) {
   auto ret = c10::make_intrusive<Hashtable>(
       block_size, embedding_shape, dtype, device, coalesce, children, generator,
-      slice_begin, slice_end, slice_size);
+      slice_begin, slice_end, slice_size, use_pinned_memory);
   return ret;
 }
 
@@ -110,6 +113,34 @@ void Hashtable::ResetInternalState() {
 
   grad_ = {};
   grad_index_ = {};
+}
+
+torch::Tensor Hashtable::ToStorageDevice(const torch::Tensor &tensor) {
+  auto storage_device = slot_group_->EmbSlot()->TensorOptions().device();
+  if (tensor.device() == storage_device) {
+    return tensor;
+  }
+  if (storage_device.is_cpu()) {
+    // Use pinned memory for efficient D2H transfer (direct DMA,
+    // no staging buffer) when enabled.
+    auto opts = tensor.options().device(torch::kCPU);
+    if (config_.use_pinned_memory) {
+      opts = opts.pinned_memory(true);
+    }
+    auto pinned = torch::empty(tensor.sizes(), opts);
+    pinned.copy_(tensor);
+    return pinned;
+  }
+  return tensor.to(storage_device);
+}
+
+torch::Tensor Hashtable::CreateOutput(torch::IntArrayRef sizes,
+                                      torch::Dtype dtype) {
+  auto opts = torch::TensorOptions().dtype(dtype).device(config_.device);
+  if (config_.device.is_cpu() && config_.use_pinned_memory) {
+    opts = opts.pinned_memory(true);
+  }
+  return torch::empty(sizes, opts);
 }
 
 void Hashtable::AcceptGrad(const torch::Tensor &grad_index,
@@ -180,14 +211,17 @@ at::intrusive_ptr<recis::embedding::ChildrenInfo> Hashtable::ChildrenInfo() {
 std::tuple<torch::Tensor, torch::Tensor> Hashtable::EmbeddingLookup(
     const torch::Tensor &ids, bool readonly) {
   if (readonly) return EmbeddingLookupReadOnly(ids);
-  torch::Tensor ids_t =
-      ids.to(slot_group_->EmbSlot()->TensorOptions().device());
-  torch::Tensor index = id_map_->Lookup(ids_t);
+  torch::Tensor ids_t = ToStorageDevice(ids);
+  torch::Tensor index = CreateOutput(ids_t.sizes(), torch::kInt64);
+  id_map_->Lookup(ids_t, index);
   ReserveBlocksForIds(id_map_->GetIdNum());
   auto emb_slot = slot_group_->EmbSlot();
-  torch::Tensor out_embedding = recis::functional::block_gather(
-      index, (*emb_slot->Values()), slot_group_->BlockSize(), kNullIndex,
-      false);
+  int64_t embedding_dim = (*emb_slot->Values())[0].size(1);
+  torch::Tensor out_embedding =
+      CreateOutput({ids_t.numel(), embedding_dim}, emb_slot->Dtype());
+  recis::functional::block_gather(index, (*emb_slot->Values()),
+                                  slot_group_->BlockSize(), kNullIndex, false,
+                                  out_embedding);
   return std::make_tuple(index, out_embedding);
 }
 
@@ -200,8 +234,8 @@ void Hashtable::Insert(const torch::Tensor &ids,
   TORCH_CHECK(ids.size(0) == embedding.size(0),
               "size of ids and embedding dismatch, ids: ", ids.size(0),
               " embedding: ", embedding.size(0));
-  torch::Tensor ids_t = ids.to(emb_slot->TensorOptions().device());
-  torch::Tensor embedding_t = embedding.to(emb_slot->TensorOptions().device());
+  torch::Tensor ids_t = ToStorageDevice(ids);
+  torch::Tensor embedding_t = ToStorageDevice(embedding);
   auto index = InsertLookupIndex(ids_t);
   auto &embedding_blocks = (*slot_group_->EmbSlot()->Values());
   auto block_size = slot_group_->BlockSize();
@@ -216,8 +250,8 @@ void Hashtable::UpdateSlot(const std::string &slot_name,
   TORCH_CHECK(embedding.scalar_type() == slot->Dtype(),
               "embedding type must be [", slot->Dtype(), "] but get ",
               embedding.scalar_type());
-  torch::Tensor index_t = index.to(slot->TensorOptions().device());
-  torch::Tensor embedding_t = embedding.to(slot->TensorOptions().device());
+  torch::Tensor index_t = ToStorageDevice(index);
+  torch::Tensor embedding_t = ToStorageDevice(embedding);
 
   slot->IndexInsert(index_t, embedding_t);
 }
@@ -229,20 +263,24 @@ void Hashtable::Reserve(size_t id_size) {
 
 std::tuple<torch::Tensor, torch::Tensor> Hashtable::EmbeddingLookupReadOnly(
     const torch::Tensor &ids) {
-  torch::Tensor ids_t =
-      ids.to(slot_group_->EmbSlot()->TensorOptions().device());
-  torch::Tensor index = id_map_->LookupReadOnly(ids_t);
+  torch::Tensor ids_t = ToStorageDevice(ids);
+  torch::Tensor index = CreateOutput(ids_t.sizes(), torch::kInt64);
+  id_map_->LookupReadOnly(ids_t, index);
   ReserveBlocksForIds(id_map_->GetIdNum());
   auto emb_slot = slot_group_->EmbSlot();
-  torch::Tensor out_embedding = recis::functional::block_gather(
-      index, (*emb_slot->Values()), slot_group_->BlockSize(), kNullIndex, true);
+  int64_t embedding_dim = (*emb_slot->Values())[0].size(1);
+  torch::Tensor out_embedding =
+      CreateOutput({ids_t.numel(), embedding_dim}, emb_slot->Dtype());
+  recis::functional::block_gather(index, (*emb_slot->Values()),
+                                  slot_group_->BlockSize(), kNullIndex, true,
+                                  out_embedding);
   return std::make_tuple(index, out_embedding);
 }
 
 torch::Tensor Hashtable::InsertLookupIndex(const torch::Tensor &ids) {
-  torch::Tensor ids_t =
-      ids.to(slot_group_->EmbSlot()->TensorOptions().device());
-  auto index = id_map_->InsertIds(ids_t);
+  torch::Tensor ids_t = ToStorageDevice(ids);
+  torch::Tensor index = CreateOutput(ids_t.sizes(), torch::kInt64);
+  id_map_->InsertIds(ids_t, index);
   ReserveBlocksForIds(id_map_->GetIdNum());
   return index;
 }
@@ -262,10 +300,8 @@ torch::Tensor Hashtable::InsertLookupIndexWithIndicator(
       indicator.bitwise_and_(copy_indicator);
     }
   }
-  torch::Tensor ids_t =
-      ids.to(slot_group_->EmbSlot()->TensorOptions().device());
-  torch::Tensor indicator_t =
-      indicator.to(slot_group_->EmbSlot()->TensorOptions().device());
+  torch::Tensor ids_t = ToStorageDevice(ids);
+  torch::Tensor indicator_t = ToStorageDevice(indicator);
   auto insert_ids = torch::masked_select(ids_t, indicator_t);
   auto insert_index = InsertLookupIndex(insert_ids);
   auto index = torch::zeros_like(ids_t, insert_index.options());
@@ -274,7 +310,8 @@ torch::Tensor Hashtable::InsertLookupIndexWithIndicator(
 }
 
 torch::Tensor Hashtable::LookupIndexReadOnly(const torch::Tensor &ids) {
-  torch::Tensor index = id_map_->LookupReadOnly(ids);
+  torch::Tensor index = CreateOutput(ids.sizes(), torch::kInt64);
+  id_map_->LookupReadOnly(ids, index);
   return index;
 }
 
@@ -307,10 +344,8 @@ void Hashtable::Delete(const torch::Tensor &ids, const torch::Tensor &index,
   if (ids.numel() == 0) {
     return;
   }
-  torch::Tensor ids_t =
-      ids.to(slot_group_->EmbSlot()->TensorOptions().device());
-  torch::Tensor index_t =
-      index.to(slot_group_->EmbSlot()->TensorOptions().device());
+  torch::Tensor ids_t = ToStorageDevice(ids);
+  torch::Tensor index_t = ToStorageDevice(index);
   id_map_->DeleteIds(ids_t, index_t);
   for (int64_t i = 0; i < slot_group_->GroupSize(); ++i) {
     if (!preserve_slot.empty() && slot_group_->GetSlotIndex(preserve_slot) == i)
@@ -352,9 +387,13 @@ Hashtable::GatherChild(const std::string &child,
   child_slots.reserve(slot_names.size());
   for (const auto &slot_name : slot_names) {
     auto slot = slot_group_->GetSlotByName(slot_name);
-    torch::Tensor child_slot = recis::functional::block_gather(
-        child_index, *(slot->Values()), slot_group_->BlockSize(), kNullIndex,
-        true);
+    auto &emb_blocks = *(slot->Values());
+    int64_t embedding_dim = emb_blocks[0].size(1);
+    torch::Tensor child_slot = CreateOutput(
+        {child_index.numel(), embedding_dim}, emb_blocks[0].scalar_type());
+    recis::functional::block_gather(child_index, emb_blocks,
+                                    slot_group_->BlockSize(), kNullIndex, true,
+                                    child_slot);
     child_slots.push_back(std::move(child_slot));
   }
   return {child_ids, child_index, child_slots};

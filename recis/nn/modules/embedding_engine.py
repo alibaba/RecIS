@@ -620,12 +620,20 @@ class EmbeddingEngine(nn.Module):
 
     """
 
-    def __init__(self, emb_options: dict[str, EmbeddingOption]):
+    def __init__(
+        self,
+        emb_options: dict[str, EmbeddingOption],
+        use_pinned_memory: bool = False,
+    ):
         """Initialize embedding engine with multiple embedding options.
 
         Args:
             emb_options (dict[str, EmbeddingOption]): Dictionary mapping feature
                 names to their embedding configurations.
+            use_pinned_memory (bool, optional): Whether to use pinned memory for
+                CPU intermediate tensors in all hashtables to accelerate H2D/D2H
+                transfers. Defaults to False. Set to True to enable pinned memory
+                in scenarios where pinned memory is available.
 
         Raises:
             RuntimeError: If embedding options have conflicting configurations
@@ -654,7 +662,10 @@ class EmbeddingEngine(nn.Module):
             self._fea_to_group[fea_name] = self._fea_group[ht_name]
 
         for ht_name, fea_group in self._fea_group.items():
-            self._ht[ht_name] = DynamicEmbedding(fea_group.embedding_info())
+            self._ht[ht_name] = DynamicEmbedding(
+                fea_group.embedding_info(),
+                use_pinned_memory=use_pinned_memory,
+            )
             logger.info(
                 f"ht name: {ht_name}, coalesced info: {fea_group.embedding_info().coalesced_info()}, children: {fea_group.embedding_info().children}"
             )
@@ -881,9 +892,7 @@ class EmbeddingEngine(nn.Module):
                         run_emb.emb = run_emb.emb.detach()
                     emb_outs[name] = run_emb
                     continue
-                emb_list = list(
-                    torch.split(run_emb, run_fea.split_size(), dim=0)
-                )
+                emb_list = list(torch.split(run_emb, run_fea.split_size(), dim=0))
 
                 for name, emb, out_shape in zip(
                     *(

@@ -248,18 +248,17 @@ torch::Tensor gather_cuda(const torch::Tensor ids, const torch::Tensor emb) {
   return output;
 }
 
-torch::Tensor block_gather_cuda(const torch::Tensor ids,
-                                std::vector<torch::Tensor>& emb_blocks,
-                                int64_t block_size, int64_t default_key,
-                                bool readonly, int64_t beg, int64_t end) {
+void block_gather_cuda(const torch::Tensor ids,
+                       std::vector<torch::Tensor>& emb_blocks,
+                       int64_t block_size, int64_t default_key, bool readonly,
+                       int64_t beg, int64_t end, torch::Tensor& output) {
   TORCH_CHECK(ids.device().type() == torch::kCUDA,
               "Input must be on CUDA device");
   TORCH_CHECK(emb_blocks[0].device().type() == torch::kCUDA,
               "Embedding must be on CUDA device");
   int64_t num_ids = end - beg;
   int embedding_dim = emb_blocks[0].size(1);
-  auto output = torch::empty({num_ids, embedding_dim}, emb_blocks[0].options());
-  if (num_ids == 0) return output;
+  if (num_ids == 0) return;
   auto block_num = emb_blocks.size();
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   AT_DISPATCH_ALL_TYPES_AND2(
@@ -274,7 +273,6 @@ torch::Tensor block_gather_cuda(const torch::Tensor ids,
             num_ids, embedding_dim, block_size, default_key,
             output.data_ptr<scalar_t>(), readonly, beg);
       }));
-  return output;
 }
 
 template <typename scalar_t>

@@ -193,18 +193,18 @@ torch::Tensor gather_cpu_kernel(const torch::Tensor ids,
   return output;
 }
 
-torch::Tensor block_gather_cpu_kernel(const torch::Tensor ids,
-                                      std::vector<torch::Tensor> &emb_blocks,
-                                      int64_t block_size, int64_t default_key,
-                                      bool readonly, int64_t beg, int64_t end) {
+void block_gather_cpu_kernel(const torch::Tensor ids,
+                             std::vector<torch::Tensor> &emb_blocks,
+                             int64_t block_size, int64_t default_key,
+                             bool readonly, int64_t beg, int64_t end,
+                             torch::Tensor &output) {
   TORCH_CHECK(ids.device().type() == torch::kCPU,
               "CPU version requires CPU input");
   TORCH_CHECK(emb_blocks[0].device().type() == torch::kCPU,
               "CPU version requires CPU emb_blocks");
   int64_t num_ids = end - beg;
   int64_t embedding_dim = emb_blocks[0].size(1);
-  auto output = torch::empty({num_ids, embedding_dim}, emb_blocks[0].options());
-  if (num_ids == 0) return output;
+  if (num_ids == 0) return;
   if (readonly) {
     AT_DISPATCH_ALL_TYPES_AND(
         at::ScalarType::Half, output.scalar_type(),
@@ -224,7 +224,6 @@ torch::Tensor block_gather_cpu_kernel(const torch::Tensor ids,
                                 at::parallel_for(beg, end, 0, gather_functor);
                               }));
   }
-  return output;
 }
 
 template <class TEmb>
@@ -297,14 +296,27 @@ torch::Tensor block_gather_bind(const torch::Tensor ids,
 torch::Tensor block_gather(const torch::Tensor ids,
                            std::vector<torch::Tensor> &emb_blocks,
                            int64_t block_size, int64_t default_key,
-                           bool readonly) {
-  if (ids.device().type() == torch::kCUDA) {
-    return block_gather_cuda(ids, emb_blocks, block_size, default_key, readonly,
-                             0, ids.numel());
+                           bool readonly, c10::optional<torch::Tensor> output) {
+  int64_t num_ids = ids.numel();
+  int64_t embedding_dim = emb_blocks[0].size(1);
+  torch::Tensor out;
+  if (output.has_value()) {
+    out = output.value();
+    TORCH_CHECK(out.size(0) == num_ids && out.size(1) == embedding_dim,
+                "output tensor size mismatch, expected [", num_ids, ", ",
+                embedding_dim, "] but got [", out.size(0), ", ", out.size(1),
+                "]");
   } else {
-    return block_gather_cpu_kernel(ids, emb_blocks, block_size, default_key,
-                                   readonly, 0, ids.numel());
+    out = torch::empty({num_ids, embedding_dim}, emb_blocks[0].options());
   }
+  if (ids.device().type() == torch::kCUDA) {
+    block_gather_cuda(ids, emb_blocks, block_size, default_key, readonly, 0,
+                      num_ids, out);
+  } else {
+    block_gather_cpu_kernel(ids, emb_blocks, block_size, default_key, readonly,
+                            0, num_ids, out);
+  }
+  return out;
 }
 
 torch::Tensor block_filter(const torch::Tensor ids,
@@ -327,12 +339,16 @@ torch::Tensor block_gather_by_range(const torch::Tensor ids,
                                     std::vector<torch::Tensor> &emb_blocks,
                                     int64_t block_size, int64_t beg,
                                     int64_t end) {
+  int64_t num_ids = end - beg;
+  int64_t embedding_dim = emb_blocks[0].size(1);
+  auto output = torch::empty({num_ids, embedding_dim}, emb_blocks[0].options());
   if (ids.device().type() == torch::kCUDA) {
-    return block_gather_cuda(ids, emb_blocks, block_size, -1, false, beg, end);
+    block_gather_cuda(ids, emb_blocks, block_size, -1, false, beg, end, output);
   } else {
-    return block_gather_cpu_kernel(ids, emb_blocks, block_size, -1, false, beg,
-                                   end);
+    block_gather_cpu_kernel(ids, emb_blocks, block_size, -1, false, beg, end,
+                            output);
   }
+  return output;
 }
 
 void block_insert_cpu_kernel(const torch::Tensor ids,

@@ -209,6 +209,7 @@ class RecISModel(nn.Module):
         sequence_blocks=None,
         multihash_conf=None,
         block_builder_class=BlockBuilder,
+        use_pinned_memory: bool = False,
     ):
         """Initialize the RecIS Model.
 
@@ -227,10 +228,16 @@ class RecISModel(nn.Module):
                 Defaults to None.
             block_builder_class (type, optional): Class to use for block building.
                 Defaults to BlockBuilder.
+            use_pinned_memory (bool, optional): Whether to use pinned memory for
+                CPU intermediate tensors in all hashtables to accelerate H2D/D2H
+                transfers. Defaults to False. Set to True to enable pinned memory
+                in scenarios where pinned memory is available.
         """
         super().__init__()
         self.feature_engine = FeatureEngine(feature_list=feature_confs)
-        self.embedding_engine = EmbeddingEngine(emb_confs)
+        self.embedding_engine = EmbeddingEngine(
+            emb_confs, use_pinned_memory=use_pinned_memory
+        )
         self.block_builder = block_builder_class(
             feature_blocks,
             multihash_conf=multihash_conf,
@@ -240,7 +247,12 @@ class RecISModel(nn.Module):
         self.labels = labels
 
     @staticmethod
-    def from_fg(fg, split_seq=False, block_builder_class=BlockBuilder):
+    def from_fg(
+        fg,
+        split_seq=False,
+        block_builder_class=BlockBuilder,
+        use_pinned_memory: bool = False,
+    ):
         """Create a RecISModel instance from a feature generator.
 
         This factory method provides a convenient way to create a RecISModel
@@ -253,6 +265,10 @@ class RecISModel(nn.Module):
                 regular blocks. Defaults to False.
             block_builder_class (type, optional): Class to use for block building.
                 Defaults to BlockBuilder.
+            use_pinned_memory (bool, optional): Whether to use pinned memory for
+                CPU intermediate tensors in all hashtables to accelerate H2D/D2H
+                transfers. Defaults to False. Set to True to enable pinned memory
+                in scenarios where pinned memory is available.
 
         Returns:
             RecISModel: Configured RecISModel instance ready for training or
@@ -278,6 +294,7 @@ class RecISModel(nn.Module):
             sequence_blocks=fg.seq_block_names if split_seq else None,
             multihash_conf=fg.multihash_conf,
             block_builder_class=block_builder_class,
+            use_pinned_memory=use_pinned_memory,
         )
 
     def forward(self, samples: dict):

@@ -44,12 +44,13 @@ class Hashtable : public torch::CustomClassHolder {
     int64_t slice_begin;
     int64_t slice_end;
     int64_t slice_size;
+    bool use_pinned_memory;
 
     HashtableConfig(int64_t bs, const std::vector<int64_t> &shape,
                     torch::Dtype dt, torch::Device dev, bool coal,
                     const std::vector<std::string> &childs,
                     at::intrusive_ptr<recis::embedding::Generator> gen,
-                    int64_t sb, int64_t se, int64_t ss)
+                    int64_t sb, int64_t se, int64_t ss, bool upm)
         : block_size(bs),
           embedding_shape(shape),
           dtype(dt),
@@ -59,7 +60,8 @@ class Hashtable : public torch::CustomClassHolder {
           generator(gen),
           slice_begin(sb),
           slice_end(se),
-          slice_size(ss) {}
+          slice_size(ss),
+          use_pinned_memory(upm) {}
   };
 
   static c10::intrusive_ptr<Hashtable> Make(
@@ -67,12 +69,14 @@ class Hashtable : public torch::CustomClassHolder {
       torch::Dtype dtype, torch::Device device, bool coalesce,
       const std::vector<std::string> &children,
       at::intrusive_ptr<recis::embedding::Generator> generator,
-      int64_t slice_begin, int64_t slice_end, int64_t slice_size);
+      int64_t slice_begin, int64_t slice_end, int64_t slice_size,
+      bool use_pinned_memory);
   Hashtable(int64_t block_size, const std::vector<int64_t> &embedding_shape,
             torch::Dtype dtype, torch::Device device, bool coalesce,
             const std::vector<std::string> &children,
             at::intrusive_ptr<recis::embedding::Generator> generator,
-            int64_t slice_begin, int64_t slice_end, int64_t slice_size);
+            int64_t slice_begin, int64_t slice_end, int64_t slice_size,
+            bool use_pinned_memory);
 
   std::tuple<torch::Tensor, torch::Tensor> EmbeddingLookup(
       const torch::Tensor &ids, bool readonly);
@@ -175,6 +179,16 @@ class Hashtable : public torch::CustomClassHolder {
  private:
   std::mutex blocknum_mutex_;
   void ResetInternalState();
+  // Copy tensor to the storage device. When the storage device is CPU,
+  // pinned memory is used for efficient D2H transfer if use_pinned_memory
+  // is enabled in the config.
+  torch::Tensor ToStorageDevice(const torch::Tensor &tensor);
+  // Create an output tensor on the storage device. When the storage device
+  // is CPU and use_pinned_memory is enabled, pinned memory is used for
+  // efficient H2D transfer; otherwise a normal tensor is created.
+  // Centralising allocation here lets the Hashtable decide pin-vs-page
+  // without hard-coding in lower-level ops.
+  torch::Tensor CreateOutput(torch::IntArrayRef sizes, torch::Dtype dtype);
   std::tuple<torch::Tensor, torch::Tensor> EmbeddingLookupReadOnly(
       const torch::Tensor &ids);
   torch::Tensor LookupIndexReadOnly(const torch::Tensor &ids);

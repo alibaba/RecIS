@@ -1,5 +1,7 @@
 #include <torch/extension.h>
 
+#include "c10/util/Optional.h"
+
 namespace recis {
 namespace functional {
 
@@ -35,7 +37,8 @@ void block_insert_with_mask_cuda(const torch::Tensor ids,
 torch::Tensor block_gather(const torch::Tensor ids,
                            std::vector<torch::Tensor>& emb_blocks,
                            int64_t block_size, int64_t default_key,
-                           bool readonly);
+                           bool readonly,
+                           c10::optional<torch::Tensor> output = c10::nullopt);
 
 torch::Tensor block_gather_bind(const torch::Tensor ids,
                                 std::vector<torch::Tensor> emb_blocks,
@@ -49,10 +52,10 @@ torch::Tensor block_gather_by_range(const torch::Tensor ids,
                                     int64_t block_size, int64_t beg,
                                     int64_t end);
 
-torch::Tensor block_gather_cuda(const torch::Tensor ids,
-                                std::vector<torch::Tensor>& emb_blocks,
-                                int64_t block_size, int64_t default_key,
-                                bool readonly, int64_t beg, int64_t end);
+void block_gather_cuda(const torch::Tensor ids,
+                       std::vector<torch::Tensor>& emb_blocks,
+                       int64_t block_size, int64_t default_key, bool readonly,
+                       int64_t beg, int64_t end, torch::Tensor& output);
 
 torch::Tensor gather_cuda(const torch::Tensor ids, const torch::Tensor emb);
 

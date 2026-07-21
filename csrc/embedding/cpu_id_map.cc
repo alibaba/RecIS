@@ -70,10 +70,9 @@ CpuIdMap::CpuIdMap(torch::Device id_device) {
       at::make_intrusive<recis::embedding::IdAllocator>(id_device, 0);
 }
 
-torch::Tensor CpuIdMap::Lookup(const torch::Tensor &ids) {
+void CpuIdMap::Lookup(const torch::Tensor &ids, torch::Tensor &output) {
   std::lock_guard<std::mutex> lock(mu_);
-  torch::Tensor index = torch::empty_like(ids, torch::dtype(torch::kInt64));
-  auto index_vec_ptr = index.data_ptr<int64_t>();
+  auto index_vec_ptr = output.data_ptr<int64_t>();
   std::vector<std::pair<int64_t, int64_t *>> new_ids_pairs;
   IndexLookupFunctor lookup_functor(ids.data_ptr<int64_t>(), index_vec_ptr,
                                     ids_map_, new_ids_pairs);
@@ -84,24 +83,19 @@ torch::Tensor CpuIdMap::Lookup(const torch::Tensor &ids) {
     auto it = ids_map_.insert({new_ids_pairs[i].first, new_index_ptr[i]});
     *(new_ids_pairs[i].second) = it.first->second;
   }
-
-  return index;
 }
 
-torch::Tensor CpuIdMap::LookupReadOnly(const torch::Tensor &ids) {
-  torch::Tensor index_tensor =
-      torch::empty_like(ids, torch::dtype(torch::kInt64));
-  auto index_vec_ptr = index_tensor.data_ptr<int64_t>();
+void CpuIdMap::LookupReadOnly(const torch::Tensor &ids, torch::Tensor &output) {
+  auto index_vec_ptr = output.data_ptr<int64_t>();
   IndexLookupReadOnlyFunctor lookup_functor(
       ids.data_ptr<int64_t>(), index_vec_ptr, ids_map_, kNullIndex);
   at::parallel_for(0, ids.numel(),
                    recis::CalculateIntraOpGranity(0, ids.numel()),
                    lookup_functor);
-  return index_tensor;
 }
 
-torch::Tensor CpuIdMap::InsertIds(const torch::Tensor &ids) {
-  return Lookup(ids);
+void CpuIdMap::InsertIds(const torch::Tensor &ids, torch::Tensor &output) {
+  Lookup(ids, output);
 }
 
 torch::Tensor CpuIdMap::Ids() {

@@ -382,13 +382,21 @@ class DynamicEmbedding(torch.nn.Module):
 
     """
 
-    def __init__(self, emb_opt: EmbeddingOption, pg: dist.ProcessGroup = None):
+    def __init__(
+        self,
+        emb_opt: EmbeddingOption,
+        pg: dist.ProcessGroup = None,
+        use_pinned_memory: bool = False,
+    ):
         """Initialize dynamic embedding module.
 
         Args:
             emb_opt (EmbeddingOption): Configuration options for the embedding.
             pg (dist.ProcessGroup, optional): Process group for distributed
                 communication. Defaults to None.
+            use_pinned_memory (bool, optional): Whether to use pinned memory for
+                CPU intermediate tensors to accelerate H2D/D2H transfers.
+                Defaults to False. Set to True to enable pinned memory.
         """
         super().__init__()
         self._emb_opt = emb_opt
@@ -410,6 +418,7 @@ class DynamicEmbedding(torch.nn.Module):
             slice=gen_slice(shard_index=self._rank, shard_num=self._world_size),
             grad_reduce_by=self._emb_opt.grad_reduce_by,
             filter_hook=self._emb_opt.filter_hook,
+            use_pinned_memory=use_pinned_memory,
         )
 
     @property
