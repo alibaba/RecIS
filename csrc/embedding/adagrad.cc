@@ -71,17 +71,17 @@ void SparseAdagrad::add_param_group(
     const SparseOptimizerParamGroup &param_group) {
   SparseOptimizerParamGroup param_group_(param_group.params());
   // set options for group
-  if (!param_group_.has_options()) {
+  if (!param_group.has_options()) {
     param_group_.set_options(defaults_->clone());
   } else {
-    param_group_.set_options(param_group_.options().clone());
+    param_group_.set_options(param_group.options().clone());
   }
   //  init optimizer global state for hashtable name <-> hashtable ptr
   for (const auto &param : param_group_.params()) {
     init_param_state(param.second, param_group_.options());
   }
   // add param group
-  param_groups_.emplace_back(param_group);
+  param_groups_.emplace_back(param_group_);
 }
 
 void SparseAdagrad::add_parameters(

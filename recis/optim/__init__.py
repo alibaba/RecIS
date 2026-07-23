@@ -10,6 +10,7 @@ from recis.optim.named_optimizer import (
 from recis.optim.sparse_adam import SparseAdam as SparseAdam
 from recis.optim.sparse_adamw import SparseAdamW as SparseAdamW
 from recis.optim.sparse_adamw_tf import SparseAdamWTF as SparseAdamWTF
+from recis.optim.sparse_adagrad import SparseAdagrad as SparseAdagrad
 
 
 __all__ = [
@@ -22,5 +23,6 @@ __all__ = [
     "SparseAdam",
     "SparseAdamW",
     "SparseAdamWTF",
+    "SparseAdagrad",
     "wrapped_named_optimizer",
 ]
