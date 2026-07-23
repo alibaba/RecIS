@@ -2,9 +2,9 @@ import hashlib
 import os
 
 
-STORAGE_URL_MAP = {
-}
+STORAGE_URL_MAP = {}
 
+_kIncColumnSplit = "\x1f"
 class LakeConfig:
     def __init__(
         self,
@@ -42,7 +42,24 @@ class LakeConfig:
         else:
             self._serviceName = serviceName
         self._useService = useService
+    
+    @staticmethod
+    def is_inc_path(path: str):
+        """
+        check if path contains inc table
+        """
+        if isinstance(path, str):
+           return _kIncColumnSplit in path
+        else:
+           return _kIncColumnSplit.encode() in path
 
+    def add_columnfamily(self, columnFamilyName):
+      if self._columnFamilyName is None:
+        self._columnFamilyName = columnFamilyName
+      else :
+        self._columnFamilyName = self._columnFamilyName+_kIncColumnSplit+columnFamilyName
+
+        
     def get_v1_path(self):
         if self._storageName not in STORAGE_URL_MAP:
             raise ValueError("storage name is invaild: {}".format(self._storageName))

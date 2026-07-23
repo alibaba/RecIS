@@ -1,6 +1,7 @@
 include(ExternalProject)
-set(rapidjson_URL "https://github.com/caaatch22/rapidjson/archive/refs/tags/v1.1.0rc1.tar.gz")
-set(rapidjson_MD5 "e36f8ccaba7ec14fd6ce8e68e6be7e7b")
+# patch for rapidjson-v1.1.0, see https://github.com/Tencent/rapidjson/commit/3b2441b87f99ab65f37b141a7b548ebadb607b96
+set(rapidjson_URL "https://github.com/Tencent/rapidjson/archive/refs/tags/v1.1.0.tar.gz")
+set(rapidjson_MD5 "badd12c511e081fec6c89c43a7027bce")
 ExternalProject_Add(rapidjson_package
 	                PREFIX  rapidjson_package-${rapidjson_MD5}
 					URL ${rapidjson_URL}

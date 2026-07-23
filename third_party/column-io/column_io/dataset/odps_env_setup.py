@@ -29,12 +29,12 @@ from column_io.dataset.open_storage_utils import check_auth_and_data
 from column_io.dataset.open_storage_utils import dump_debug_access_info_batch
 from column_io.dataset.open_storage_utils import create_and_post_read_session_list
 from column_io.dataset.open_storage_utils import get_and_register_read_session_list
-from column_io.dataset.open_storage_utils import try_start_refresh_session_thread
+from column_io.dataset.open_storage_utils import try_start_refresh_session_thread,try_start_refresh_halo_metrics
 from column_io.dataset.open_storage_utils import HashableSessionStruct
-from column_io.dataset.open_storage_utils import is_session_creator, is_column_io
+from column_io.dataset.open_storage_utils import is_session_creator, is_column_io, set_session_creator_override
 from column_io.dataset.open_storage_utils import ODPS_ENDPOINT, IS_ODPS_ENDPOINT_REACHABLE
-from column_io.dataset.job_info import get_app_id,get_work_id,is_nootbook,get_app_config
-from column_io.dataset.partition_util import PARTITION_MODE_KEY_NAME, PartitionMode
+from column_io.dataset.job_info import get_app_id, get_work_id, is_notebook, get_app_config
+from column_io.dataset.partition_util import ODPS_PARTITION_MODE_KEY_NAME, PartitionMode
 
 
 ODPS_OPEN_STORAGE_printed = False
@@ -54,8 +54,10 @@ def ensure_standard_path_format(paths):
         raise ValueError("Input paths must in (set, tuple, list), got type: {}".format(type(paths)))
     standard_paths = set()
     for p in paths:
-        if p is None or p == "":
+        if p is None or p == "" or p == b"":
             raise ValueError("path: {} invalid".format(p))
+        if isinstance(p, bytes):
+            p = p.decode("utf-8")
         standard_p = p.split("?")[0]
         standard_paths.add(standard_p)
     res_list = list(standard_paths)
@@ -241,13 +243,14 @@ def _save_odps_io_config(result, output_dir="odps_io_config"):
     with open(tmp_filename, "w") as f:
         f.write(result["odps_io_config"])
     os.close(fd)
-    os.rename(tmp_filename, filename)
+    import shutil
+    shutil.move(tmp_filename, filename)
     logger.info("odps authority certification success.")
     return SUCCESS
 
 
 def _get_cache(data, output_dir="odps_io_config"):
-    cache_url = "xxx"
+    cache_url = "https://odps.nebula.alibaba-inc.com/authorize/cache"
     result = None
     try:
         result = _send_request_to_server("post", cache_url, data)
@@ -277,7 +280,7 @@ def _get_task_status(url, count=1, max_count=120):
 
 def _sync_auth(data, output_dir="odps_io_config", max_count=120):
     logger.error("Start running odps authority certification job for get odps_io_config, please waiting for a few minutes!")
-    sync_url = "xxx"
+    sync_url = "https://odps.nebula.alibaba-inc.com/authorize/sync"
     result = None
     try:
         result = _send_request_to_server("post", sync_url, data)
@@ -436,11 +439,26 @@ def _odps_table_path_parse(paths): # type: (list[str]) -> list[str]
         try:
             path = path.strip().split("//")[1].strip().strip("/")
             parts = path.split("/")
+
+            # 兼容tunnel传参格式
+            split_parts = [p.strip() for p in parts[2].split(".")]  # 过滤空片段（如 ".."）
+            n = len(split_parts)
+
+            if n == 1:
+                parts[2] = split_parts[0]
+            elif n == 2:
+                parts[0] = split_parts[0] if split_parts[0] else parts[0]
+                parts[2] = split_parts[1] if split_parts[1] else parts[2]
+            elif n==3:
+                parts[0] = split_parts[0] if split_parts[0] else parts[0]
+                parts[2] = split_parts[2] if split_parts[2] else parts[2]
+            else:
+                raise ValueError("Invalid table path {}".format(path))
             results.append((parts[0], parts[2], "/".join(parts[3:])))
         except Exception as e:
             logger.error("failed to parse paths: {}".format(origin_paths))
             raise e
-    return results 
+    return results
 
 
 def get_odps_io_config(paths, output_dir="odps_io_config"):
@@ -540,7 +558,8 @@ kSep=","
 def init_odps_open_storage_session(paths,
                                    required_data_columns=[],
                                    mode="row", default_project="",
-                                   connect_timeout=300, rw_timeout=1800):
+                                   connect_timeout=300, rw_timeout=1800,
+                                   is_create_session = None):
     # paths: paths or odps table urls
     # required_data_columns: columns to read, if len(required_data_columns) == 0,
     #        read all columns.
@@ -550,10 +569,15 @@ def init_odps_open_storage_session(paths,
         traceback.print_stack()
         logger.warning("Printing traceback ends and keep running")
 
+    #Note: some customized business wants to get new data at runtime, not from odps_table
+    if is_create_session is not None:
+        varlogger.info("is_create_session param set to: {} for paths: {}".format(is_create_session, paths))
+        set_session_creator_override(is_create_session)
+
     assert(isinstance(required_data_columns, list))
     try:
-        odsp_token_envs = ["access_id", "access_key", "ACCESS_ID", "ACCESS_KEY", "ENCODED_ODPS_ACCESS_ID", "ENCODED_ODPS_ACCESS_KEY"]
-        varlogger.info("envs: {}, envs_values: {}".format(odsp_token_envs, [os.getenv(env) for env in odsp_token_envs]))
+        odps_token_envs = ["access_id", "access_key", "ACCESS_ID", "ACCESS_KEY", "ENCODED_ODPS_ACCESS_ID", "ENCODED_ODPS_ACCESS_KEY"]
+        varlogger.info("envs: {}, envs_values: {}".format(odps_token_envs, [os.getenv(env) for env in odps_token_envs]))
         ENCODED_ODPS_ACCESS_ID = os.environ.get("ENCODED_ODPS_ACCESS_ID")
         ENCODED_ODPS_ACCESS_KEY = os.environ.get("ENCODED_ODPS_ACCESS_KEY")
         access_id = decode(ENCODED_ODPS_ACCESS_ID) if ENCODED_ODPS_ACCESS_ID else os.getenv("access_id")
@@ -596,10 +620,13 @@ def init_odps_open_storage_session(paths,
         rets = _odps_table_path_parse(path)
         for r in rets:
             proj_tbl_part_set.add((r[0], r[1], r[2]))
-    app_config, _ = get_app_config()
-    partition_mode = app_config.get(PARTITION_MODE_KEY_NAME, None)
-    if IS_ODPS_ENDPOINT_REACHABLE and PartitionMode.use_partition_handle(partition_mode):
-        table_partition_struct_list = PartitionMode.gen_partition_struct(proj_tbl_part_set, partition_mode, ODPS_ENDPOINT)
+    if is_column_io():
+        odps_partition_mode = os.getenv(ODPS_PARTITION_MODE_KEY_NAME, None)
+    else:
+        app_config, _ = get_app_config()
+        odps_partition_mode = app_config.get(ODPS_PARTITION_MODE_KEY_NAME, None)
+    if IS_ODPS_ENDPOINT_REACHABLE and PartitionMode.use_partition_handle(odps_partition_mode):
+        table_partition_struct_list = PartitionMode.gen_partition_struct(proj_tbl_part_set, odps_partition_mode, ODPS_ENDPOINT)
         for table_partition_struct in table_partition_struct_list:
             session_struct_set.add(
                 HashableSessionStruct(table_partition_struct.project, table_partition_struct.table,
@@ -618,11 +645,17 @@ def init_odps_open_storage_session(paths,
     create_session_struct_set = get_and_register_read_session_list(session_struct_set,
                                 kSep, mode, default_project, connect_timeout, rw_timeout)
 
-    if is_session_creator() and len(create_session_struct_set) > 0:
+    if not is_session_creator():
+        try_start_refresh_halo_metrics()
+        varlogger.info("init odps openstorage session finish for size of path:{}, session_set:{}, create_set:{}".format(
+            len(paths), len(session_struct_set), len(create_session_struct_set)))
+        return
+
+    if len(create_session_struct_set) > 0:
         create_and_post_read_session_list(create_session_struct_set,
                                 kSep, mode, default_project, connect_timeout, rw_timeout)
-        varlogger.info("create and post openstorage session finish for {} in total".format(len(create_session_struct_set)))
-    if is_session_creator() and not is_nootbook():
+    if not is_notebook():
         try_start_refresh_session_thread()
-
-    varlogger.info("init odps openstorage session success for {} in total".format(len(session_struct_set)))
+    try_start_refresh_halo_metrics()
+    varlogger.info("init odps openstorage session success for size of path:{}, session_set:{}, create_set:{}".format(
+            len(paths), len(session_struct_set), len(create_session_struct_set)))

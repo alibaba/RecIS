@@ -23,13 +23,15 @@
 #include <unordered_map>
 #include <vector>
 
-#include "column-io/framework/file_system.h"
 #include "column-io/framework/status.h"
+
+#include "column-io/odps/wrapper/file_system.h"
+
 
 namespace column {
 namespace odps {
 namespace wrapper {
-class OdpsTableFileSystem : public framework::FileSystem {
+class OdpsTableFileSystem : public odps::FileSystem {
 public:
   static OdpsTableFileSystem *Instance();
 
@@ -54,17 +56,17 @@ public:
   Status WriteToFile(const std::string &path, const std::string &data);
 
   Status CreateFileReader(const std::string &path,
-                          framework::ColumnReader **ret) override {
+                          odps::AlgoReader **ret) override {
     std::vector<std::string> empty_vec;
     return CreateFileReader(path, ret, 128, empty_vec);
   }
 
   Status CreateFileReader(const std::string &path,
-                          framework::ColumnReader **ret, size_t batch_size,
+                          odps::AlgoReader **ret, size_t batch_size,
                           const std::vector<std::string> &select_columns);
 
   Status CreateFileWriter(const std::string &path,
-                          framework::ColumnReader **ret) override;
+                          odps::AlgoReader **ret) override;
 
   static bool CheckIOConfig();
 

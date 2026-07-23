@@ -1,19 +1,22 @@
 #include "column-io/dataset/formater.h"
 
+#include <cstddef>
+#include <mutex>
+#include <iomanip>
+#include <sstream>
+#include <queue>
 #include "absl/log/log.h"
-#include "absl/strings/str_cat.h"
 #include "absl/strings/str_replace.h"
 #include "arrow/array.h"
 #include "arrow/array/builder_binary.h"
 #include "arrow/array/builder_nested.h"
 #include "arrow/array/builder_primitive.h"
 #include "arrow/type.h"
+
+#include "column-io/dataset/hash_utils.h"
 #include "column-io/framework/status.h"
 #include "column-io/framework/tensor.h"
 #include "column-io/framework/types.h"
-#include "column-io/dataset/hash_utils.h"
-#include <cstddef>
-#include <mutex>
 
 namespace column {
 namespace dataset {
@@ -24,8 +27,8 @@ public:
   ArrowTensorBuffer() = delete;
 
   explicit ArrowTensorBuffer(const std::shared_ptr<arrow::Buffer> &buffer)
-      : Buffer((Allocator *)nullptr, (void *)buffer->data(), (void *)buffer->data(),
-			  buffer->size(), false),
+      : Buffer((Allocator *)nullptr, (void *)buffer->data(),
+               (void *)buffer->data(), buffer->size(), false),
         buffer_(buffer) {}
 
   void *begin() const override { return (void *)buffer_->data(); }
@@ -34,7 +37,8 @@ public:
   static Tensor
   TensorFromArrowBuffer(const std::string feature,
                         const std::shared_ptr<arrow::Buffer> &buffer,
-                        DataType type, const TensorShape &shape, Status *st) {
+                        DataType type, const TensorShape &shape, Status *st,
+                        bool force_deep_copy = false) {
     if (buffer->size() < shape.NumElements() * SizeOfType(type)) {
       *st = Status::InvalidArgument(
           feature, "'s size mismatch, shape: ", shape.DebugString(),
@@ -52,15 +56,23 @@ public:
     } else {
       Tensor tensor(allocator, type, shape);
       std::memcpy(const_cast<char *>(tensor.tensor_data().data()),
-                  buffer->data(), shape.num_elements() * DataTypeSize(type));
+                  buffer->data(), shape.num_elements() * SizeOfType(type));
       *st = Status::OK();
       return tensor;
     }
     */
-    ArrowTensorBuffer *tensor_buffer = new ArrowTensorBuffer(buffer);
-    Tensor ret(shape, type, tensor_buffer);
-    tensor_buffer->Unref();
-    return ret;
+    if (!force_deep_copy) {
+      ArrowTensorBuffer *tensor_buffer = new ArrowTensorBuffer(buffer);
+      Tensor ret(shape, type, tensor_buffer);
+      tensor_buffer->Unref();
+      return ret;
+    } else {
+      Tensor tensor(type, shape);
+      std::memcpy(const_cast<char *>(tensor.data()), buffer->data(),
+                  shape.NumElements() * SizeOfType(type));
+      *st = Status::OK();
+      return tensor;
+    }
   }
   ~ArrowTensorBuffer() { buffer_.reset(); }
 
@@ -158,18 +170,22 @@ template <typename LIST_TYPE, typename DATA_TYPE>
 Status FillDefaultIfEmpty(const std::string &field_name,
                           const std::shared_ptr<arrow::Array> &input,
                           const Tensor &dense_default,
-                          std::shared_ptr<arrow::Array> *output) {
+                          std::shared_ptr<arrow::Array> *output,
+                          int64 offset_end = -1) {
   auto casted_input =
       std::dynamic_pointer_cast<typename ListTypeToTypes<LIST_TYPE>::ListClass>(
           input);
-  auto row_count = casted_input->length();
+  // for compressed: offset_end should be unfold_offset_end
+  auto row_count = offset_end == -1 ? casted_input->length() : offset_end;
+
   bool no_default = false;
   auto dense_dim = dense_default.NumElements();
   if (dense_default.dims() == 0) {
     no_default = true;
     dense_dim = dense_default.Scalar<int32_t>();
   }
-  auto value_count = casted_input->values()->length();
+  auto value_count = casted_input->value_offset(row_count) - casted_input->value_offset(0);
+
   if (row_count * dense_dim == value_count) { // no empty row
     *output = input;
     return Status::OK();
@@ -183,11 +199,14 @@ Status FillDefaultIfEmpty(const std::string &field_name,
   auto value_builder =
       static_cast<typename DataTypeToTypes<DATA_TYPE>::ArrowBuilderType *>(
           builder->value_builder());
+
   auto input_value_data_ptr =
       casted_input->values()->data()->template GetValues<DATA_TYPE>(1);
+
   auto default_vec = dense_default.Raw<float>();
+  // mem copy for row_count times; may need optimize?
   for (size_t i = 0; i < row_count; ++i) {
-    builder->Append();
+    arrow::Status st_unused = builder->Append(); // some compiler give -Werr if no ret
     auto value_len =
         casted_input->value_offset(i + 1) - casted_input->value_offset(i);
     if (value_len != 0) {
@@ -229,12 +248,13 @@ template <typename LIST_TYPE>
 Status
 FillDenseDefault(std::shared_ptr<arrow::RecordBatch> &data,
                  const std::unordered_map<std::string, Tensor> &dense_defaults,
-                 std::shared_ptr<arrow::RecordBatch> *formated_data) {
+                 std::shared_ptr<arrow::RecordBatch> *formated_data,
+                 int64 offset_end = -1) {
   std::vector<std::shared_ptr<arrow::Array>> arrays;
   auto arrow_schema = data->schema();
   for (size_t i = 0; i < arrow_schema->num_fields(); ++i) {
     auto field = arrow_schema->field(i);
-    auto column = data->column(i);
+    auto column = data->column(i); // with slice info
     auto iter = dense_defaults.find(field->name());
     if (iter == dense_defaults.end()) {
       arrays.emplace_back(column);
@@ -252,7 +272,7 @@ FillDenseDefault(std::shared_ptr<arrow::RecordBatch> &data,
 #define FILL_DEFAULT_FIX_WIDTH(data_type)                                      \
   case DataTypeToTypes<data_type>::ArrowType: {                                \
     RETURN_IF_ERROR(FillDefaultIfEmpty<LIST_TYPE, data_type>(                  \
-        field->name(), column, iter->second, &replaced));                      \
+        field->name(), column, iter->second, &replaced, offset_end));          \
     break;                                                                     \
   }
     std::shared_ptr<arrow::Array> replaced;
@@ -274,14 +294,15 @@ FillDenseDefault(std::shared_ptr<arrow::RecordBatch> &data,
 
 template <typename LIST_TYPE>
 Status AccumulateIndicator(const std::shared_ptr<arrow::Array> &input,
-                           std::shared_ptr<arrow::Array> *output) {
-  auto casted_input =
-      std::dynamic_pointer_cast<typename ListTypeToTypes<LIST_TYPE>::ListClass>(
-          input);
+                           std::shared_ptr<arrow::Array> *output,
+                           int64 offset_end) {
+  auto casted_input = std::dynamic_pointer_cast<
+      typename ListTypeToTypes<LIST_TYPE>::ListClass>(input);
   if (!casted_input || casted_input->value_type()->id() != arrow::Type::INT64) {
     return Status::InvalidArgument("indicator type illegal: ",
                                    casted_input->type()->ToString());
   }
+  auto row_count = offset_end == -1 ? casted_input->length() : offset_end;
   auto builder =
       std::make_shared<typename ListTypeToTypes<LIST_TYPE>::ListBuilder>(
           arrow::default_memory_pool(),
@@ -291,7 +312,6 @@ Status AccumulateIndicator(const std::shared_ptr<arrow::Array> &input,
   int64_t acc = 0;
   auto input_value_data_ptr =
       casted_input->values()->data()->template GetValues<int64_t>(1);
-  auto row_count = casted_input->length();
   for (size_t i = 0; i < row_count; ++i) {
     builder->Append();
     auto idx_count =
@@ -309,10 +329,18 @@ Status AccumulateIndicator(const std::shared_ptr<arrow::Array> &input,
   return Status::OK();
 }
 
+// FlattenCompressedData
+//  data, column_schema, flatten_data: as same as it's name shows
+//  offset_end: must mean rows of record_batch (before unfold) (may be sliced or not)
+//  offset_ends: must mean unfold rows of each fea group
 template <typename LIST_TYPE>
 Status FlattenCompressedData(
     std::shared_ptr<arrow::RecordBatch> data, const ColumnSchema &column_schema,
-    std::vector<std::shared_ptr<arrow::RecordBatch>> *flatten_data) {
+    std::vector<std::shared_ptr<arrow::RecordBatch>> *flatten_data,
+    int64 offset_end, 
+    std::vector<int64> *offset_ends
+) {
+  auto row_count = offset_end == -1 ? data->num_rows() : offset_end; 
   auto arrow_schema = data->schema();
   std::vector<std::vector<std::shared_ptr<arrow::Field>>> new_schema;
   std::vector<int64_t> new_num_rows;
@@ -332,12 +360,15 @@ Status FlattenCompressedData(
     if (field_name.find(kIndicatorPre) == 0) {
       group_idx = 0;
       std::shared_ptr<arrow::Array> acc_column;
-      RETURN_IF_ERROR(AccumulateIndicator<LIST_TYPE>(column, &acc_column));
+      RETURN_IF_ERROR(AccumulateIndicator<LIST_TYPE>(column, &acc_column, offset_end));
       column.swap(acc_column);
     }
     if (new_schema.size() <= group_idx) {
       new_schema.resize(group_idx + 1);
       new_num_rows.resize(group_idx + 1, -1);
+      if (offset_ends != nullptr){
+        offset_ends->resize(group_idx + 1, -1);
+      }
       new_arrays.resize(group_idx + 1);
       references.resize(group_idx + 1);
     }
@@ -353,20 +384,29 @@ Status FlattenCompressedData(
     // new num_rows
     auto cast_array = std::dynamic_pointer_cast<
         typename ListTypeToTypes<LIST_TYPE>::ListClass>(column);
-    auto value_array = cast_array->values();
+
+    // unfold row of this fea slice
+    auto slice_value_array_length = cast_array->value_offset(row_count) - cast_array->value_offset(0); 
+    // get the sliced value without outer nesting
+    auto slice_value_array = cast_array->values()->Slice(cast_array->value_offset(0), slice_value_array_length); 
+
+
     if (new_num_rows[group_idx] < 0) {
-      new_num_rows[group_idx] = value_array->length();
+      new_num_rows[group_idx] = slice_value_array_length;
+      if (offset_ends != nullptr){
+        offset_ends->at(group_idx) = slice_value_array_length;
+      }
       references[group_idx] = field_name;
     } else {
-      if (new_num_rows[group_idx] != value_array->length()) {
+      if (new_num_rows[group_idx] != slice_value_array_length) {
         return Status::InvalidArgument(
             "column length not compatible with others, ", references[group_idx],
             ": ", new_num_rows[group_idx], ", ", field_name, ": ",
-            value_array->length());
+            slice_value_array_length);
       }
     }
     // new array
-    new_arrays[group_idx].emplace_back(value_array);
+    new_arrays[group_idx].emplace_back(slice_value_array);
   }
   // assemble result
   for (size_t i = 0; i < new_schema.size(); ++i) {
@@ -389,17 +429,24 @@ Status FlattenCompressedData(
 class ArrowConvertTensor : public arrow::ArrayVisitor {
 public:
   ArrowConvertTensor() {}
-  ArrowConvertTensor(bool with_null): with_null_(with_null) {}
+  ArrowConvertTensor(bool with_null) : with_null_(with_null) {}
 
   Status Convert(std::string feature, std::shared_ptr<arrow::Array> array,
                  std::vector<std::deque<Tensor>> *out_tensors,
-                 std::string hash_type,
-                 int32_t hash_bucket) {
+                 std::string hash_type, int64_t hash_bucket,
+                 int64 offset_end = -1, bool force_deep_copy = false) {
     feature_ = feature;
     hash_bucket_ = hash_bucket;
     hash_type_ = hash_type;
     out_tensors_ = out_tensors;
     idx_ = 0;
+
+    offset_end_ = offset_end;
+    force_deep_copy_ = force_deep_copy;
+    if (offset_end == -1) {
+      offset_end_ = array->length();
+    }
+    offset_beg_ = array->offset();
     CHECK_ARROW(array->Accept(this));
     return Status::OK();
   }
@@ -411,8 +458,12 @@ public:
 
   template <typename LIST_TYPE>
   Status ConvertDense(std::string feature, std::shared_ptr<arrow::Array> array,
-                      std::vector<std::deque<Tensor>> *out_tensors) {
+                      std::vector<std::deque<Tensor>> *out_tensors,
+                      int64 offset_end, bool force_deep_copy = false) {
     feature_ = feature;
+    offset_end_ = offset_end == -1 ? array->length() : offset_end;
+    offset_beg_ = array->offset();
+    force_deep_copy_ = force_deep_copy;
     auto casted_input = std::dynamic_pointer_cast<
         typename ListTypeToTypes<LIST_TYPE>::ListClass>(array);
     if (!casted_input) {
@@ -422,12 +473,13 @@ public:
       return Status::InvalidArgument(
           "Not support column with null elements inside: ", feature_);
     }
-    auto row_count = casted_input->length();
+    auto row_count = offset_end_;
     if (row_count == 0) {
       return Status::InvalidArgument("array is empty: ", feature_);
     }
     auto dense_dim = casted_input->value_length(0);
-    auto value_count = casted_input->values()->length();
+    auto value_count =
+        casted_input->value_offset(offset_end_) - casted_input->value_offset(0);
     if (dense_dim <= 0 || row_count * dense_dim != value_count) {
       return Status::InvalidArgument(feature_,
                                      "'s array not dense: ", dense_dim, ", ",
@@ -438,10 +490,15 @@ public:
     Status st;
 #define COPY_FIX_WIDTH(data_type)                                              \
   case DataTypeToTypes<data_type>::ArrowType: {                                \
+    offset_beg_ = casted_input->value_offset(0);                               \
+    auto values = casted_input->values()->data()->buffers[VALUE_BUFFER];       \
+    std::shared_ptr<arrow::Buffer> sliced_values(new arrow::Buffer(            \
+        values, offset_beg_ * SizeOfType(DataTypeToTypes<data_type>::TfType),  \
+        value_count * SizeOfType(DataTypeToTypes<data_type>::TfType)));        \
     tensor = ArrowTensorBuffer::TensorFromArrowBuffer(                         \
-        feature_, casted_input->values()->data()->buffers[VALUE_BUFFER],       \
-        DataTypeToTypes<data_type>::TfType,                                    \
-        TensorShape({size_t(row_count), size_t(dense_dim)}), &st);             \
+        feature_, sliced_values, DataTypeToTypes<data_type>::TfType,           \
+        TensorShape({size_t(row_count), size_t(dense_dim)}), &st,              \
+        force_deep_copy_);                                                     \
     if (!st.ok()) {                                                            \
       return st;                                                               \
     }                                                                          \
@@ -467,6 +524,11 @@ public:
     // copy splits
     DataType data_type;
     size_t type_width;
+    if (offset_end_ < 0) {
+      return arrow::Status::Invalid(
+          "invalid offset_end_ in VisitList, please check converter offset: ", offset_end_);
+    }
+
     if (std::is_same<LIST_CLASS, arrow::LargeListArray>::value) {
       data_type = DataType::kInt64;
       type_width = sizeof(int64_t);
@@ -476,16 +538,39 @@ public:
     }
 
     Status st;
+    auto array_len = offset_end_;
+    std::shared_ptr<arrow::Buffer> value_offset = array.value_offsets();
+    const typename LIST_CLASS::offset_type *value_offset_data =
+        reinterpret_cast<const typename LIST_CLASS::offset_type *>(
+            value_offset->data());
+
+    // copy value_offsets
+    std::shared_ptr<arrow::Buffer> sliced_value_offset(
+        new arrow::Buffer(value_offset, offset_beg_ * SizeOfType(data_type),
+                          (array_len + 1) * SizeOfType(data_type)));
     Tensor tensor = ArrowTensorBuffer::TensorFromArrowBuffer(
-        feature_, array.value_offsets(), data_type,
-        TensorShape({size_t(array.length() + 1)}), &st);
+        feature_, sliced_value_offset, data_type, TensorShape({static_cast<size_t>(array_len) + 1}),
+        &st, force_deep_copy_);
+
     if (!st.ok()) {
       return arrow::Status::Invalid(st.error_message());
     }
 
+    // update abs_offset_beg_ and relative offset_end_ for the child_data visit
+    offset_beg_ = value_offset_data[offset_beg_]; // == array.value_offset(0)
+    offset_end_ = offset_end_ == 0
+                      ? offset_end_
+                      : array.value_offset(offset_end_) - offset_beg_;
+
+    // fix value_offsets (row splits / sequence splits)
+    FixSliceValueOffsets(array, tensor, array_len);
+
+    // save the row splits / sequence splits tensor
     current_tensors()->emplace_front(std::move(tensor));
-    // call recursively
-    auto result = array.values()->Accept(this);
+
+    // call recursively, visit the sliced child data
+    auto result = array.values()->Slice(offset_beg_, offset_end_)->Accept(this);
+
     return result;
   }
 
@@ -502,7 +587,8 @@ public:
   // output: key_val, key_splits1, key_splits2...value_val, value_splits1,
   // value_splits2
   arrow::Status Visit(const arrow::StructArray &array) override {
-    // TODO: support nested null, including array or elements. currently not urgent
+    // TODO: support nested null, including array or elements. currently not
+    // urgent
     if (array.null_count() != 0) {
       return arrow::Status::Invalid(
           "Not support column with null elements inside: ", feature_);
@@ -510,6 +596,8 @@ public:
     auto key_array = array.GetFieldByName(kStructKey);
     auto value_array = array.GetFieldByName(kStructValue);
     std::deque<Tensor> split_tensors = *current_tensors();
+    auto saved_offset_beg = offset_beg_;
+    auto saved_offset_end = offset_end_;
     // convert key
     auto st = key_array->Accept(this);
     if (!st.ok())
@@ -521,6 +609,8 @@ public:
          ++iter) {
       current_tensors()->emplace_front(std::move(*iter));
     }
+    offset_beg_ = saved_offset_beg;
+    offset_end_ = saved_offset_end;
     st = value_array->Accept(this);
     if (!st.ok())
       return st;
@@ -532,22 +622,29 @@ public:
   arrow::Status VisitFixedWidth(const ARRAY_TYPE &array, DataType data_type) {
     // Primitive Arrow arrays have validity and value buffers, currently
     // only arrays with null count == 0 are supported, so only need values here
-    auto values = array.data()->buffers[VALUE_BUFFER];
+    auto values = array.data()->buffers[VALUE_BUFFER]; // 不带slice信息
     if (values == NULLPTR) {
       return arrow::Status::Invalid(
           "Received an Arrow array with a NULL value buffer: ", feature_);
     }
-
-    if (array.data()->offset != 0) {
-      return arrow::Status::Invalid(feature_,
-                                    "'s arrow array data offset is not 0");
-    }
-
+    std::shared_ptr<arrow::Buffer> sliced_values(new arrow::Buffer(
+        values, 
+        static_cast<int64_t>(offset_beg_ * SizeOfType(data_type)),
+        static_cast<int64_t>(offset_end_ * SizeOfType(data_type))
+    ));
+    // shallow copy value
     Status st;
     Tensor tensor = ArrowTensorBuffer::TensorFromArrowBuffer(
-        feature_, values, data_type, TensorShape({(size_t)array.length()}),
-        &st);
+        feature_, sliced_values, data_type, TensorShape({static_cast<size_t>(offset_end_)}), &st,
+        force_deep_copy_);
     tensor.SetNullBitmapFromArray(array);
+
+    // Note: Combo Buffer for the null_bitmap:
+    //  技术上来说 combo模式下null_bitmap需要单独记录slice偏移量. 也即需要算个
+    //  [offset_beg_, offset_beg_ + offset_end_) 之间的null bitmap:
+    //      tensor.SetNullBitmapFromArray(array, offset_beg_, offset_end_);
+    //      null_bitmap() const { return data_->buffers.get(offset...); }
+    //  但需要Null的行读业务不用combo. 列读Combo默认不为Null. 故这里忽略Combo对Null的额外实现
     if (!st.ok()) {
       return arrow::Status::Invalid(st.error_message());
     }
@@ -560,7 +657,7 @@ public:
   virtual arrow::Status Visit(                                                 \
       const typename DataTypeToTypes<DATA_TYPE>::ArrowArrayType &array)        \
       override {                                                               \
-    if( !with_null_ && array.null_count() != 0) {                              \
+    if (!with_null_ && array.null_count() != 0) {                              \
       return arrow::Status::Invalid(                                           \
           "Not support column with null elements inside: ", feature_);         \
     }                                                                          \
@@ -574,6 +671,7 @@ public:
 #undef VISIT_FIXED_WITH
 
   arrow::Status VisitToInt8(const arrow::StringArray &array) {
+    assert(offset_end_ >= 0);
     // copy splits
     DataType data_type;
     size_t type_width;
@@ -585,25 +683,55 @@ public:
       type_width = sizeof(int32_t);
     }
     Status st;
-    size_t array_len = array.length();
+    auto array_len = offset_end_;
+    std::shared_ptr<arrow::Buffer> value_offset = array.value_offsets();
+    std::shared_ptr<arrow::Buffer> sliced_split(
+        new arrow::Buffer(value_offset, offset_beg_ * SizeOfType(data_type),
+                          static_cast<size_t>(array_len + 1) * SizeOfType(data_type)));
+
     Tensor split_tensor = ArrowTensorBuffer::TensorFromArrowBuffer(
-        feature_, array.value_offsets(), data_type,
-        TensorShape({array_len + 1}), &st);
+        feature_, sliced_split, data_type, TensorShape({static_cast<size_t>(array_len) + 1}),
+        &st, force_deep_copy_);
+
     if (!st.ok()) {
       return arrow::Status::Invalid(st.error_message());
     }
+
+    // fix row splits
+    FixSliceValueOffsets(array, split_tensor, array_len);
 
     current_tensors()->emplace_front(std::move(split_tensor));
 
-    // copy data
-    size_t size_of_array = array.value_offset(array_len);
+    // copy slice data
+    // update offset_beg, fix size_of_array
+    offset_beg_ = array.value_offset(0);
+    size_t size_of_array = array.value_offset(array_len) -
+                         offset_beg_; // can deal with empty array
+    if (size_of_array < 0) {
+        std::string msg = "size_of_array < 0. offset_beg_: ";
+        msg += offset_beg_, ", array_len: ", array_len + " for feature:" + feature_;
+        return arrow::Status::Invalid(msg);
+    }
+    std::shared_ptr<arrow::Buffer> value_data=array.value_data();
+    if (!value_data) {
+      if (size_of_array > 0) {
+        std::string msg = "value_data is null but size_of_array > 0, cannot convert Int8 for feature:";
+        msg += feature_;
+        return arrow::Status::Invalid(msg);
+      }
+      value_data=arrow::Buffer::FromString(""); // 返回空 buffer（size=0）
+    }
 
+    std::shared_ptr<arrow::Buffer> sliced_data(new arrow::Buffer(
+        value_data, offset_beg_ * SizeOfType(DataType::kInt8),
+        size_of_array * SizeOfType(DataType::kInt8)));
     Tensor value_tensor = ArrowTensorBuffer::TensorFromArrowBuffer(
-        feature_, array.value_data(), DataType::kInt8,
-        TensorShape({size_of_array}), &st);
+        feature_, sliced_data, DataType::kInt8, TensorShape({size_of_array}),
+        &st, force_deep_copy_); // no need to copy data
     if (!st.ok()) {
       return arrow::Status::Invalid(st.error_message());
     }
+
     current_tensors()->emplace_front(std::move(value_tensor));
     return arrow::Status::OK();
   }
@@ -612,7 +740,8 @@ public:
     if (hash_type_ == "no_hash") {
       return VisitToInt8(array);
     }
-    size_t array_len = array.length();
+    // size_t array_len = array.length();
+    size_t array_len = offset_end_;
     Tensor tensor(DataType::kInt64, TensorShape({array_len}));
     auto tensor_vec = tensor.Raw<int64_t>();
 
@@ -628,51 +757,76 @@ public:
   }
 
   arrow::Status Visit(const arrow::StringArray &array) override {
-    if( !with_null_ && array.null_count() != 0) {
-      return arrow::Status::Invalid("Not support column with null elements inside: ", feature_);
+
+    if (!with_null_ && array.null_count() != 0) {
+      return arrow::Status::Invalid(
+          "Not support column with null elements inside: ", feature_);
     }
 
     if (!hash_type_.empty()) {
       return VisitToHash(array);
     }
 
-    size_t array_len = array.length();
-    Tensor tensor(DataType::kString, TensorShape({array_len}));
+    auto array_len = offset_end_;
+
+    Tensor tensor(DataType::kString, TensorShape({static_cast<size_t>(array_len)}));
+    // Note: Combo Buffer for the null_bitmap: 不实现, 原因同VisitFixedWidth
     tensor.SetNullBitmapFromArray(array);
     auto tensor_vec = tensor.Raw<std::string>();
     const char *buf;
     int length;
     for (int32_t i = 0; i < array_len; ++i) {
+      // with offset
       buf = reinterpret_cast<const char *>(array.GetValue(i, &length));
       tensor_vec[i].assign(buf, length);
     }
 
     current_tensors()->emplace_front(std::move(tensor));
+
     return arrow::Status::OK();
   }
 
   arrow::Status Visit(const arrow::BooleanArray &array) override {
-    if( !with_null_ && array.null_count() != 0) {
-      return arrow::Status::Invalid("Not support column with null elements inside: ", feature_);
+    if (!with_null_ && array.null_count() != 0) {
+      return arrow::Status::Invalid(
+          "Not support column with null elements inside: ", feature_);
     }
     size_t array_len = array.length();
     Tensor tensor(DataType::kBool, TensorShape({array_len}));
+    // Note: Combo Buffer for the null_bitmap: 不实现, 原因同VisitFixedWidth
     tensor.SetNullBitmapFromArray(array);
-    bool* tensor_vec = tensor.Raw<bool>();
+    bool *tensor_vec = tensor.Raw<bool>();
     for (int32_t i = 0; i < array_len; ++i) {
-      tensor_vec[i] = array.Value(i); // bool type no need ref, copy is more simple
+      tensor_vec[i] =
+          array.Value(i); // bool type no need ref, copy is more simple
     }
     current_tensors()->emplace_front(std::move(tensor));
     return arrow::Status::OK();
   }
 
 private:
+  template <typename ARRAY_CLASS>
+  arrow::Status FixSliceValueOffsets(ARRAY_CLASS &array, Tensor value_offset,
+                                     int64 ele_len) {
+    typename ARRAY_CLASS::offset_type *mutable_raw_value_offset = reinterpret_cast<typename ARRAY_CLASS::offset_type*>(value_offset.mutable_data());
+    typename ARRAY_CLASS::offset_type base_offset = mutable_raw_value_offset[0];
+    for (int i = 0; i < ele_len + 1; ++i) {
+      mutable_raw_value_offset[i] -= base_offset;
+    }
+    return arrow::Status::OK();
+  }
+
+private:
   std::vector<std::deque<Tensor>> *out_tensors_;
   size_t idx_{0};
-  int32_t hash_bucket_ = 0;
+  int64_t hash_bucket_ = 0;
   std::string hash_type_;
   std::string feature_;
-  bool with_null_ = true; // if (row_mode) with_null_ is true, visit null will allow (no-support struct now).
+  bool with_null_ = true; // if (row_mode) with_null_ is true, visit null will
+                          // allow (no-support struct now).
+  int64 offset_end_{-1};  // relative length
+  int64 offset_beg_{0};   // absolute begin
+  bool force_deep_copy_{false};
 };
 
 } // end of anonymous namespace
@@ -681,13 +835,13 @@ template <typename LIST_TYPE>
 class FlatColumnDataFormater : public ColumnDataFormater {
 public:
   FlatColumnDataFormater() {}
-  FlatColumnDataFormater(bool with_null): ColumnDataFormater(with_null) {}
+  FlatColumnDataFormater(bool with_null) : ColumnDataFormater(with_null) {}
   virtual ~FlatColumnDataFormater() override {}
 
   Status
   InitOutputSchema(std::shared_ptr<arrow::Schema> arrow_schema,
                    const std::unordered_set<std::string> &selected_columns) {
-    
+
     std::map<std::string, std::string> outputs;
     std::unordered_set<std::string> picked_columns;
     for (auto &&field : arrow_schema->fields()) {
@@ -728,7 +882,7 @@ public:
   InitSchema(std::shared_ptr<arrow::Schema> arrow_schema,
              const std::vector<std::string> &hash_features,
              const std::vector<std::string> &hash_types,
-             const std::vector<int32_t> &hash_buckets,
+             const std::vector<int64_t> &hash_buckets,
              const std::vector<std::string> &dense_features,
              const std::vector<Tensor> &dense_defaults,
              const std::unordered_set<std::string> &selected_columns) override {
@@ -736,28 +890,40 @@ public:
     if (schema_inited_)
       return Status::OK();
     RETURN_IF_ERROR(ColumnDataFormater::InitSchema(
-        arrow_schema, hash_features, hash_types, hash_buckets, dense_features, dense_defaults,
-        selected_columns));
+        arrow_schema, hash_features, hash_types, hash_buckets, dense_features,
+        dense_defaults, selected_columns));
     RETURN_IF_ERROR(InitOutputSchema(arrow_schema, selected_columns));
     schema_inited_ = true;
     return Status::OK();
   }
 
-  Status FormatSample(std::shared_ptr<arrow::RecordBatch> &data,
-                      std::vector<std::shared_ptr<arrow::RecordBatch>>
-                          *formated_data) const override {
+  Status
+  FormatSample(std::shared_ptr<arrow::RecordBatch> &data,
+               std::vector<std::shared_ptr<arrow::RecordBatch>> *formated_data,
+               int64 offset_end = -1,
+               std::vector<int64> *offset_ends = nullptr) const override {
     formated_data->clear();
+    offset_end = offset_end == -1 ? data->num_rows() : offset_end;
     std::shared_ptr<arrow::RecordBatch> formated;
-    RETURN_IF_ERROR(
-        FillDenseDefault<LIST_TYPE>(data, schema_.dense_defaults, &formated));
+    RETURN_IF_ERROR(FillDenseDefault<LIST_TYPE>(data, schema_.dense_defaults,
+                                                &formated, offset_end));
     formated_data->emplace_back(formated);
+    // keep consistency across comboio (either compressed or not) and dataio
+    if (offset_ends != nullptr)
+      offset_ends->emplace_back(offset_end);
     return Status::OK();
   }
 
   Status
   Convert(std::vector<std::shared_ptr<arrow::RecordBatch>> &formated_data,
           std::vector<std::map<std::string, std::vector<std::vector<Tensor>>>>
-              *output) const override {
+              *output,
+          std::vector<int64> offset_ends = {},
+          bool force_deep_copy = false) const override {
+    if (offset_ends.size() == 0){
+      offset_ends.resize(formated_data.size(), -1);
+    }
+    auto offset_end = offset_ends[0];
     ArrowConvertTensor converter(with_null_);
     for (size_t i = 0; i < schema_.output_schema.size(); ++i) {
       auto &map = schema_.output_schema[i];
@@ -785,11 +951,12 @@ public:
         std::vector<std::deque<Tensor>> tensors;
         auto iter = schema_.dense_defaults.find(column_name);
         if (iter == schema_.dense_defaults.end()) {
-          RETURN_IF_ERROR(
-              converter.Convert(column_name, data, &tensors, hash_type, bucket_size));
+          RETURN_IF_ERROR(converter.Convert(column_name, data, &tensors,
+                                            hash_type, bucket_size, offset_end,
+                                            force_deep_copy));
         } else {
-          RETURN_IF_ERROR(
-              converter.ConvertDense<LIST_TYPE>(column_name, data, &tensors));
+          RETURN_IF_ERROR(converter.ConvertDense<LIST_TYPE>(
+              column_name, data, &tensors, offset_end, force_deep_copy));
         }
         if (tensors.size() > 2) { // only struct lead to size = 2
           return Status::InvalidArgument(
@@ -877,7 +1044,7 @@ public:
   InitSchema(std::shared_ptr<arrow::Schema> arrow_schema,
              const std::vector<std::string> &hash_features,
              const std::vector<std::string> &hash_types,
-             const std::vector<int32_t> &hash_buckets,
+             const std::vector<int64_t> &hash_buckets,
              const std::vector<std::string> &dense_features,
              const std::vector<Tensor> &dense_defaults,
              const std::unordered_set<std::string> &selected_columns) override {
@@ -885,8 +1052,8 @@ public:
     if (schema_inited_)
       return Status::OK();
     RETURN_IF_ERROR(ColumnDataFormater::InitSchema(
-        arrow_schema, hash_features, hash_types, hash_buckets, dense_features, dense_defaults,
-        selected_columns));
+        arrow_schema, hash_features, hash_types, hash_buckets, dense_features,
+        dense_defaults, selected_columns));
     // get indicators
     std::unordered_set<std::string> indicators;
     for (auto &&field : arrow_schema->fields()) {
@@ -939,26 +1106,36 @@ public:
     return Status::OK();
   }
 
-  Status FormatSample(std::shared_ptr<arrow::RecordBatch> &data,
-                      std::vector<std::shared_ptr<arrow::RecordBatch>>
-                          *formated_data) const override {
+  Status
+  FormatSample(std::shared_ptr<arrow::RecordBatch> &data,
+               std::vector<std::shared_ptr<arrow::RecordBatch>> *formated_data,
+               int64 offset_end = -1,
+               std::vector<int64> *offset_ends = nullptr) const override {
     std::vector<std::shared_ptr<arrow::RecordBatch>> flatten_data;
-    RETURN_IF_ERROR(
-        FlattenCompressedData<LIST_TYPE>(data, schema_, &flatten_data));
+    RETURN_IF_ERROR(FlattenCompressedData<LIST_TYPE>(
+        data, schema_, &flatten_data, offset_end, offset_ends));
     formated_data->clear();
     for (size_t i = 0; i < flatten_data.size(); ++i) {
       std::shared_ptr<arrow::RecordBatch> formated;
-      RETURN_IF_ERROR(FillDenseDefault<LIST_TYPE>(
-          flatten_data[i], schema_.dense_defaults, &formated));
+      int64 unfold_offset_end = offset_ends ? offset_ends->at(i) : -1;
+      RETURN_IF_ERROR(
+          FillDenseDefault<LIST_TYPE>(flatten_data[i], schema_.dense_defaults,
+                                      &formated, unfold_offset_end));
       formated_data->emplace_back(formated);
     }
     return Status::OK();
   }
 
+  // TODO: add sliced compressed
   Status
   Convert(std::vector<std::shared_ptr<arrow::RecordBatch>> &formated_data,
           std::vector<std::map<std::string, std::vector<std::vector<Tensor>>>>
-              *output) const override {
+              *output,
+          std::vector<int64> offset_ends = {},
+          bool force_deep_copy = false) const override {
+    if (offset_ends.size() == 0){
+      offset_ends.resize(formated_data.size(), -1);
+    }
     ArrowConvertTensor converter(with_null_);
     for (size_t i = 0; i < schema_.output_schema.size(); ++i) {
       auto &map = schema_.output_schema[i];
@@ -967,7 +1144,8 @@ public:
       for (auto &item : map) {
         std::shared_ptr<arrow::Array> data;
         std::string output_column_name = item.first;
-		auto bucket_iter = schema_.hash_features.find(output_column_name);
+        int group_idx = i;
+        auto bucket_iter = schema_.hash_features.find(output_column_name);
         int32_t bucket_size = 0;
         std::string hash_type;
         if (bucket_iter != schema_.hash_features.end()) {
@@ -979,13 +1157,16 @@ public:
           char buf[128];
           snprintf(buf, 128, "%s_%lu", kIndicator.c_str(), i);
           column_name.assign(buf);
+          group_idx = 0; 
         } else {
           column_name = schema_.alias_map_reversed.at(output_column_name);
         }
+        int64 unfold_offset_end = offset_ends.at(group_idx);
         for (auto &record_batch : formated_data) {
           data = record_batch->GetColumnByName(column_name);
-          if (data)
+          if (data){
             break;
+          }
         }
         if (!data) {
           return Status::InvalidArgument("column not found in formated data: ",
@@ -995,10 +1176,16 @@ public:
         auto iter = schema_.dense_defaults.find(column_name);
         if (iter == schema_.dense_defaults.end()) {
           RETURN_IF_ERROR(
-              (converter.Convert(column_name, data, &tensors, hash_type, bucket_size)));
+              (converter.Convert(column_name, data, &tensors, hash_type,
+                                bucket_size, unfold_offset_end, force_deep_copy)));
+              // (converter.Convert(column_name, data, &tensors, hash_type,
+              //                    bucket_size, -1, force_deep_copy)));
         } else {
           RETURN_IF_ERROR(
-              (converter.ConvertDense<LIST_TYPE>(column_name, data, &tensors)));
+              (converter.ConvertDense<LIST_TYPE>(column_name, data, &tensors,
+                                              unfold_offset_end, force_deep_copy)));
+              // (converter.ConvertDense<LIST_TYPE>(column_name, data, &tensors,
+              //                                    -1, force_deep_copy)));
         }
         if (tensors.size() > 2) { // only struct lead to size = 2
           return Status::InvalidArgument(
@@ -1030,23 +1217,21 @@ Status ColumnDataFormater::InitSchema(
     std::shared_ptr<arrow::Schema> arrow_schema,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_features,
     const std::vector<Tensor> &dense_defaults,
     const std::unordered_set<std::string> &selected_columns) {
   if (schema_inited_)
     return Status::OK();
-  // add hash feature
   for (auto i = 0; i < hash_features.size(); ++i) {
-    schema_.hash_features.insert({hash_features[i], std::make_pair(hash_types[i], hash_buckets[i])});
+    schema_.hash_features.insert(
+        {hash_features[i], std::make_pair(hash_types[i], hash_buckets[i])});
   }
-  // init dense_defaults
   if (dense_features.size() != dense_defaults.size()) {
     return Status::InvalidArgument(
         "dense_features size not match dense_defaults size: ",
         dense_features.size(), ", ", dense_defaults.size());
   }
-
   for (size_t i = 0; i < dense_features.size(); ++i) {
     if (selected_columns.size() != 0 &&
         selected_columns.find(dense_features[i]) == selected_columns.end()) {
@@ -1072,7 +1257,6 @@ Status ColumnDataFormater::InitSchema(
     }
     schema_.dense_defaults[dense_features[i]] = dense_defaults[i];
   }
-
   return Status::OK();
 }
 
@@ -1095,10 +1279,14 @@ Status ColumnDataFormater::GetOutputSchema(
 
 Status ColumnDataFormater::FlatConvert(
     std::vector<std::shared_ptr<arrow::RecordBatch>> &formated_data,
-    std::vector<Tensor> *output) const {
-  // (压缩.列名)vector<map>           : [ _0非压缩表{ "column_name": content }, _1压缩表{ "column_name": content }, ... ]
-  // (权重.偏移)vector<vector<Tensor>>: { value{ value, offset }, _weight{value, offset } }
-  std::vector<std::map<std::string, std::vector<std::vector<Tensor>>>> conv_output;
+    std::vector<Tensor> *output, std::vector<int64> offset_ends,
+    bool force_deep_copy) const {
+  // (压缩.列名)vector<map>           : [ _0非压缩表{ "column_name": content },
+  // _1压缩表{ "column_name": content }, ... ]
+  // (权重.偏移)vector<vector<Tensor>>: { value{ value, offset }, _weight{value,
+  // offset } }
+  std::vector<std::map<std::string, std::vector<std::vector<Tensor>>>>
+      conv_output;
   auto st = Convert(formated_data, &conv_output);
   if (!st.ok()) {
     return st;
@@ -1110,7 +1298,7 @@ Status ColumnDataFormater::FlatConvert(
         output->insert(output->end(), vec.begin(), vec.end());
       }
       // TODO: 找个表确认权重/压缩等特性如何共用一个item.first(col_name). commonio先不考虑这些东西
-      schema_.flatconvert_tensor_spliter[item.first] = {output_prev_end, output->size()}; 
+      schema_.flatconvert_tensor_spliter[item.first] = {output_prev_end, output->size()};
     }
   }
   return Status::OK();
@@ -1119,8 +1307,9 @@ Status ColumnDataFormater::FlatConvert(
 Status ColumnDataFormater::FlatConvert(
     std::vector<std::shared_ptr<arrow::RecordBatch>> &formated_data,
     std::vector<std::map<std::string, std::vector<std::vector<Tensor>>>>
-        *conv_output) const {
-  auto st = Convert(formated_data, conv_output);
+        *conv_output,
+    std::vector<int64> offset_ends, bool force_deep_copy) const {
+  auto st = Convert(formated_data, conv_output, offset_ends, force_deep_copy);
   return st;
 }
 
@@ -1130,24 +1319,26 @@ ColumnDataFormater::GetColumnDataFormater(bool is_compressed,
   return GetColumnDataFormater(is_compressed, is_large_list, false);
 }
 
-std::unique_ptr<ColumnDataFormater>
-ColumnDataFormater::GetColumnDataFormater(bool is_compressed,
-                                          bool is_large_list,
-                                          bool row_mode_with_null) {
+std::unique_ptr<ColumnDataFormater> ColumnDataFormater::GetColumnDataFormater(
+    bool is_compressed, bool is_large_list, bool row_mode_with_null) {
   if (is_large_list) {
     if (is_compressed) {
-      auto formater = new CompressedColumnDataFormater<arrow::LargeListType>(row_mode_with_null);
+      auto formater = new CompressedColumnDataFormater<arrow::LargeListType>(
+          row_mode_with_null);
       return std::unique_ptr<ColumnDataFormater>(formater);
     } else {
-      auto formater = new FlatColumnDataFormater<arrow::LargeListType>(row_mode_with_null);
+      auto formater =
+          new FlatColumnDataFormater<arrow::LargeListType>(row_mode_with_null);
       return std::unique_ptr<ColumnDataFormater>(formater);
     }
   } else {
     if (is_compressed) {
-      auto formater = new CompressedColumnDataFormater<arrow::ListType>(row_mode_with_null);
+      auto formater =
+          new CompressedColumnDataFormater<arrow::ListType>(row_mode_with_null);
       return std::unique_ptr<ColumnDataFormater>(formater);
     } else {
-      auto formater = new FlatColumnDataFormater<arrow::ListType>(row_mode_with_null);
+      auto formater =
+          new FlatColumnDataFormater<arrow::ListType>(row_mode_with_null);
       return std::unique_ptr<ColumnDataFormater>(formater);
     }
   }
@@ -1184,8 +1375,76 @@ std::string ColumnDataFormater::DebugString(
   return ss.str();
 }
 
+
+std::string ColumnSchema::DebugString() const {
+  std::ostringstream oss;
+  oss << "ColumnSchema {\n";
+
+  // 1. output_schema: vector<map<string, string>>
+  oss << "  output_schema: [\n";
+  for (size_t i = 0; i < output_schema.size(); ++i) {
+    oss << "    [index=" << i << "] {";
+    const auto &m = output_schema[i];
+    bool first = true;
+    for (const auto &kv : m) {
+      if (!first)
+        oss << ", ";
+      oss << "\"" << kv.first << "\": \"" << kv.second << "\"";
+      first = false;
+    }
+    oss << "}\n";
+  }
+  oss << "  ],\n";
+
+  // 2. flatconvert_tensor_spliter: unordered_map<string, pair<size_t, size_t>>
+  oss << "  flatconvert_tensor_spliter: {\n";
+  for (const auto &kv : flatconvert_tensor_spliter) {
+    oss << "    \"" << kv.first << "\": (" << kv.second.first << ", "
+        << kv.second.second << "),\n";
+  }
+  oss << "  },\n";
+
+  // 3. hash_features: unordered_map<string, pair<string, int32_t>>
+  oss << "  hash_features: {\n";
+  for (const auto &kv : hash_features) {
+    oss << "    \"" << kv.first << "\": (\"" << kv.second.first << "\", "
+        << kv.second.second << "),\n";
+  }
+  oss << "  },\n";
+
+  // 4. dense_defaults: unordered_map<string, Tensor>
+  oss << "  dense_defaults: {\n";
+  for (const auto &kv : dense_defaults) {
+    oss << "    \"" << kv.first << "\": " << kv.second.DebugString() << ",\n";
+  }
+  oss << "  },\n";
+
+  // 5. alias_map: unordered_map<string, string>
+  oss << "  alias_map: {\n";
+  for (const auto &kv : alias_map) {
+    oss << "    \"" << kv.first << "\": \"" << kv.second << "\",\n";
+  }
+  oss << "  },\n";
+
+  // 6. alias_map_reversed: unordered_map<string, string>
+  oss << "  alias_map_reversed: {\n";
+  for (const auto &kv : alias_map_reversed) {
+    oss << "    \"" << kv.first << "\": \"" << kv.second << "\",\n";
+  }
+  oss << "  },\n";
+
+  // 7. group_idx_map: unordered_map<string, size_t>
+  oss << "  group_idx_map: {\n";
+  for (const auto &kv : group_idx_map) {
+    oss << "    \"" << kv.first << "\": " << kv.second << ",\n";
+  }
+  oss << "  }\n";
+
+  oss << "}";
+  return oss.str();
+}
+
 #undef DECLARE_BY_NUMERIC_TYPES
 
 } // namespace dataset
 } // namespace column
-

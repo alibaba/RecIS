@@ -1,11 +1,14 @@
 #ifndef _COLUMN_IO_CC_COLUMN_IO_DATASET_ITERATOR_H
 #define _COLUMN_IO_CC_COLUMN_IO_DATASET_ITERATOR_H
-#include "absl/container/flat_hash_map.h"
+
+#include <memory>
+#include <string>
+
+// #include "absl/container/flat_hash_map.h"
 #include "column-io/dataset/dataset.h"
 #include "column-io/framework/status.h"
 #include "column-io/framework/tensor.h"
-#include <memory>
-#include <string>
+
 namespace column {
 namespace dataset {
 class TensorDataset {
@@ -24,7 +27,7 @@ private:
   TensorDataset();
   std::unique_ptr<IteratorStateReader> reader_;
   std::unique_ptr<IteratorStateWriter> writer_;
-  absl::flat_hash_map<std::string, Tensor> states_map_;
+  std::unordered_map<std::string, Tensor> states_map_;
 };
 
 Status SerializeIteraterToString(std::shared_ptr<IteratorBase> iterator,

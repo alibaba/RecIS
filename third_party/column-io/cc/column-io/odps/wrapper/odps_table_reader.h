@@ -24,8 +24,9 @@
 #include <string>
 #include <unordered_map>
 
-#include "column-io/framework/column_reader.h"
 #include "column-io/framework/status.h"
+
+#include "column-io/odps/wrapper/algo_reader.h"
 #include "column-io/odps/proxy/table_reader_proxy.h"
 
 namespace arrow {
@@ -35,7 +36,7 @@ class RecordBatch;
 namespace column {
 namespace odps {
 namespace wrapper {
-class OdpsTableReader : public framework::ColumnReader {
+class OdpsTableReader : public odps::AlgoReader {
 public:
   OdpsTableReader(const std::string &conf, size_t start, size_t end);
 

@@ -18,7 +18,7 @@
 #include "column-io/framework/status.h"
 #ifdef TF_ENABLE_ODPS_COLUMN
 
-#include "column-io/framework/file_system.h"
+#include "column-io/odps/wrapper/file_system.h"
 
 #include <unistd.h>
 
@@ -72,7 +72,7 @@ bool OdpsTableFileSystem::CheckIOConfig() {
 }
 
 Status OdpsTableFileSystem::Exists(const std::string &path, bool *ret) {
-  framework::ColumnReader *reader = nullptr;
+  odps::AlgoReader *reader = nullptr;
   auto s = CreateFileReader(path, &reader);
   if (!s.ok()) {
     return s;
@@ -204,7 +204,7 @@ Status OdpsTableFileSystem::WriteToFile(const std::string &path,
 }
 
 Status OdpsTableFileSystem::CreateFileReader(
-    const std::string &path, column::framework::ColumnReader **ret,
+    const std::string &path, column::odps::AlgoReader **ret,
     size_t batch_size, const std::vector<std::string> &select_columns) {
   if (path.empty()) {
     LOG(ERROR) << "`path` should not be empty!";
@@ -264,7 +264,7 @@ Status OdpsTableFileSystem::CreateFileReader(
 }
 
 Status OdpsTableFileSystem::CreateFileWriter(const std::string &path,
-                                             framework::ColumnReader **ret) {
+                                             odps::AlgoReader **ret) {
   return Status::Unimplemented();
 }
 

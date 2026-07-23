@@ -1,3 +1,126 @@
+# 🚀 RecIS v1.2.0 Release Notes
+
+We are excited to announce the release of **RecIS v1.2.0**. This version brings **offline server** support, **MFU/MFU metrics** monitoring, **sparse Adagrad** optimizer, **trace writer v2**, and syncs **column-io 0.3.0** with comprehensive open-source cleanup.
+
+---
+
+## 🌟 Key Highlights
+
+| Category | Description |
+| --- | --- |
+| **🏆 Framework** | **Offline Server** support; **Trace Writer v2**; **Sparse Adagrad** optimizer; **MFU metrics** monitoring. |
+| **⚡ Performance** | Optimized checkpoint save latency; Removed useless unique in grad worker mean. |
+| **🔧 Open-Source** | Synced **column-io 0.3.0**; Fixed INTERNAL_VERSION conditional compilation; Removed internal submodule dependencies; Fixed `from_list_string` empty array bug. |
+| **🌐 Compatibility** | Support build on multiple Python 3.x versions; Python 3.13 compatibility fixes. |
+
+---
+
+## 📝 Detailed Changelog
+
+### Features
+
+* **ci:** parallelize twine upload (xargs -P 8) and fail-fast in yuque docs ([ad19034](https://github.com/alibaba/RecIS/commit/ad19034bebb1c82faef6e8eff992cd6d6ac62ddc))
+* **ci:** recis ppu whl rename from [ppu] to [cuppu], same with column-io ([f002e2a](https://github.com/alibaba/RecIS/commit/f002e2ac013f27e898e2cfe693841a673ad7fdac))
+* **embedding:** add custom combiner registry ([9013818](https://github.com/alibaba/RecIS/commit/90138185492df52f51c82d70dded365aff85b5a4))
+* **embedding:** embedding engine add insert api ([43162fa](https://github.com/alibaba/RecIS/commit/43162fa2bc8be6ac718e2ed92ebd62cee05e644d))
+* **embedding:** EmbeddingEngine no_reduce returns post-a2a embedding ([c366219](https://github.com/alibaba/RecIS/commit/c366219d887d6651bc04cfb01993121c046e7a66))
+* **embedding:** enable pinned memory for cpu hashtable ([b2de2e7](https://github.com/alibaba/RecIS/commit/b2de2e7d9a989a34cb0a3b6f75a2eb09b1be344a))
+* **embedding:** support fp16 & bf16 in constant generator. ([944967a](https://github.com/alibaba/RecIS/commit/944967a8823ae50985772c9dc3fb9f64d439376b))
+* **feature_engine,ops,framework,embedding:** add topk & ragged index functions. ([d2f751b](https://github.com/alibaba/RecIS/commit/d2f751b121506e9616f89a748c9462965d4d75a1))
+* **framework:** add flops_metric in monitor by profiler ([dfeae8b](https://github.com/alibaba/RecIS/commit/dfeae8b9001426ee95976f6d5684724ab29bcbc6))
+* **framework:** add mos metric report and mean metric ops ([899e0c0](https://github.com/alibaba/RecIS/commit/899e0c0eb499e13a114f3f435b0773eb6ec57c00))
+* **framework:** add stateful point type metric_sticky ([6f4b940](https://github.com/alibaba/RecIS/commit/6f4b940ff5105c7c2506e0f49fe9beede1434e7d))
+* **framework:** Align checkpoint management with openlm_hub standards ([6b58e46](https://github.com/alibaba/RecIS/commit/6b58e4688df1f999b3e449707c33a73bc29b919d))
+* **framework:** enable export without sparse ([925b8ac](https://github.com/alibaba/RecIS/commit/925b8acac0b78f491fe9e8a31de5282cf6a386bd))
+* **framework:** impl sparse adagrad optimizer ([223db4f](https://github.com/alibaba/RecIS/commit/223db4fb6c2df71c7623dd4f733a749fbfd06cb6))
+* **framework:** model bank load tf convert dense pkl ([7aa8420](https://github.com/alibaba/RecIS/commit/7aa8420fc93764412250db781a42995bc872ca2d))
+* **framework:** offline_server支持更多的返回类型 ([a5d3101](https://github.com/alibaba/RecIS/commit/a5d3101fc0e75da70a9fee669e8bff9e234ea32a))
+* **framework:** python3.13移除cgi修复及微调metric采集逻辑 ([a9824e2](https://github.com/alibaba/RecIS/commit/a9824e22491f178187a72fde78b23dc1979c96df))
+* **framework:** support build logic on multiple py3.x version ([2198e1a](https://github.com/alibaba/RecIS/commit/2198e1a301edf8a046df6fd10c2fa22288b5dd98))
+* **framework:** support offline server in recis ([df9f3b3](https://github.com/alibaba/RecIS/commit/df9f3b380247dcdcb36635ff7a67bcf22b585300))
+* **framework:** supports MFU metrics (either auto-calc or manually configured) ([b626ef0](https://github.com/alibaba/RecIS/commit/b626ef034f8cc6dd3cc5907c93fc04b720067d29))
+* **framework:** trace_writer v2 ([28436ca](https://github.com/alibaba/RecIS/commit/28436ca4a3e91116c2d333590e0054000b0b51ac))
+* **framework:** 统一管理版本名称 & ⚠️(breaking) 切换fslib模块的默认编译标准为abi=1 ([8a14629](https://github.com/alibaba/RecIS/commit/8a14629d436fe0f7c09c5a943219a9167925801f))
+* **framework:** update cmake to gt 3.28 ([c15d1cf](https://github.com/alibaba/RecIS/commit/c15d1cf119f343973b343c705d773b102ff79292))
+* **framework:** upgrade fslib & open alog. ([94d0ad5](https://github.com/alibaba/RecIS/commit/94d0ad54bb61501cdb6f35ce7586f3bf57ce512a))
+* **framework:** upgrade fslib to singleton version ([144de86](https://github.com/alibaba/RecIS/commit/144de86c941e0364292d7ef1eaa6d3e53be19fb4))
+* **io:** add compress flag for _indicator handling ([bc98afb](https://github.com/alibaba/RecIS/commit/bc98afbe4e185d3e71162edee4a65be8120e0453))
+* **io:** adapted to old column_io version ([20cd8b3](https://github.com/alibaba/RecIS/commit/20cd8b399565ba61453febb099507b105618b907))
+* **io:** ComboOdpsDataset ([744ea95](https://github.com/alibaba/RecIS/commit/744ea951f72674e8a03fd42bbf31c2d6bd7ba806))
+* **io:** create trace partition via tunnel when supported ([7c1b63d](https://github.com/alibaba/RecIS/commit/7c1b63d5d1652eb4f5fe6323ad20fe7ce3bb6b2b))
+* **io:** support user-defined tensor modules in dataset base ([ec7b902](https://github.com/alibaba/RecIS/commit/ec7b9022a306eb3b2f454661405c584b3ab34b0c))
+* **io:** Trace hook compatibility with multi-cloud clusters ([cf4702a](https://github.com/alibaba/RecIS/commit/cf4702a028cb4f4abbc8c4f78095f84ae5018f58))
+* **io:** Trace hook compatibility with specical clusters ([d7dd61b](https://github.com/alibaba/RecIS/commit/d7dd61b3f8077612cafcd0d178b605fd802e5517))
+* **ops:** add compute real length op ([4e73932](https://github.com/alibaba/RecIS/commit/4e739328dc875fd4ad6c60bc1c779bf6bbb2679f))
+* **ops:** add fused djb2hash and sdbmhash op ([083cfdc](https://github.com/alibaba/RecIS/commit/083cfdc9ced1206fcf6a03213c1fc4b7a58ea7ed))
+* **ops:** add multi hash ops for feature engine ([8db9ae8](https://github.com/alibaba/RecIS/commit/8db9ae81d450b489aa9a71f501fcff4f8c398e59))
+* **ops:** add weight decay for adagrad, enable grad norm tool ([f3c06a1](https://github.com/alibaba/RecIS/commit/f3c06a108ffdd48e3f1a98df43a63dd5d3750018))
+* **ops:** support ppu170 sdk. ([7fddf05](https://github.com/alibaba/RecIS/commit/7fddf0582fbafb671b1ba3fe811188b0d8828a1d))
+* **ops,framework:** add mask op, update fg for search ([9747f81](https://github.com/alibaba/RecIS/commit/9747f81e588f02788824346018701650c443b1d9))
+* **serialize:** support save and load model without sparse ([6d428b8](https://github.com/alibaba/RecIS/commit/6d428b8f45be8fa9be6bdc056ef7d7548f3066c9))
+
+### Bug Fixes
+
+* **checkpoint:** add storage prefix while update mos uri with xpfs. ([4bf4cb1](https://github.com/alibaba/RecIS/commit/4bf4cb1214fd4bde32ce0708790958ba4449e6d7))
+* **checkpoint:** fix bug about load optim when use accelerate ([752953d](https://github.com/alibaba/RecIS/commit/752953d0f76872949e802f3fa02766b86c9a9308))
+* **checkpoint:** fix bug of checkpointreader slowly ([63520cc](https://github.com/alibaba/RecIS/commit/63520cc21972666c77880a573e690ebfa33d4866))
+* **embedding:** prevent CG probe index wraparound ([fde78f7](https://github.com/alibaba/RecIS/commit/fde78f7c9d8a91a863feea18e98b00b105cf23a7))
+* **embedding:** remove duplicate ids & keep first while loading. ([a529bc8](https://github.com/alibaba/RecIS/commit/a529bc88b5ccde75c87fc05e4c8a251a7e68b663))
+* **embedding,serialize:** fix nan values during checkpoint loading ([d7c35f3](https://github.com/alibaba/RecIS/commit/d7c35f34bf92e5005a40e761e2c71e29a9ff799a))
+* **framework:** accelerator will warp named_optimizer to accelearte_optimizer ([0d4a189](https://github.com/alibaba/RecIS/commit/0d4a189a3903883b4685a4e82011e0ceac930501))
+* **framework:** correct file system checks for checkpoint retrieval ([faa7f6c](https://github.com/alibaba/RecIS/commit/faa7f6c9842d1311e73199809eacf00779bf3bae))
+* **framework:** create new version for model_export ([3bbdebd](https://github.com/alibaba/RecIS/commit/3bbdebd63a1d91c8d0471d53cb7087919a3be7ca))
+* **framework:** fix bug of grad accumulate ([c739522](https://github.com/alibaba/RecIS/commit/c739522a532fcc6ce9e37dc5775aaa681c28b7a5))
+* **framework:** fix bug when path not exists ([770990e](https://github.com/alibaba/RecIS/commit/770990ed08fb9d93ae0f35972e0df60514f3d636))
+* **framework:** fix peak FLOPS for gpu cards ([c4b0d80](https://github.com/alibaba/RecIS/commit/c4b0d80917973f8c8755ecec59327b290acb37c4))
+* **framework:** fix RTP torch_fx_tool typo bug ([bff6a4e](https://github.com/alibaba/RecIS/commit/bff6a4e7dcda7eb09b9d2b8053c12412a5faad9a))
+* **framework:** log_writer compile error in higher gcc version ([30bb000](https://github.com/alibaba/RecIS/commit/30bb0003eed40fdc2ce41d2a6adc927aac099c00))
+* **framework:** refine logger hook and fix mos import ([8b2bdf3](https://github.com/alibaba/RecIS/commit/8b2bdf30be41d5696b70277a6a0b0f3b925e8c4b))
+* **framework:** sync after save ([474cb15](https://github.com/alibaba/RecIS/commit/474cb150827d8b15de908778f8257c581bc13d9f))
+* **framework:** update search RTP export_torch_fx_tool ([94faa8b](https://github.com/alibaba/RecIS/commit/94faa8ba08b9c04ab2cc869050cd911465c3af5e))
+* **io:** do not save io state for odps window io ([6daf86d](https://github.com/alibaba/RecIS/commit/6daf86dfa6b257755cf9aa973eb57837f94a9fed))
+* **io:** fix bug of cannot append to ec file ([ae97a1a](https://github.com/alibaba/RecIS/commit/ae97a1a3e6d329819e1e1189524511d186a6e536))
+* **io:** io_state is saved along with the checkpoint ([0592db9](https://github.com/alibaba/RecIS/commit/0592db9de735568fd01cf6f137ef9dee20c64171))
+* **io:** remove lock and mp ([442e854](https://github.com/alibaba/RecIS/commit/442e85493e9e73566b88a46c26886eda11396995))
+* **io:** return lake window end state ([3db246c](https://github.com/alibaba/RecIS/commit/3db246c589bbec5c10483b44c954fb682c53b101))
+* **ops:** fix 3D cutoff bounds check ([f632547](https://github.com/alibaba/RecIS/commit/f63254796ebe8089862b3452af130f91ab0dcebe))
+* **ops:** fix build issue in rocm ([fe82734](https://github.com/alibaba/RecIS/commit/fe827341eeab4af2ce859ab10ee04116644d7948))
+* **ops:** fix launch failure of cutoff ([25f44ec](https://github.com/alibaba/RecIS/commit/25f44ec3a735d37be964765d182cf7b2bcfc105c))
+* **ops:** fix runtime dispatch in segment_reduce forward/backward, segment_mean, ragged_tile_backward for FP16/BFloat16 support ([9c536ea](https://github.com/alibaba/RecIS/commit/9c536eafbf3e8f18f45bab6b58ae4dd65e9c8c53))
+* **serialize:** fix issue of slow loading ([efd2bcb](https://github.com/alibaba/RecIS/commit/efd2bcb7e8205527b6266a79e9fcef8e92d182a3))
+* **serialize:** read json file after writing done ([5cf10b8](https://github.com/alibaba/RecIS/commit/5cf10b8398316a44423dec6496a5f106d528001e))
+* **framework:** do not report MOS metrics for checkpoints that have already been deleted ([13297df](https://github.com/alibaba/RecIS/commit/13297df25cf063a61b911b0897ce0395c3926209))
+
+### Performance Improvements
+
+* **framework,serialize:** optimize checkpoint save latency ([05046f5](https://github.com/alibaba/RecIS/commit/05046f5cedbc138b8633718534af975632e4f875))
+* **ops,embedding:** rm grad worker mean useless unique && useless item in gen_segment_ids ([b79d61b](https://github.com/alibaba/RecIS/commit/b79d61bdc8eb18a165acf3b87b230b0447804085))
+
+### Documentation
+
+* **docs:** add note abput using output_dir in model_bank ([ac5239f](https://github.com/alibaba/RecIS/commit/ac5239faad1f1b39c825a0329a9a241c89d46f58))
+* **docs:** add notable work based on RecIS ([b9a9e36](https://github.com/alibaba/RecIS/commit/b9a9e36478f70023ccc8169b566818b4f4a15f85))
+
+### Build
+
+* **build:** update middle version ([bcac5ec](https://github.com/alibaba/RecIS/commit/bcac5ec22d9c74f13b9ccd38ad9543f2151f424b))
+* **ci:** fix package version for amd ([a8f10cb](https://github.com/alibaba/RecIS/commit/a8f10cbbca95e83dd571aee63e83b5270de08632))
+
+### Open-Source Cleanup
+
+* **column-io:** Sync column-io 0.3.0 from internal master with open-source cleanup
+* **column-io:** Fix INTERNAL_VERSION conditional compilation (py_interface, dataset_impl, arrow_reader links)
+* **column-io:** Fix cmake URLs to use GitHub public links (rapidjson, protobuf, googletest, zlib)
+* **column-io:** Clean up internal references (ODPS endpoints, internal paths, kmonitor dependencies)
+* **column-io:** Fix `from_list_string` empty array bug (prevent `all([])` returning True)
+* **column-io:** Remove hardcoded Alibaba Cloud AccessKey from integration tests
+* **column-io:** Replace hardcoded ODPS paths with environment variables
+* **framework:** Remove internal submodule `torch_fx_tool` and conditionalize import
+* **framework:** Conditionalize `openlm_hub` import in `mos.py`
+* **ci:** Remove `.aoneci/` directory
+
+---
+
 # 🚀 RecIS v1.1.0 Release Notes
 
 We are excited to announce the release of **RecIS v1.1.0**. This version marks a significant milestone with the introduction of **Model Bank 1.0**, native **ROCm support**, and substantial performance optimizations for large-scale embedding tables.

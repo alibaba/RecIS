@@ -13,6 +13,13 @@ os.environ["OPENSTORAGEso"] = os.path.join(
 os.environ["LAKERUNTIMEso"] = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "lib_lake_IO.so"
 )
+os.environ["LOCAL_ORC_so"] = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "liblocal_orc_plugin.so"
+)
+#aot runner plugin
+os.environ["LIB_PLUGIN_SO"] = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "libplugin.so"
+)
 py_interface._global_init()
 
 #open storage
@@ -42,6 +49,10 @@ def ExtractLocalReadSession(access_id, access_key, project, table, partition):
 
 def RefreshReadSessionBatch():
     return py_interface.RefreshReadSessionBatch() 
+
+def GetHaloAgentMetric(halo_endpoint, type):
+    # type: (str, str) -> int
+    return py_interface.GetHaloAgentMetric(halo_endpoint, type) 
 
 def GetOdpsOpenStorageTableFeatures(str_path, is_compressed):
     return py_interface.GetOdpsOpenStorageTableFeatures(str_path, is_compressed)
@@ -86,7 +97,8 @@ class _PackerDataset:
         ragged_ranks,
         parallel,
         pinned_result,
-        gpu_result
+        gpu_result,
+        do_classify
     ):
         return py_interface._PackerDataset.make_dataset(
             input_dataset,
@@ -97,7 +109,8 @@ class _PackerDataset:
             ragged_ranks,
             parallel,
             pinned_result,
-            gpu_result
+            gpu_result,
+            do_classify
         )
 
     @staticmethod
@@ -139,6 +152,13 @@ class _RepeatDataset:
     @staticmethod
     def make_dataset(input, take_num=1, repeat=-1):
         return py_interface._RepeatDataset.make_dataset(input, take_num, repeat)
+
+class _MapDataSet:
+    @staticmethod
+    def make_dataset(input_dataset, new_input_schema, old_input_schema, user_module_columns, module_so_path):
+        return py_interface._MapDataSet.make_dataset(input_dataset, new_input_schema, old_input_schema, 
+                user_module_columns, 
+                module_so_path)
 
 
 class _LocalRBStreamDataset:
@@ -303,6 +323,23 @@ class _OdpsOpenStorageDataset:
     def load_plugin():
         py_interface._OdpsOpenStorageDataset.load_open_storage_plugin()
 
+    @staticmethod
+    def get_table_features(path, is_compressed):
+        # logger.debug(f"invoke py_interface._OdpsOpenStorageDataset.get_table_features")
+        return py_interface._OdpsOpenStorageDataset.get_table_features(path, is_compressed)
+
+
+class _OdpsOpenStorageRowDataset:
+    @staticmethod
+    def make(paths, selected_columns, batch_size, reader_name):
+        return py_interface._OdpsOpenStorageRowDataset.make(
+            paths, selected_columns, batch_size, reader_name)
+
+    @staticmethod
+    def get_table_size(path):
+        return py_interface._OdpsOpenStorageRowDataset.get_table_size(path)
+
+
 class _LocalOrcDataset:
     @staticmethod
     def make_dataset(
@@ -463,55 +500,67 @@ class _OdpsTableColumnDataset:
         return py_interface._OdpsTableColumnDataset.get_table_features(path, is_compressed)
 
 
-class _OdpsTableColumnComboDataset:
+class _OdpsComboDataset:
     @staticmethod
     def make_dataset(
         paths,
         is_compressed,
         batch_size,
-        selected_columns,
-        input_columns,
+        table_select_columns,
+        table_input_columns,
         hash_features,
+        hash_types,
+        hash_buckets,
         dense_columns,
         dense_defaults,
         check_data,
         primary_key,
+        turn_on_odps_open_storage,
     ):
-        return py_interface._OdpsTableColumnComboDataset.make_dataset(
+        return py_interface._OdpsComboDataset.make_dataset(
             paths,
             is_compressed,
             batch_size,
-            selected_columns,
-            input_columns,
+            table_select_columns,
+            table_input_columns,
             hash_features,
+            hash_types,
+            hash_buckets,
             dense_columns,
             dense_defaults,
             check_data,
             primary_key,
+            turn_on_odps_open_storage,
         )
     
     @staticmethod
     def make_builder(
         is_compressed,
         batch_size,
-        selected_columns,
-        input_columns,
+        table_select_columns,
+        table_input_columns,
         hash_features,
+        hash_types,
+        hash_buckets,
         dense_columns,
         dense_defaults,
         check_data,
         primary_key,
+        turn_on_odps_open_storage,
     ):
-        return py_interface._OdpsTableColumnComboDataset.make_builder(
+        return py_interface._OdpsComboDataset.make_builder(
             is_compressed,
             batch_size,
-            selected_columns,
-            input_columns,
+            table_select_columns,
+            table_input_columns,
             hash_features,
+            hash_types,
+            hash_buckets,
             dense_columns,
             dense_defaults,
             check_data,
             primary_key,
+            turn_on_odps_open_storage,
         )
 
     @staticmethod
@@ -523,7 +572,7 @@ class _OdpsTableColumnComboDataset:
         dense_columns,
         dense_defaults,
     ):
-        return py_interface._OdpsTableColumnComboDataset.parse_schema(
+        return py_interface._OdpsComboDataset.parse_schema(
             paths,
             is_compressed,
             selected_columns,
@@ -534,11 +583,16 @@ class _OdpsTableColumnComboDataset:
 
     @staticmethod
     def get_table_size(path):
-        return py_interface._OdpsTableColumnComboDataset.get_table_size(path)
+        return py_interface._OdpsComboDataset.get_table_size(path)
     
     @staticmethod
     def load_plugin():
-        py_interface._OdpsTableColumnComboDataset.load_odps_plugin()
+        py_interface._OdpsComboDataset.load_odps_plugin()
+
+    @staticmethod
+    def get_table_features(path, is_compressed):
+        return py_interface._OdpsComboDataset.get_table_features(path, is_compressed)
+
 
 
 _register_lock = threading.Lock()
@@ -651,7 +705,95 @@ class _LakeStreamColumnDataset:
     def close_pangu():
         return py_interface._LakeStreamColumnDataset.close_pangu()
     
+class _LakeMultiCFStreamColumnDataset:
+    @staticmethod
+    def make_dataset(
+        paths,
+        is_compressed,
+        batch_size,
+        selected_columns,
+        input_columns,
+        hash_features,
+        hash_types,
+        hash_buckets,
+        dense_columns,
+        dense_defaults,
+        use_prefetch,
+        prefetch_thread_num,
+        prefetch_buffer_size,
+    ):
+        return py_interface._LakeMultiCFStreamColumnDataset.make_dataset(
+            paths,
+            selected_columns,
+            input_columns,
+            hash_features,
+            hash_types,
+            hash_buckets,
+            dense_columns,
+            dense_defaults,
+            is_compressed,
+            batch_size,
+            use_prefetch,
+            prefetch_thread_num,
+            prefetch_buffer_size,
+        )
 
+    @staticmethod
+    def make_builder(
+        is_compressed,
+        batch_size,
+        selected_columns,
+        input_columns,
+        hash_features,
+        hash_types,
+        hash_buckets,
+        dense_columns,
+        dense_defaults,
+        use_prefetch,
+        prefetch_thread_num,
+        prefetch_buffer_size,
+    ):
+        return py_interface._LakeMultiCFStreamColumnDataset.make_builder(
+            selected_columns,
+            input_columns,
+            hash_features,
+            hash_types,
+            hash_buckets,
+            dense_columns,
+            dense_defaults,
+            is_compressed,
+            batch_size,
+            use_prefetch,
+            prefetch_thread_num,
+            prefetch_buffer_size,
+        )
+
+    @staticmethod
+    def parse_schema(
+        paths,
+        is_compressed,
+        selected_columns,
+        hash_features,
+        hash_types,
+        hash_buckets,
+        dense_columns,
+        dense_defaults,
+    ):
+        _register_exit_hook(_LakeMultiCFStreamColumnDataset.close_pangu)
+        return py_interface._LakeMultiCFStreamColumnDataset.parse_schema(
+            paths,
+            is_compressed,
+            selected_columns,
+            hash_features,
+            hash_types,
+            hash_buckets,
+            dense_columns,
+            dense_defaults,
+        )
+
+    @staticmethod
+    def close_pangu():
+        return py_interface._LakeMultiCFStreamColumnDataset.close_pangu()
 
 class _LakeBatchColumnDataset:
     @staticmethod
@@ -767,3 +909,21 @@ class _LakeBatchColumnDataset:
     def close_pangu():
         return py_interface._LakeBatchColumnDataset.close_pangu()
 
+class _MapDatasetRank:
+    @staticmethod
+    def make_dataset(input_dataset, new_input_schema, old_input_schema, scene_map):
+        return py_interface._MapDataSetRank.make_dataset(input_dataset, new_input_schema, old_input_schema, scene_map)
+
+
+class _MapDatasetRankCanXi:
+    @staticmethod
+    def make_dataset(input_dataset, new_input_schema, old_input_schema, odl_mode):
+        return py_interface._MapDataSetRankCanXi.make_dataset(input_dataset, new_input_schema, old_input_schema, odl_mode)
+
+
+class _MapDatasetSampleFilter:
+    @staticmethod
+    def make_dataset(input_dataset, new_input_schema, old_input_schema, filter_dict):
+        return py_interface._MapDataSetSampleFilter.make_dataset(
+            input_dataset, new_input_schema, old_input_schema, filter_dict
+        )

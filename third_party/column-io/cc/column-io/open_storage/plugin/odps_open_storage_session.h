@@ -110,8 +110,9 @@ class OdpsOpenStorageSession {
                                  const std::string& default_project = "",
                                  int connect_timeout = 300,
                                  int rw_timeout = 300);
-	  static std::string timestampToReadableTime(long timestamp);
-	  static Status RefreshReadSessionBatch();
+    static std::string timestampToReadableTime(long timestamp);
+    static Status RefreshReadSessionBatch();
+    static int64_t GetHaloAgentMetric(const char* halo_endpoint, int type);
     static Status RefreshReadSession(const std::string& access_id,
                                      const std::string& access_key,
                                      const std::string& tunnel_endpoint,
@@ -141,13 +142,15 @@ class OdpsOpenStorageSession {
 
     bool IsInitialized();
     long GetTableSize();
+    void InitCompressionType();
     std::unordered_map<std::string, std::string> GetSchema();
     std::shared_ptr<apsara::odps::sdk::storage_api::arrow_adapter::Reader>
       CreateOpenStorageReader(long start, long end,
                               int max_batch_rows, int max_batch_raw_size,
-                              int compression_type = 0, int cache_size = 1,
+                              int cache_size = 1,
                               bool data_columns_unordered = true,
-							  const std::string& reader_name = "");
+                              const std::string& reader_name = "",
+                              const std::vector<std::string>& input_columns = {});
     Status ExtractSessionDef(nlohmann::json* session_def);
     Status ExtractSchema(nlohmann::json* session_def);
     OdpsOpenStorageSession();
@@ -191,10 +194,11 @@ class OdpsOpenStorageSession {
     std::vector<std::string> required_data_columns_;
     std::string mode_;
     std::string default_project_;
+    int compression_type_ = -1;  // -1: auto compression; 0: UNCOMPRESSED; 1: ZSTD; 2: LZ4_FRAME
     // followings are results
     std::string session_id_ = "";
     nlohmann::json session_def_;
-    std::shared_ptr<openstorage::MetricReporter> metric_reporter_;
+    std::pair<std::shared_ptr<recis::monitor::Client>, std::shared_ptr<recis::monitor::PointTag>> metric_reporter_;
     long expiration_time_ = -1;  // 13bit timestamp
     long record_count_ = -1;     // table size
     std::unordered_map<std::string, std::string> schema_;

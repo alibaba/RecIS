@@ -7,6 +7,7 @@
 #include <memory>
 #include <functional>
 #include "status.h"
+#include "arrow/c/bridge.h"
 
 namespace arrow {
 class RecordBatch;
@@ -46,7 +47,7 @@ class LakeStreamReader {
     std::function<int(void*)> _funcDestoryLakeStreamReader;
     std::function<int(void*, size_t)> _funcSeekTimeStamp;
     std::function<int(void*, size_t, size_t)> _funcSeekTimeStampRange;
-    std::function<int(void*, void*)> _funcReadBatch;
+    std::function<int(void*, struct ArrowArray*, struct ArrowSchema*, int64_t)> _funcReadBatch;
     std::function<int64_t(void*)> _funcTell;
     std::function<void(void*)> _funcClose;
     std::function<uint64_t(void*)> _funcGetReadBytes;

@@ -2,7 +2,7 @@
 #include <functional>
 namespace lake {
 bool getListDir(const std::string &dir, std::vector<std::string> *result) {
-  void *libHandle = dlopen(getenv("LAKERUNTIMEso"), RTLD_LAZY);
+  void *libHandle = dlopen(getenv("LAKERUNTIMEso"), RTLD_LAZY | RTLD_LOCAL);
   if (!libHandle) {
     return false;
   }
@@ -27,7 +27,7 @@ bool getListDir(const std::string &dir, std::vector<std::string> *result) {
 };
 
 bool closePangu() {
-  void *libHandle = dlopen(getenv("LAKERUNTIMEso"), RTLD_LAZY);
+  void *libHandle = dlopen(getenv("LAKERUNTIMEso"), RTLD_LAZY | RTLD_LOCAL);
   if (!libHandle) {
     return false;
   }

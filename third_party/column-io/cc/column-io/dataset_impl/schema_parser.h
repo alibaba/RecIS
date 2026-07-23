@@ -10,6 +10,7 @@
 #include "column-io/dataset/formater.h"
 #include "column-io/framework/status.h"
 #include "column-io/framework/tensor.h"
+#include <arrow/api.h>
 namespace column {
 namespace dataset {
 class SchemaParser {
@@ -21,15 +22,17 @@ class SchemaParser {
   // TODO: impl RecordBatchReaderFnByRows if need,   neednt for just now
 
 public:
-  std::pair<
+  std::tuple<
       std::vector<std::string>,
-      std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>>
+      std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>,
+	  std::string
+	  >
   ParseSchema(const std::vector<std::string> &paths,
               bool is_compressed,
               const std::unordered_set<std::string> &selected_columns,
               const std::vector<std::string> &hash_features,
               const std::vector<std::string> &hash_types,
-              const std::vector<int32_t> &hash_buckets,
+              const std::vector<int64_t> &hash_buckets,
               const std::vector<std::string> &dense_columns,
               const std::vector<Tensor> &dense_defaults);
 
@@ -43,7 +46,7 @@ public:
                     const std::vector<std::string> &selected_columns,
                     const std::vector<std::string> &hash_features,
                     const std::vector<std::string> &hash_types,
-                    const std::vector<int32_t> &hash_buckets,
+                    const std::vector<int64_t> &hash_buckets,
                     const std::vector<std::string> &dense_columns,
                     const std::vector<Tensor> &dense_defaults);
   static std::unique_ptr<SchemaParser> MakeByRows(RecordBatchReaderFn fn);
@@ -55,7 +58,7 @@ private:
       const std::unordered_set<std::string> &selected_columns,
       const std::vector<std::string> &hash_features,
       const std::vector<std::string> &hash_types,
-      const std::vector<int32_t> &hash_buckets,
+      const std::vector<int64_t> &hash_buckets,
       const std::vector<std::string> &dense_features,
       const std::vector<Tensor> &dense_defaults,
       bool is_compressed,
@@ -64,6 +67,8 @@ private:
           *output_schema,
       std::vector<std::string> *input_columns,
       bool with_null);
+  std::string ExtractElementType(const std::shared_ptr<arrow::DataType>& type);
+  std::string BuildSchemaJson(const std::shared_ptr<arrow::Schema>& schema, bool is_compressed);
   RecordBatchReaderFn rb_reader_;
 };
 } // namespace dataset

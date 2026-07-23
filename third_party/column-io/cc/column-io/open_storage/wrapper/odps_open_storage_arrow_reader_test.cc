@@ -143,8 +143,8 @@ class TestCases {
 
   const std::string access_id_ = "your_access_id_";
   const std::string access_key_ = "your_access_key_";
-  const std::string tunnel_endpoint_ = "xxx";
-  const std::string odps_endpoint_ = "xxx";
+  const std::string tunnel_endpoint_ = "ipc:///home/admin/halo/socket/halo.sock";
+  const std::string odps_endpoint_ = "";
   const std::string projects_ = "nebula_ai_dev";
   const std::string project_ =  "nebula_ai_dev";
   const std::string tables_ = "nmd_daily_sample_allpid_final_nebula";

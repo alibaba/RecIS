@@ -1,12 +1,15 @@
 #include "column-io/py_interface/converter.h"
-#include "absl/log/log.h"
-#include "column-io/framework/types.h"
+
+#include <string>
+#include <dlpack.h>
 #include <pybind11/cast.h>
 #include <pybind11/embed.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pytypes.h>
-#include <string>
-#include <dlpack.h>
+#include "absl/log/log.h"
+
+#include "column-io/framework/types.h"
+
 namespace column {
 namespace py_interface {
 template<typename T>
@@ -80,7 +83,7 @@ pybind11::object CastTensor(Tensor tensor) {
         strncpy(new_str_ptr + i * max_len, origin_ptr[i].data(), max_len);
       }
       Capsule<Tensor> *capsule = new Capsule<Tensor>(new_tensor);
-      ret = pybind11::array(pybind11::dtype(absl::StrCat("S", max_len)),
+      ret = pybind11::array(pybind11::dtype(std::string("S")+std::to_string(max_len)),
                             {tensor.Shape().Dims()}, {max_len}, new_str.data(),
                             capsule->ToPyCapsule());
     }
@@ -252,7 +255,7 @@ inline pybind11::object ConvertToPyObject(const column::Tensor& tensor, size_t r
             }
             Capsule<column::Tensor> *capsule = new Capsule<column::Tensor>(new_tensor);
             // TODO: 这里S*不支持null element. 同时pybind11::array也不能为null. 需要考虑如何从RecordBatch到Tensor时保留空数组和组内空元素的信息
-            return pybind11::array(pybind11::dtype(absl::StrCat("S", max_len)),
+            return pybind11::array(pybind11::dtype(std::string("S")+std::to_string(max_len)),
                                     {row_dims}, {max_len}, new_str.data(),
                                     capsule->ToPyCapsule());
         }
@@ -449,7 +452,7 @@ pybind11::object CastTensorToDLPack(Tensor tensor) {
         strncpy(new_str_ptr + i * max_len, origin_ptr[i].data(), max_len);
       }
       Capsule<Tensor> *capsule = new Capsule<Tensor>(new_tensor);
-      ret = pybind11::array(pybind11::dtype(absl::StrCat("S", max_len)),
+      ret = pybind11::array(pybind11::dtype(std::string("S")+std::to_string(max_len)),
                             {tensor.Shape().Dims()}, {max_len}, new_str.data(),
                             capsule->ToPyCapsule());
     }

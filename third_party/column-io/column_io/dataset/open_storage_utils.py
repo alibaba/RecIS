@@ -10,6 +10,7 @@ import datetime
 import fcntl
 import json
 import os
+import errno
 import psutil
 import random
 import requests
@@ -27,23 +28,26 @@ from collections import OrderedDict
 from odps import ODPS
 from requests import RequestException
 from column_io.lib import interface
+from column_io._version import __odps_sdk_version__
 from column_io.dataset.log_util import logger, varlogger, LOG_DIR
 from column_io.dataset.metric_util import metric_factory,MetricPoints,MetricStatus
 from column_io.dataset.metric_util import NebulaIOFatalError
-from column_io.dataset.job_info import JobInfo,get_app_id,get_odps_table,get_job_info,get_task_name,get_work_id,is_nootbook
+from column_io.dataset.job_info import JobInfo,get_app_id,get_job_info,get_child_order,get_task_name,get_work_id,is_notebook, get_odps_endpoint
 from column_io.dataset.secret_util import decode
+from column_io.dataset.partition_util import get_odps_partition_modified_timestamp
 
 COLUMN_IO = "column_io"
+COLUMN_IO_CPU = "column_io_cpu"
 PAIIO = "paiio"
 PYTHONPATH = "PYTHONPATH"
 ODPS_ACCESS_INFO_DUMP = "odps_access_info_dump"
-SESSION_EXPIRATION_THRESHOLD = 12 * 3600 * 1000  # in ms
+SESSION_EXPIRATION_THRESHOLD = int(0.5 * 3600 * 1000)  # in ms, should be shorter than the session expiration time on the service side.
 INDICATOR_PREFIX = "_indicator_"
 AUTH_MODE_READ = "read"
 AUTH_MODE_WRITE = "write"
 OPEN_STORAGE = "open_storage"
-NEBULA_OPEN_STORAGE_CACHE_SERVER = os.getenv("NEBULA_OPEN_STORAGE_CACHE_SERVER", "xxx")
-ODPS_ENDPOINT = os.getenv('end_point', "xxx")
+NEBULA_OPEN_STORAGE_CACHE_SERVER = os.getenv("NEBULA_OPEN_STORAGE_CACHE_SERVER", "http://odps.nebula.alibaba-inc.com/authorize/odps_open_storage/cache")
+ODPS_ENDPOINT = get_odps_endpoint()
 CHECK_STATUS = "check_status"
 SESSION_ID = "session_id"
 EXPIRATION_TIME = "expiration_time"
@@ -54,12 +58,14 @@ CHECK_AUTH_PREFIX = "check_auth"
 LOCAL_CACHE_PREFIX = "local_cache"
 NEBULA_FORCE_CREATE_SESSION = "NEBULA_FORCE_CREATE_SESSION"
 
+_is_session_creator_override = None  # type: Optional[bool]
+
 
 # def is_external_cluster():
 #     is_external = os.environ.get('IS_EXTERNAL_CLUSTER', None)
 #     return str(is_external).lower() == 'true'
 
-def is_service_reachable(service_url, timeout_seconds=10):
+def is_service_reachable(service_url, timeout_seconds=3, max_retries=2, retry_delay=2):
     # try:
     #   # Python3
     #   from urllib.parse import urlparse, urlunparse
@@ -77,20 +83,42 @@ def is_service_reachable(service_url, timeout_seconds=10):
         "User-Agent": "curl/7.64.1",  # curl UA
         "Accept": "*/*",
     }
-    try:
-        response = requests.get(service_base_url,
-                                headers=headers,
-                                allow_redirects=False,
-                                verify=True,
-                                timeout=timeout_seconds)
-        if response.status_code < 400:
+    # 重试逻辑
+    last_failure = None  # 记录最后一次失败信息，循环结束统一打日志
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.get(service_base_url,
+                                    headers=headers,
+                                    allow_redirects=False,
+                                    verify=True,
+                                    timeout=timeout_seconds)
             return True
-        return False
-    except (requests.ConnectionError, requests.Timeout, requests.RequestException):
-        return False
+        except requests.RequestException as e:
+            # RequestException 已覆盖 ConnectionError / Timeout / HTTPError / SSLError 等所有 requests 异常
+            last_failure = "exception={}".format(e)
+        except Exception as e:
+            # 兜底：极少数底层异常（如 socket.timeout、OSError 等）不被 requests 包装
+            last_failure = "unexpected_exception={}".format(e)
+
+        # 还有剩余重试机会才 sleep；不打中间过程的日志
+        if attempt < max_retries:
+            time.sleep(retry_delay)
+
+    # 全部尝试完仍失败，统一打一条日志
+    logger.error("Service reachability check failed after {} attempts for {}, last_failure: {}".format(
+        max_retries + 1, service_base_url, last_failure))
+    return False
     # if is_external_cluster():
     #     return False
     # return True
+
+def get_tunnel_endpoint():
+    for key in ["tunnel_end_point", "TUNNEL_ENDPOINT"]:
+        value = os.getenv(key)
+        if value:
+            return value
+    return "ipc:///home/admin/halo/socket/halo.sock"
+
 
 # 提前查好相关service可达性cache住结果
 # 防御shuffle场景冲击service和日志刷屏
@@ -107,15 +135,25 @@ def get_pkg_name():
     return str(__name__).split(".")[0]
 
 def is_column_io():
-    return get_pkg_name() == COLUMN_IO
+    pkg = get_pkg_name()
+    return pkg == COLUMN_IO or pkg == COLUMN_IO_CPU
 
 def is_paiio():
     return get_pkg_name() == PAIIO
 
+def set_session_creator_override(value):
+    # type: (Optional[bool]) -> None
+    if value is not None and not isinstance(value, bool):
+        raise TypeError("is_session_creator_override must be bool or None, got: {}".format(type(value).__name__))
+    global _is_session_creator_override
+    _is_session_creator_override = value
+
 def is_session_creator():
+    if _is_session_creator_override is not None:
+        return _is_session_creator_override
     if not IS_NEBULA_OPEN_STORAGE_CACHE_SERVER_REACHABLE:
         return True
-    if is_nootbook():
+    if is_notebook():
         return True
     task_name = get_task_name()
     worker_id = get_work_id()
@@ -130,11 +168,37 @@ def is_session_creator():
         raise NebulaIOFatalError("unsupported io module: {}, task_name: {}, worker_id: {}".format(get_pkg_name(), task_name, worker_id))
         # raise ValueError("unsupported io module: {}".format(get_pkg_name()))
 
+def makedirs_if_not_exists(path):
+    try:
+        os.makedirs(path)
+    except OSError as e:
+        # EEXIST: 路径已存在（可能是并发其它进程刚创建的）
+        if e.errno == errno.EEXIST and os.path.isdir(path):
+            return
+        raise NebulaIOFatalError("makedirs failed for path={}, errno={}, original={}"
+                                    .format(path, getattr(e, "errno", None), e))
 
 def force_recreate_session():
   default_v = "1" if is_column_io() else "0"
   env_v = os.environ.get(NEBULA_FORCE_CREATE_SESSION, default_v)
   return str(env_v) == "1"
+
+def is_restarted_version_inplace():
+  # Check the RESTART_VERSION environment variable
+  #   an empty string indicates no global restart has occurred.
+  #
+  #  - name: RESTART_VERSION
+  #    valueFrom:
+  #      fieldRef:
+  #        apiVersion: v1
+  #        fieldPath: 'metadata.labels[''kubedl.io/expected-restart-version'']'
+  #
+  restart_version = os.getenv("RESTART_VERSION", "0")
+  try:
+    restart_version = int(restart_version)
+  except Exception as e:
+    restart_version = 0
+  return restart_version == 0
 
 def get_local_ip(): # TODO: make sure ipv6 support
     try:
@@ -155,26 +219,22 @@ def local_cache_file_name(prefix, project, table, partition):
     short_full_name = "{}.{}.{}.{}.{}.txt".format(prefix, project[:32], table[:32], partition.replace('/', '_')[:32], hash(full_name))
     return short_full_name
 
-def check_file_with_retry(target_file, total_wait_seconds=60, max_attempts=10):
-    attempts = 0
-    elapsed_seconds = 0.0
-    # FIXME: ths opt close for now, too fast return leads halo-container not init done, so conn refused,when sure of halo init done then open me
-    #if is_session_creator(): # session creator no need waiting
-    #  return os.path.exists(target_file)
-    while attempts < max_attempts and elapsed_seconds < total_wait_seconds:
-        if os.path.exists(target_file):
-            # --------  NOOTBOOK, WITHOUT REFRESH DAEMON THREAD, SO CHECK EXP MORE EXTREMLY ---------- #
-            if time.time() - os.path.getmtime(target_file) >= 12*3600: # why 12h?  because when cache file create, the remain time is >=12h
-                os.remove(target_file)
-                varlogger.info("local_cache:{} is at exp time:{}, del and new one".format(target_file, int(os.path.getmtime(target_file))))
-                return False
-            # --------  NOOTBOOK  -------- #
-            return True
-        remaining_time = total_wait_seconds - elapsed_seconds
-        sleep_time = round(random.uniform(0, remaining_time / (max_attempts - attempts)), 2)
-        time.sleep(sleep_time)
-        elapsed_seconds += sleep_time
-        attempts += 1
+def check_file(target_file):
+    try:
+        modi_time = os.path.getmtime(target_file)
+    except OSError as e:
+        # 文件不存在/不可访问：直接认为缓存无效
+        return False
+    # --------  NOTEBOOK, WITHOUT REFRESH DAEMON THREAD, SO CHECK EXP MORE EXTREMLY ---------- #
+    if is_notebook() and time.time() - modi_time >= 12*3600: # why 12h?  because when cache file create, the remain time is >=12h
+        modi_time = int(modi_time)
+        try:
+            os.remove(target_file)
+        except Exception as e:
+            logger.warning("failed to remove local_cache:{}, exception: {}".format(target_file, e))
+        finally:
+            varlogger.info("local_cache:{} is at exp time:{}, del and new one".format(target_file, modi_time))
+            return False
     return os.path.exists(target_file)
 
 def check_or_mkdir(relative_path):
@@ -183,13 +243,7 @@ def check_or_mkdir(relative_path):
     else:
         work_dir = os.getenv(PYTHONPATH, "./")
         target_dir = os.path.join(work_dir, relative_path)
-    if os.path.exists(target_dir):
-        return target_dir
-    if not os.path.exists(target_dir):
-        sleep_time = round(random.uniform(0, 1), 3)
-        time.sleep(sleep_time)
-        if not os.path.exists(target_dir):  # double check for fusion mode
-            os.makedirs(target_dir)
+    makedirs_if_not_exists(target_dir)
     return target_dir
 
 def dump_debug_access_info_batch(session_struct_set):
@@ -216,40 +270,64 @@ def dump_debug_access_info_batch(session_struct_set):
             logger.info("dump access info exception: {}".format(e))
             varlogger.info("dump access info exception format_exec: {}".format(traceback.format_exc()))
 
-def check_auth_and_data(session_struct_set, max_random_wait_seconds=10):
-    # type: (list[HashableSessionStruct], int) -> None
+def check_auth_and_data(session_struct_set):
+    # type: (list[HashableSessionStruct]) -> None
     target_dir = check_or_mkdir(ODPS_ACCESS_INFO_DUMP)
+    # 打散各个worker退出此函数的时间点，避免各个worker同时请求open storage session cache，概率性降低请求总量
+    if not is_session_creator():
+        sleep_time = round(random.uniform(0, 5 * len(session_struct_set)), 2)
+        time.sleep(sleep_time)
     for idx, session_strcut in enumerate(session_struct_set):
         try:
             target_file = local_cache_file_name(LOCAL_CACHE_PREFIX, session_strcut.project, session_strcut.table, session_strcut.partition)
             target_file = os.path.join(target_dir, target_file)
-            if not os.path.exists(target_file):
-                sleep_time = round(random.uniform(0, 10), 2)
-                time.sleep(sleep_time)
-
-            random_wait_seconds = random.uniform(0, max_random_wait_seconds)   # 通过随机化的等待时间, 打散众多并发的worker, 尽可能让少数worker击穿local cache不存在
-            if check_file_with_retry(target_file, total_wait_seconds=random_wait_seconds):
-                with open(target_file, "r") as f:
-                    try:
-                        fcntl.flock(f, fcntl.LOCK_EX)
-                        file_content = json.load(f)
-                        check_status = file_content.get(CHECK_STATUS, False)
-                        if check_status:
-                            continue
-                    finally:
-                        fcntl.flock(f, fcntl.LOCK_UN)
+            if check_file(target_file):
+                try:
+                    with open(target_file, "r") as f:
+                        try:
+                            fcntl.flock(f, fcntl.LOCK_EX)
+                            file_content = json.load(f)
+                            check_status = file_content.get(CHECK_STATUS, False)
+                            if check_status:
+                                continue
+                        finally:
+                            fcntl.flock(f, fcntl.LOCK_UN)
+                except (IOError, OSError) as e:  # Py2/3 兼容：open 失败会落到这里
+                    # 只兜住“文件不存在”(ENOENT / 2)；其它打开失败原因继续抛给外层
+                    if getattr(e, "errno", None) != errno.ENOENT:
+                        raise
         except Exception as e:
             traceback.print_exc()
             logger.warning("check partition ({}, {}, {}) failed.".format(session_strcut.project, session_strcut.table, session_strcut.partition))
-
+            if not (IS_ODPS_ENDPOINT_REACHABLE and IS_NEBULA_OPEN_STORAGE_CACHE_SERVER_REACHABLE):
+                # 弹内: meta网络已通，可继续检查所读分区是否存在
+                # (暂时)特殊弹内: 如韩国, meta集群在韩国搭建, 故meta通, 但 cache server因vip网关ssl问题暂时未通
+                # 弹外: 多云网络 只有tunnel通, meta及cache server均不通
+                # 汇总: 只有tun-ep / cache_server(代表meta) 均通时才进行存在性检查
+                return
+            # else分支逻辑: 查看所读分区是否存在, 提前抛出不存在错误 以免跑很久才报错消耗卡时
             partition_name = session_strcut.partition.replace("/", ",")
             o = ODPS(access_id=session_strcut.access_id,
                     secret_access_key=session_strcut.access_key,
                     project=session_strcut.project,
                     endpoint=session_strcut._odps_endpoint)
             table = o.get_table(session_strcut.table)
-            partition = table.get_partition(partition_name)
-            partition.size  # It doesn`t matter what to query; it does matter to query to determine the presense of table.
+
+            is_partitioned_table = False
+            if hasattr(table, "table_schema"):
+                schema = table.table_schema
+            elif hasattr(table, "schema"):
+                schema = table.schema
+            else:
+                return
+            if hasattr(schema, "partitions") and isinstance(schema.partitions, list) and len(schema.partitions) > 0:
+                is_partitioned_table = True
+            else:
+                is_partitioned_table = False
+            if is_partitioned_table:
+                partition = table.get_partition(partition_name)
+                partition.size  # It doesn`t matter what to query; it does matter to query to determine the presense of table.
+
 
 
 # HashableSessionStruct: odps session最小化定义的信息元组(from p+t+p+cols)
@@ -274,11 +352,17 @@ class HashableSessionStruct:
         self.partition = str(logical_partition)
         self.physical_partitions = [str(phy_part) for phy_part in physical_partitions]
         self.select_columns = copy.deepcopy(select_columns)
+        self.halo_worker_docker_image = os.environ.get("HALO_WORKER_DOCKER_IMAGE", "")
+        self.halo_worker_docker_image_tag = self.halo_worker_docker_image.rsplit(":", 1)[1] if ":" in self.halo_worker_docker_image else ""
+        suffix = "_accelerated"
+        if self.halo_worker_docker_image_tag.endswith(suffix):
+            self.halo_worker_docker_image_tag = self.halo_worker_docker_image_tag[:-len(suffix)]
         # 以下成员为衍生值, 逻辑上唯一确定(但不实际保证)
         self._hash_id = "" # type: str
         self._ordered_select_columns = None # type: list[str]
-        self._odps_endpoint = os.getenv('end_point', "xxx")
-        self._tunnel_endpoint = os.getenv('tunnel_end_point', "xxx")
+        self._partition_modified_timestamp = None
+        self._odps_endpoint = get_odps_endpoint()
+        self._tunnel_endpoint = get_tunnel_endpoint()
         
         # 以下成员为业务关联字段, 逻辑上不唯一确定
         # ...
@@ -340,6 +424,12 @@ class HashableSessionStruct:
             self._ordered_select_columns = self._get_ordered_columns(self.select_columns)
         return self._ordered_select_columns
 
+    def get_partition_modified_timestamp(self):
+        if not self._partition_modified_timestamp:
+            self._partition_modified_timestamp = get_odps_partition_modified_timestamp(IS_ODPS_ENDPOINT_REACHABLE, self.access_id, self.access_key, 
+                                                                                       self.project, self.table, self.partition, self._odps_endpoint)
+        return self._partition_modified_timestamp
+
     def get_hash_id(self):
         #  type: () -> str
         if self._hash_id != "":
@@ -350,25 +440,38 @@ class HashableSessionStruct:
             hash_object = hashlib.sha256()
             for string in strings:
                 hash_object.update(string.encode('utf-8'))
-            if is_column_io() or force_recreate_session():
-                hash_object.update(str(get_app_id()).encode('utf-8'))  # add appid in hashid, adding this may make force init session useless
-                varlogger.warning("force_recreate_session true")
             hashkey = hash_object.hexdigest()
             return hashkey  # length: 64 Bytes
         ordered_columns = self.get_ordered_select_columns()
-        self._hash_id = gen_hash_key(self.access_id, self.access_key, self.project, self.table, self.partition, *ordered_columns)
+        hash_id_args = [
+          self.access_id,
+          self.access_key,
+          self.project,
+          self.table,
+          self.partition,
+          self._tunnel_endpoint,
+          __odps_sdk_version__,
+          self.halo_worker_docker_image_tag,
+        ]
+        hash_id_args.extend(ordered_columns)
+        self._hash_id = gen_hash_key(*hash_id_args)
+        logger.info("gen_hash_id:{}, {}, {}".format(self._hash_id, self.to_str_basic(), self.to_str_extended()))
         varlogger.info("gen_hash_id:{}, {}".format(self._hash_id, self.to_str_all()))
         return self._hash_id
+    def to_str_extended(self):
+        return "tunnel endpoint:{}, odps sdk version:{}, halo worker docker image tag: {}".format(
+            self._tunnel_endpoint, __odps_sdk_version__, self.halo_worker_docker_image_tag
+        )    
     def to_str_basic(self):
         return "project:{}, table:{}, partition:{}".format(self.project, self.table, self.partition)
     def to_str_full(self):
-        return "access_id:{}, access_key:{}, {}".format(self.project, self.table, self.to_str_basic())
+        return "access_id:{}, access_key:{}, {}, {}".format(self.access_id, self.access_key, self.to_str_basic(), self.to_str_extended())
     def to_str_all(self):
-        return "{}, columns:\n{}".format(self.to_str_basic(), json.dumps(self.select_columns, indent=4))
+        return "{}, columns:\n{}".format(self.to_str_full(), json.dumps(self.get_ordered_select_columns(), indent=4))
     #TODO: @staticmethod def dumps_to_local_file()/ loads_from_local_file()
 
 __report_init_done = False # type: bool # TODO: make-sure multiprocess spawn is safe here in COLUMN-IO
-def try_report_metric_init_done():
+def try_report_metric_init_done(odps_table_len):
     global __report_init_done
     if __report_init_done:
         return
@@ -377,8 +480,6 @@ def try_report_metric_init_done():
     # so file synchronization is used instead.
     target_dir = check_or_mkdir(ODPS_ACCESS_INFO_DUMP)
     
-    odps_table = get_odps_table()
-    odps_table_len = 1 if odps_table == "" else len(odps_table.split(","))
     cache_files = [f for f in os.listdir(target_dir) if f.startswith(LOCAL_CACHE_PREFIX)]
     if odps_table_len < len(cache_files):
         varlogger.info("cache count:{} > odps_table len:{}, please check config".format(len(cache_files), odps_table_len))
@@ -426,18 +527,16 @@ def try_report_metric_init_done():
     __report_init_done = True
     return
 
-def get_session_cache_from_local(project, table, partition, max_random_wait_seconds=10):
-    # max_random_wait_seconds 越大打散效果好, 但是可能会造成无效等待
+def get_session_cache_from_local(session_struct, rw_mode):
     session_id = ""
     expiration_time = -1
     record_count = -1
     session_def_dict = dict()
-    target_file = local_cache_file_name(LOCAL_CACHE_PREFIX, project, table, partition)
+    target_file = local_cache_file_name(LOCAL_CACHE_PREFIX, session_struct.project, session_struct.table, session_struct.partition)
     target_dir = check_or_mkdir(ODPS_ACCESS_INFO_DUMP)
     target_file = os.path.join(target_dir, target_file)
-    status = MetricStatus.SUCCESS
-    random_wait_seconds = random.uniform(0, max_random_wait_seconds)   # 通过随机化的等待时间, 打散众多并发的worker, 尽可能让少数worker击穿local cache不存在
-    if not check_file_with_retry(target_file, total_wait_seconds=random_wait_seconds):
+    status = MetricStatus.SUCCESS  
+    if not check_file(target_file):
         status = MetricStatus.LOCAL_CACHE_FILE_NOT_EXISTS_ERROR
         return status, session_id, expiration_time, record_count, session_def_dict
     with open(target_file, "r") as f:
@@ -455,6 +554,8 @@ def get_session_cache_from_local(project, table, partition, max_random_wait_seco
         finally:
             # Release the file lock
             fcntl.flock(f, fcntl.LOCK_UN)
+    MemSessionCache4Refresh[session_struct] = SessionCache(hash_id=session_struct.get_hash_id(), session_id=session_id,
+                                                           expiration_time=expiration_time, rw_mode=rw_mode, record_count=1)
     return status, session_id, expiration_time, record_count, session_def_dict
 
 
@@ -580,7 +681,10 @@ def post_session_cache_to_remote(job_info, session_struct, rw_mode, session_id, 
     ordered_required_data_columns = session_struct.get_ordered_select_columns()
     hash_id = session_struct.get_hash_id()
     request_ip = get_local_ip()
+    cluster = os.environ.get("CLUSTER_NAME", os.environ.get("CALCULATE_CLUSTER"))
+    site = os.environ.get("SIGMA_APP_SITE")
     data = {
+        "request_time": time.time(),
         "user_id": job_info._user_id,
         "task_id": job_info._task_id,
         "app_id": job_info._app_id,
@@ -604,6 +708,8 @@ def post_session_cache_to_remote(job_info, session_struct, rw_mode, session_id, 
         "session_id": session_id,
         "expiration_time": expiration_time,
         "halo_worker_docker_image": job_info._halo_worker_docker_image,
+        "cluster": cluster,
+        "site": site,
     }
     retry_cnt = 3 # simple retry for post error or json parse err(for 502, e.g.)
     for idx in range(retry_cnt):
@@ -658,7 +764,8 @@ def repeat_refresh_read_session_batch(interval):
     def iter_to_post_refreshed_session():
         expire_time_valid_start = (int(time.time()) - 30*24*3600) * 1000 # get timestamp of last month in ms. the expire time MUST bigger than it
         expire_time_valid_end = (int(time.time()) + 30*24*3600) * 1000 # get timestamp of next month in ms. the expire time MUST small than it
-        for session_struct, cache in MemSessionCache4Refresh.items():
+        MemSessionCache4RefreshList = list(MemSessionCache4Refresh.items())
+        for session_struct, cache in MemSessionCache4RefreshList:
             hash_id,session_id = cache.hash_id, cache.session_id
             expire_time_ms = interface.GetSessionExpireTimestamp(session_id) # type: int
             if expire_time_valid_start < expire_time_ms * 1000 < expire_time_valid_end: # sec timestamp
@@ -694,15 +801,64 @@ def repeat_refresh_read_session_batch(interval):
         # metric_client.try_close()
         time.sleep(interval)
 
-__has_started_refresh = False
+def repeat_refresh_halo_metrics(interval):
+    metric_tag_map = {
+        "ds_name": "odps_openstorage",
+        "multiprocess_seq": str(get_child_order()),
+    }
+    metric_client = metric_factory.get("openstorage_session_refresh")
+    metric_client.try_start()
+    logger.debug("repeat_refresh_halo_metrics metric_tag_map: {}".format(metric_tag_map))
+    halo_endpoint = get_tunnel_endpoint()
+    if halo_endpoint.startswith("http://") or halo_endpoint.startswith("https://"):
+        varlogger.info("repeat_refresh_halo_metrics stop as endpoint:{} not support".format(halo_endpoint))
+        return
+    elif not halo_endpoint.startswith("ipc://"):
+        varlogger.info("repeat_refresh_halo_metrics stop as endpoint:{} unrecognized".format(halo_endpoint))
+        return
+    while True:
+        resp = 0
+        try:
+            ''' metric_type:
+            - 1: get_read_bytes
+            - 2: get_reset_read_bytes
+            '''
+            metric_type = 2
+            resp = interface.GetHaloAgentMetric(halo_endpoint, metric_type) # type: int
+            if resp < 0:
+                varlogger.warning("repeat_refresh_halo_metrics get {} from endpoint:{}, type:{}".format(resp, halo_endpoint, metric_type))
+            elif resp > 0:
+                metric_client.report(MetricPoints.read_byte, resp, metric_tag_map )
+            else:
+                pass # collect zero value
+        except Exception as e:
+            varlogger.info("repeat_refresh_halo_metrics get halo_endpoint fail, err:{}, trace:{}".format(e, traceback.format_exc()))
+        # TODO: rm me when bug fixed. log to make sure is posted. no need to worry log flush. it's one log for a hour
+        # TODO: finger out what happens if only partial success refreshed when multiple sessions exist
+        # metric_client.try_close()
+        remain_interval = interval - (time.time() % interval)
+        time.sleep(max(remain_interval, 1)) # at least 1 second every report
+
+
+__has_started_refresh_session_thread = False
 def try_start_refresh_session_thread():
-    global __has_started_refresh
-    if not __has_started_refresh:
-        __has_started_refresh = True
+    global __has_started_refresh_session_thread
+    if not __has_started_refresh_session_thread:
+        __has_started_refresh_session_thread = True
         interval_seconds = 1 * 60 * 60
         refresh_thread = threading.Thread(target=repeat_refresh_read_session_batch, args=(interval_seconds,))
         refresh_thread.daemon = True
         refresh_thread.start()
+
+__has_started_refresh_halo_metrics = False
+def try_start_refresh_halo_metrics():
+    global __has_started_refresh_halo_metrics
+    if not __has_started_refresh_halo_metrics:
+        __has_started_refresh_halo_metrics = True
+        interval_seconds = 1 * 4 # half of report interval, keep counter increase smoother
+        halo_metric_thread = threading.Thread(target=repeat_refresh_halo_metrics, args=(interval_seconds,))
+        halo_metric_thread.daemon = True
+        halo_metric_thread.start()
 
 def create_and_post_read_session_list(session_struct_set, sep, rw_mode, default_project,
                                     connect_timeout, rw_timeout):
@@ -778,20 +934,29 @@ def create_and_post_read_session_list(session_struct_set, sep, rw_mode, default_
         thread_group[i].join()
         # if session_id_group[i] == "":
         #     raise NebulaIOFatalError("here no need to raise, Any subthread fial 任意子线程一旦失败 会主动抛出")
-    try_report_metric_init_done()
+    try_report_metric_init_done(len(session_struct_set))
     return
 
 def get_session_cache_from_remote(job_info, session_struct, rw_mode):
     # type: (JobInfo, HashableSessionStruct, str ) -> tuple[int, str, str]
     # noexcept. return: (0, hash_id, session_id) or (1+, hash_id, msg)
     hash_id = session_struct.get_hash_id()
+    partition_modified_timestamp = session_struct.get_partition_modified_timestamp()
     request_ip = get_local_ip()
+    cluster = os.environ.get("CLUSTER_NAME", os.environ.get("CALCULATE_CLUSTER"))
+    site = os.environ.get("SIGMA_APP_SITE")
     data = {
+        "request_time": time.time(),
         "hash_id": hash_id,
         "task_id": job_info._task_id,
         "app_id": job_info._app_id,
+        "odps_project": session_struct.project,
+        "odps_table": session_struct.table,
+        "table_partition": session_struct.partition,
         "worker_id": job_info._rank,
-        "request_ip": request_ip
+        "request_ip": request_ip,
+        "cluster": cluster,
+        "site": site,
     }
     status = MetricStatus.SUCCESS
     err_msg = ""
@@ -805,13 +970,13 @@ def get_session_cache_from_remote(job_info, session_struct, rw_mode):
     except requests.exceptions.HTTPError as e: # raise_for_status error
         status = MetricStatus.REQUEST_ERROR
         err_msg = "fail in http get status, code:{}, resp:{}".format(resp, e)
-    except requests.exceptions.RequestException as e: # requests.get error
-        status = MetricStatus.REQUEST_ERROR
-        err_msg = "fail in http get conn, err:{}".format(e)
     except requests.exceptions.JSONDecodeError as e: # json() format error
         leading_resp_text = resp.text[:256] if ( resp.text and len(resp.text) > 0) else "None"
         status = MetricStatus.JSON_ERROR
         err_msg = "fail in get json parsing, err:{}. leading 256 resp: {}".format(e, leading_resp_text)
+    except requests.exceptions.RequestException as e: # requests.get error
+        status = MetricStatus.REQUEST_ERROR
+        err_msg = "fail in http get conn, err:{}".format(e)
     except Exception as e:
         status = MetricStatus.UNKNOWN_ERROR
         err_msg = "fail in get unexpected err:{}".format(e)
@@ -826,6 +991,8 @@ def get_session_cache_from_remote(job_info, session_struct, rw_mode):
     # success get session_id, but may not valid
     session_id = ret["session_id"]
     expiration_time = ret.get("expiration_time", 0)
+    session_create = ret.get("session_create")
+    app_id = ret.get("app_id")
     valid_start = (int(time.time()) - 30*24*3600) * 1000 # get timestamp of last month in ms. the expire time MUST bigger than it
     valid_end = (int(time.time()) + 30*24*3600) * 1000 # get timestamp of next month in ms. the expire time MUST small than it
 
@@ -837,6 +1004,21 @@ def get_session_cache_from_remote(job_info, session_struct, rw_mode):
         status = MetricStatus.OUTDATE_ERROR
         err_msg = "session_id expired, expiration_time:{}, resp:{} ".format(expiration_time, ret)
         return status, err_msg
+    logger.info("cache app_id: {}, task app_id: {}, session_create: {}, partition_modified_timestamp: {}".format(app_id, job_info._app_id, session_create, partition_modified_timestamp))
+    if not is_session_creator() and str(job_info._app_id) != str(app_id):
+        status = MetricStatus.WAITING
+        err_msg = "wait session creator"
+        return status, err_msg
+    if session_create and app_id:
+        if int(partition_modified_timestamp) > int(session_create) and str(job_info._app_id) != str(app_id):
+            status = MetricStatus.PATITION_MODIDIFIED
+            err_msg = "odps partition modified, session_create:{}, partition_modified_timestamp:{}".format(session_create, partition_modified_timestamp)
+            return status, err_msg
+    if force_recreate_session():
+        if str(job_info._app_id) != str(app_id):
+            status = MetricStatus.FORCE_RECREATE_SESSION
+            err_msg = "force_recreate_session is True, do not use other task's session."
+            return status, err_msg
     # success, status = 0
     MemSessionCache4Refresh[session_struct] = SessionCache(hash_id=hash_id, session_id=session_id,
                                                         expiration_time=expiration_time, rw_mode=rw_mode, record_count=1)
@@ -917,8 +1099,6 @@ def get_and_register_read_session_list(session_struct_set,
                                   sep, rw_mode, default_project,
                                   connect_timeout, rw_timeout):
     # type: (set[HashableSessionStruct], str, str, str, int, int) -> set[HashableSessionStruct]
-    if is_session_creator() and force_recreate_session():
-       return session_struct_set
     retry_times = 1 if is_session_creator() else 60
     retry_wait_seconds = 1 if is_session_creator() else 10
     job_info = get_job_info()
@@ -944,7 +1124,7 @@ def get_and_register_read_session_list(session_struct_set,
                 metric_tag_map["hash_id"] = hash_id
                 metric_client.report(MetricPoints.cache_qps, 1, metric_tag_map )
                 time.sleep(retry_wait_seconds)
-            logger.info("GetSess tid {:0>4}: get and register for {}".format(tid, session_struct.to_str_basic()))
+            varlogger.info("GetSess tid {:0>4}: get and register for {}".format(tid, session_struct.to_str_basic()))
             metric_time_start = time.time()
             dump_debug_access_info_batch([session_struct])
             try:
@@ -955,7 +1135,7 @@ def get_and_register_read_session_list(session_struct_set,
                 # 2. After session refresh, who will update local_cache.expirationTime? 
                 #     a. local_cache.expirationTime no one will update
                 #     b. However, now expirationTime in C++runtime won't used, so needn't update for now, temporaly
-                status, session_id, expiration_time, record_count, session_def_dict = get_session_cache_from_local(project, table, partition)
+                status, session_id, expiration_time, record_count, session_def_dict = get_session_cache_from_local(session_struct, rw_mode)
                 if status == MetricStatus.SUCCESS:
                     # This API will be called frequently and requires low overhead.
                     # 1. Override status = interface.RegisterOdpsOpenStorageSession to accept several key pieces of information, or the entire sessiondef.
@@ -968,6 +1148,11 @@ def get_and_register_read_session_list(session_struct_set,
                                                                 connect_timeout, rw_timeout,
                                                                 session_id, expiration_time,
                                                                 record_count, session_def_dict)
+                    if is_session_creator():
+                        status, err_msg = post_session_cache_to_remote(job_info, session_struct, rw_mode, session_id, expiration_time)
+                        if status != MetricStatus.SUCCESS:
+                            varlogger.warning("{} fail in post. status:{}, session_id:{}, msg:{}".format(session_struct.to_str_basic(), status, session_id, err_msg))
+                            continue
             except Exception as e:
                 logger.error("GetSess tid {:0>4}: local_register exception: {}".format(tid, e))
                 varlogger.error("GetSess tid {:0>4}: local_register exception:{}, traceback:{}".format(tid, e, traceback.format_exc()))
@@ -992,6 +1177,14 @@ def get_and_register_read_session_list(session_struct_set,
                     continue
                 logger.info("GetSess tid {:0>4}: successfully get and register session for {}".format(tid, session_struct.to_str_basic()))
                 status = post_session_cache_to_local(session_id, expiration_time, record_count, session_def_dict, session_struct)# insert session def to local cache
+                if status != MetricStatus.SUCCESS:
+                    varlogger.warning("{} fail in insert. status:{}, msg:{}".format(session_struct.to_str_basic(), status, session_id))
+                    continue
+                if is_session_creator():
+                    status, err_msg = post_session_cache_to_remote(job_info, session_struct, rw_mode, session_id, expiration_time)
+                    if status != MetricStatus.SUCCESS:
+                        varlogger.warning("{} fail in post. status:{}, session_id:{}, msg:{}".format(session_struct.to_str_basic(), status, session_id, err_msg))
+                        continue
             metric_tag_map["code"] = str(status)
             metric_tag_map["status"] = "success"
             metric_tag_map["session_id"] = str(session_id)
@@ -1021,5 +1214,5 @@ def get_and_register_read_session_list(session_struct_set,
         if session_id_group[i] == "":
             create_session_struct_set.add(session_struct)
     varlogger.info("Get and register odps open storage session done, unccessful session len: {}.".format(len(create_session_struct_set)))
-    try_report_metric_init_done()
+    try_report_metric_init_done(len(session_struct_set))
     return create_session_struct_set

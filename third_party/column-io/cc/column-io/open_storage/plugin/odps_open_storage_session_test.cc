@@ -180,11 +180,10 @@ class TestCases {
     int start = 0;
     int end = table_size/10;
     int max_batch_rows = 3;
-    int compression_type = 0;
     int cache_size = 1;
     auto reader = session.CreateOpenStorageReader(
                              start, end, max_batch_rows,
-                             compression_type, cache_size);
+                             0, cache_size);
 
     std::shared_ptr<arrow::RecordBatch> batch;
     long total_line = 0;
@@ -263,11 +262,10 @@ class TestCases {
       int start = 0;
       int end = table_size/10;
       int max_batch_rows = 1024;
-      int compression_type = 0;
       int cache_size = 1;
       auto reader = session->CreateOpenStorageReader(
                                start, end, max_batch_rows,
-                               compression_type, cache_size);
+                               0, cache_size);
       std::shared_ptr<arrow::RecordBatch> batch;
       reader->Read(batch);
       auto num = batch->num_rows();
@@ -469,8 +467,8 @@ class TestCases {
 
   const std::string access_id_ = "your_access_id";
   const std::string access_key_ = "your_access_key";
-  const std::string tunnel_endpoint_ = "xxx";
-  const std::string odps_endpoint = "xxx";
+  const std::string tunnel_endpoint_ = "ipc:///home/admin/halo/socket/halo.sock";
+  const std::string odps_endpoint = "";
   const std::string projects_ = "nebula_ai_dev";
   const std::string project_ =  "nebula_ai_dev";
   const std::string tables_ = "nmd_daily_sample_allpid_final_nebula";

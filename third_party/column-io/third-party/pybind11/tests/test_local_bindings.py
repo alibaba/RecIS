@@ -1,3 +1,6 @@
+# 运行: cd third-party/pybind11 && pytest tests/test_local_bindings.py -vs
+# 前置: 需先构建 pybind11 测试扩展 (cd third-party/pybind11 && pip install -e .)
+# 说明: 这是 pybind11 官方的 module_local 单元测试，验证该特性本身可靠
 import pytest
 
 import env  # noqa: F401

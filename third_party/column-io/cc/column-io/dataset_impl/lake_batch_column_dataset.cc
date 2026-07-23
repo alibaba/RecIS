@@ -20,6 +20,7 @@
 #include <mutex>
 #include <string>
 #include <utility>
+#include <chrono>
 namespace column {
 namespace dataset {
 namespace {
@@ -35,7 +36,7 @@ public:
           const std::vector<std::string> &input_columns,
           const std::vector<std::string> &hash_features,
           const std::vector<std::string> &hash_types,
-          const std::vector<int32_t> &hash_buckets,
+          const std::vector<int64_t> &hash_buckets,
           const std::vector<std::string> &dense_features,
           const std::vector<Tensor> &dense_defaults,
           bool is_compressed,
@@ -77,6 +78,34 @@ public:
 
 private:
   class Iterator : public DatasetIterator<Dataset> {
+  private:
+    void ParseCurrentPointTag() {
+        std::string project = "";
+        std::string table = "";
+        if (!dataset()->path_.empty()) {
+            // E.g. path=pangu://na61--cn-beijing/nebula/ai_lake/path1/path2/pathN/alimama_project/table_sampling/default/current/data
+            // (cluster)/(project)/(table)/(column_family)/(partition)/data
+            std::string filepath = dataset()->path_; 
+            filepath = filepath.back() == '/' ? filepath.substr(0, filepath.size() - 1) : filepath;
+            std::string segments[5]; // 
+            for (size_t i = 0, pos = filepath.length(); i < 5; ++i) { // 从后往前提取5个段 data, partition, column_family, table, project, other prefix
+                size_t end = pos;
+                if (end > 0 && filepath[end - 1] == '/') { end--; } // 跳过当前位置的内容，找到前一个 '/'
+                size_t start = filepath.rfind('/', end - 1);
+                start = (start == std::string::npos) ? 0 : start+1;
+                segments[i] = filepath.substr(start, end - start);
+                pos = start - 1;
+                if (pos == std::string::npos || pos == 0) { break; }
+            }
+            project = segments[4];
+            table = segments[3];
+        }
+        point_tag_ = std::make_shared<recis::monitor::PointTag>(std::map<std::string, std::string>{
+            {"ds_project", project.empty() ? "null" : project},
+            {"ds_table", table.empty() ? "null" : table.substr(0, table.find("/"))},
+            {"ds_name", "lake_batch"} // TODO: add ds_name_ for iterator from constructor
+        });
+    }
   public:
     explicit Iterator(const std::shared_ptr<Dataset> dataset,
                       const std::string &prefix, const std::string &ds_name)
@@ -89,7 +118,7 @@ private:
         return Status::OK();
       // init formater
       column_formater_ = ColumnDataFormater::GetColumnDataFormater(
-          dataset()->is_compressed_, false);
+          dataset()->is_compressed_, false, dataset()->row_mode_tensor_split_);
       std::unordered_set<std::string> selected_columns;
       selected_columns.reserve(dataset()->selected_columns_.size());
       selected_columns.insert(dataset()->selected_columns_.begin(),
@@ -116,11 +145,24 @@ private:
         if (!(status_.ok())) {
           return status_;
         }
+        if (point_tag_ == nullptr) {
+            ParseCurrentPointTag();
+        }
         if (reader_) {
           *end_of_sequence = false;
           std::shared_ptr<arrow::RecordBatch> data;
           Status s;
+          int64_t rows_before_read = reader_->Tell();
+          int64_t time_before_read_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
           auto common_st = reader_->ReadBatch(&data);
+          int64_t time_after_read_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+          int64_t delay_ms = std::max(0L, time_after_read_ms - time_before_read_ms);
+          uint64_t rows_read = reader_->Tell() - rows_before_read ;
+
+          metric_cli_->report("read_row",  rows_read, point_tag_, recis::monitor::PointType::kCounter); //TODO: read bytes from halo
+          metric_cli_->report("read_batch", 1, point_tag_, recis::monitor::PointType::kCounter);
+          metric_cli_->report("read_latency_ms", delay_ms, point_tag_, recis::monitor::PointType::kGauge);
+
           if (common_st.Ok()) {
             s = InitSchema(data);
             if ( !s.ok() ) {
@@ -178,6 +220,7 @@ private:
               dataset()->input_columns_, dataset()->use_prefetch_,
               static_cast<size_t>(dataset()->prefetch_thread_num_),
               static_cast<size_t>(dataset()->prefetch_buffer_size_));
+          ParseCurrentPointTag();
           if (!common_st.Ok()) {
             if (common_st.code() == lake::Status::Code::kOutOfRange) {
               s = Status::OutOfRange(common_st.what());
@@ -231,6 +274,7 @@ private:
     std::unique_ptr<lake::LakeScanReader> reader_;
     std::unique_ptr<ColumnDataFormater> column_formater_;
     bool reach_end_;
+    std::shared_ptr<recis::monitor::PointTag> point_tag_;
     Status status_;
   };
 
@@ -243,7 +287,7 @@ private:
   const std::vector<std::string> input_columns_;
   const std::vector<std::string> hash_features_;
   const std::vector<std::string> hash_types_;
-  const std::vector<int32_t> hash_buckets_;
+  const std::vector<int64_t> hash_buckets_;
   const std::vector<std::string> dense_features_;
   std::vector<Tensor> dense_defaults_;
   bool row_mode_tensor_split_;
@@ -302,16 +346,18 @@ Status ReadLakeBatchRecordBatch(
 }
 } // namespace
 
-std::pair<
+std::tuple<
     std::vector<std::string>,
-    std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>>
+    std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>,
+	std::string
+	>
 LakeBatchColumnDatase::ParseSchema(
     const std::string &paths,
     bool is_compressed,
     const std::unordered_set<std::string> &selected_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults) {
   auto parser = SchemaParser::Make(ReadLakeBatchRecordBatch);
@@ -328,7 +374,7 @@ LakeBatchColumnDatase::ParseSchemaByRows(
     const std::vector<std::string> &selected_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults) {
   auto parser = SchemaParser::Make(ReadLakeBatchRecordBatch);
@@ -372,7 +418,7 @@ LakeBatchColumnDatase::MakeDataset(const std::string& path,
                                    const std::vector<std::string> &input_columns,
                                    const std::vector<std::string> &hash_features,
                                    const std::vector<std::string> &hash_types,
-                                   const std::vector<int32_t> &hash_buckets,
+                                   const std::vector<int64_t> &hash_buckets,
                                    const std::vector<std::string> &dense_features,
                                    const std::vector<Tensor> &dense_defaults,
                                    bool is_compressed, int64_t batch_size,
@@ -403,7 +449,7 @@ std::shared_ptr<DatasetBuilder> LakeBatchColumnDatase::MakeBuilder(
     const std::vector<std::string> &input_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_features,
     const std::vector<std::vector<float>>& dense_defaults,
     bool is_compressed,

@@ -1,16 +1,84 @@
 #include "column-io/dataset_impl/schema_parser.h"
+#include "rapidjson/document.h"
+#include "rapidjson/writer.h"
+#include "rapidjson/stringbuffer.h"
 namespace column {
 namespace dataset {
-std::pair<
+std::string SchemaParser::ExtractElementType(const std::shared_ptr<arrow::DataType>& type) {
+  switch (type->id()) {
+    case arrow::Type::LIST: {
+      auto list_type = std::static_pointer_cast<arrow::ListType>(type);
+      return ExtractElementType(list_type->value_type());
+    }
+    case arrow::Type::LARGE_LIST: {
+      auto list_type = std::static_pointer_cast<arrow::LargeListType>(type);
+      return ExtractElementType(list_type->value_type());
+    }
+    case arrow::Type::STRUCT: {
+      auto struct_type = std::static_pointer_cast<arrow::StructType>(type);
+
+      if (struct_type->num_fields() == 2 &&
+          struct_type->field(0)->name() == "k" &&
+          struct_type->field(1)->name() == "v") {
+        return "{k:" + ExtractElementType(struct_type->field(0)->type()) +
+               ", v:" + ExtractElementType(struct_type->field(1)->type()) + "}";
+      }
+
+      std::string s = "struct(";
+      for (int i = 0; i < struct_type->num_fields(); i++) {
+        if (i > 0) s += ",";
+        s += struct_type->field(i)->name() + ":" +
+             ExtractElementType(struct_type->field(i)->type());
+      }
+      s += ")";
+      return s;
+    }
+    default:
+      return type->ToString();
+  }
+}
+
+std::string SchemaParser::BuildSchemaJson(const std::shared_ptr<arrow::Schema>& schema, bool is_compressed) {
+  rapidjson::Document doc;
+  doc.SetObject();
+  auto& allocator = doc.GetAllocator();
+
+  for (const auto& field : schema->fields()) {
+    std::string type_str = ExtractElementType(field->type());
+    std::string field_name;
+    if (is_compressed) {
+      size_t pos = field->name().find_last_of("_");
+      field_name = field->name().substr(0, pos);
+    } else {
+      field_name = field->name();
+    }
+    rapidjson::Value key(field_name.c_str(), allocator);
+    rapidjson::Value val(type_str.c_str(), allocator);
+    doc.AddMember(key, val, allocator);
+  }
+
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  doc.Accept(writer);
+
+  return buffer.GetString();
+}
+
+
+
+
+std::tuple<
     std::vector<std::string>,
-    std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>>
+    std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>,
+	std::string
+		>
 SchemaParser::ParseSchema(
     const std::vector<std::string> &paths,
     bool is_compressed,
     const std::unordered_set<std::string> &selected_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<Tensor> &dense_defaults) {
 
@@ -19,6 +87,7 @@ SchemaParser::ParseSchema(
   std::vector<std::string> input_columns;
   std::string row_mode = std::getenv("ODPS_DATASET_ROW_MODE") ? std::getenv("ODPS_DATASET_ROW_MODE") : "0";
   bool row_mode_with_null = (row_mode == "1") ;
+  std::string json_str;
   for (size_t i = 0; i < paths.size(); ++i) {
     std::shared_ptr<arrow::RecordBatch> data;
     auto st = rb_reader_(paths[i], selected_columns, dense_columns,
@@ -43,9 +112,32 @@ SchemaParser::ParseSchema(
     } else {
       output_schema = std::move(schema);
       input_columns = std::move(one_input_columns);
+	  auto schema = data->schema();
+	  json_str = BuildSchemaJson(schema, is_compressed);
+
+      auto GetEnvInt = [](const char* name, int defval) -> int {
+          const char* v = std::getenv(name);
+          if (!v || !*v) return defval;
+          try {
+              return std::stoi(std::string(v));
+          } catch (...) {
+              return defval;
+          }
+      };
+
+      // 用法
+      int use_xrec = GetEnvInt("USE_XREC", 0);
+      int is_recis = GetEnvInt("IS_RECIS", 0);
+      if (use_xrec == 1 || is_recis == 1) {
+          // LOG(INFO) << "json_str is [" << json_str << "]"; //TODO: use a internal log library. not absl log
+          auto time_chrono = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+          char time_buf[64];
+          std::strftime(time_buf, sizeof(time_buf), "%Y%m%d %H%M%S", std::localtime(&time_chrono));
+          printf("[%s] [WARN] [%s:%d] json_str is: %s \n", time_buf, __FILE__, __LINE__, json_str.c_str());
+      }
     }
   }
-  return std::make_pair(input_columns, output_schema);
+  return std::make_tuple(input_columns, output_schema, json_str);
 }
 
 
@@ -58,7 +150,7 @@ SchemaParser::ParseSchemaByRows(
     const std::vector<std::string> &selected_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<Tensor> &dense_defaults) {
     
@@ -116,7 +208,7 @@ Status SchemaParser::ParseSchemaCommon(
     const std::unordered_set<std::string> &selected_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_features,
     const std::vector<Tensor> &dense_defaults,
     bool is_compressed,

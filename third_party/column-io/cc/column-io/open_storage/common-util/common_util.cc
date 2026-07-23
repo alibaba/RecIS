@@ -35,6 +35,15 @@ std::vector<std::string> StrSplit(const std::string &text, const std::string &se
   return std::move(vec);
 }
 
+std::string strip(const std::string& str) {
+    const char* ws = " \t\n\r\f\v";
+    size_t start = str.find_first_not_of(ws);
+    if (start == std::string::npos) return "";
+    size_t end = str.find_last_not_of(ws);
+    return str.substr(start, end - start + 1);
+}
+
+
 std::vector<std::string> FilterEmptyStr(const std::vector<std::string>& origin_str_vec) {
   std::vector<std::string> ret;
   for (const auto & str: origin_str_vec) {

@@ -1,12 +1,24 @@
 # GPU Platform Auto-Detection and Configuration
 # This module provides a function to automatically detect and configure GPU platform
 
+option(NEED_CPU_ONLY "Build without any GPU support (no CUDA/ROCm)" OFF)
+option(NEED_ROW_ONLY "Minimal row-reader build (implies CPU_ONLY)" OFF)
+
+if(NEED_ROW_ONLY)
+    set(NEED_CPU_ONLY ON CACHE BOOL "Forced ON by ROW_ONLY" FORCE)
+endif()
+
 # Function: detect_gpu_platform
-# 
+#
 # Automatically detects whether to use ROCm/HIP or CUDA
 # Sets USE_ROCM variable accordingly
 #
 function(detect_gpu_platform)
+    if(NEED_CPU_ONLY)
+        message(STATUS "==> CPU_ONLY mode enabled, skipping GPU detection")
+        set(USE_ROCM OFF PARENT_SCOPE)
+        return()
+    endif()
     if(NOT DEFINED USE_ROCM)
         # Try to detect ROCm/HIP environment
         set(ROCM_DETECTED FALSE)
@@ -48,6 +60,12 @@ endfunction()
 # Must be called after project() declaration
 #
 function(configure_gpu_platform)
+    if(NEED_CPU_ONLY)
+        message(STATUS "CPU_ONLY mode: skipping GPU configuration")
+        add_definitions(-DCPU_ONLY)
+        return()
+    endif()
+
     if(USE_ROCM)
         # Configure ROCm/HIP
         if(NOT DEFINED ROCM_PATH)
@@ -91,6 +109,15 @@ function(configure_gpu_platform)
             set(CMAKE_CUDA_ARCHITECTURES "70;80;86;90" PARENT_SCOPE)
         endif()
         set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3" PARENT_SCOPE)
+
+        # CUDA 12.6+ moved CUB/Thrust headers into cccl/ subdirectory.
+        # Add the cccl include path so that `#include <cub/...>` reference still works across multiple CUDA versions.
+        foreach(_cuda_inc_dir ${CUDA_INCLUDE_DIRS})
+            if(EXISTS "${_cuda_inc_dir}/cccl")
+                list(APPEND CUDA_INCLUDE_DIRS "${_cuda_inc_dir}/cccl")
+                message(STATUS "  Added CCCL include path: ${_cuda_inc_dir}/cccl")
+            endif()
+        endforeach()
 
         set(CUDA_INCLUDE_DIRS ${CUDA_INCLUDE_DIRS} PARENT_SCOPE)
         set(CUDA_LIBRARIES ${CUDA_LIBRARIES} PARENT_SCOPE)

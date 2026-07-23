@@ -22,6 +22,7 @@ namespace common_util
 
 std::vector<std::string> StrSplit(const std::string& text, 
     const std::string& sepStr, bool ignoreEmpty);
+std::string strip(const std::string& str);
 std::vector<std::string> FilterEmptyStr(const std::vector<std::string>& origin_str_vec);
 std::string JoinStr(const std::string& str_vec, const std::string& sep);
 

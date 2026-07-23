@@ -99,6 +99,10 @@ Status OdpsOpenStorageArrowReader::RefreshReadSessionBatch() {
   return OdpsOpenStorageArrowReaderProxy::RefreshReadSessionBatch();
 }
 
+int64_t OdpsOpenStorageArrowReader::GetHaloAgentMetric(const char* halo_endpoint, int type) {
+  return OdpsOpenStorageArrowReaderProxy::GetHaloAgentMetric(halo_endpoint, type);
+}
+
 // When creating session, must create for every each partition, 
 // in case of wrong row_index and row count.
 // TODO. python层如何在调用该方法的饿时候拿到正确的columns 和 partition关系
@@ -150,13 +154,14 @@ Status OdpsOpenStorageArrowReader::GetReadSession(std::string* session_def_str,
 Status OdpsOpenStorageArrowReader::CreateReader(const std::string& path_str,
                                                 const int max_batch_rows,
                                                 const std::string& reader_name,
-                                                std::shared_ptr<OdpsOpenStorageArrowReader>& ret) {
+                                                std::shared_ptr<OdpsOpenStorageArrowReader>& ret,
+                                                const std::vector<std::string> input_columns) {
   std::shared_ptr<OdpsOpenStorageArrowReaderProxy> reader_proxy;
   Status st;
 
   st = OdpsOpenStorageArrowReaderProxy::CreateReader(
          path_str, max_batch_rows, reader_name,
-         reader_proxy);
+         input_columns, reader_proxy);
   std::shared_ptr<OdpsOpenStorageArrowReader> reader = std::make_shared<OdpsOpenStorageArrowReader>();
   reader->reader_proxy_ = reader_proxy;
   ret = reader;

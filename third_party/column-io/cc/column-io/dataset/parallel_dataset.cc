@@ -31,7 +31,6 @@ Status MakeIteratorFromInputElement(const std::vector<Tensor> &input,
                                     std::shared_ptr<DatasetBuilder> maker,
                                     const std::string &prefix,
                                     std::shared_ptr<IteratorBase> *iterator) {
-
   if (input[0].Shape().IsScalar()){
     auto st = maker->MakeDataset(input[0].Scalar<EnumToDataType<kString>::Type>());
     if (!st.ok()) {

@@ -1,4 +1,4 @@
-#if (_GLIBCXX_USE_CXX11_ABI == 0)
+// #if (_GLIBCXX_USE_CXX11_ABI != 1)
 
 #include "column-io/dataset/list_combo_dataset.h"
 #include "absl/strings/str_cat.h"
@@ -15,7 +15,7 @@
 namespace column {
 namespace dataset {
 namespace {
-static const std::string kDatasetName = "ListDataset";
+static const std::string kDatasetName = "ListComboDataset";
 class Dataset : public DatasetBase {
 public:
   Dataset(const std::string &name, std::vector<Tensor> inputs)
@@ -49,7 +49,7 @@ private:
     }
     Status GetNextInternal(std::vector<Tensor> *outputs,
                            bool *end_of_sequence,
-                           std::vector<size_t> *outputs_row_spliter = nullptr) {
+                           std::vector<size_t> *outputs_row_spliter = nullptr) override {
         std::lock_guard<std::mutex> lock(mu_);
         if (dataset()->inputs_.size() <= 0){
             return Status::InvalidArgument("list_combo_dataset inputs buffer is empty !");
@@ -71,6 +71,7 @@ private:
             return Status::InvalidArgument("type [", dataset()->inputs_[index_].Type(),
                                         "] is not supported in plain converter");
         }
+
         index_++;
         return Status::OK();
     }
@@ -91,4 +92,4 @@ ListStringComboDataset::MakeDataset(const std::vector<std::vector<std::string>> 
 } // namespace dataset
 } // namespace column
 
-#endif
+// #endif

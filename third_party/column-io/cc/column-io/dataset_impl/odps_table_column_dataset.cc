@@ -1,7 +1,6 @@
-#if (_GLIBCXX_USE_CXX11_ABI == 0)
+#if (_GLIBCXX_USE_CXX11_ABI != 1)
 
 #include "column-io/dataset_impl/odps_table_column_dataset.h"
-#include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -9,6 +8,7 @@
 #include "arrow/type.h"
 #include "column-io/dataset/formater.h"
 #include "column-io/dataset/vec_tensor_converter.h"
+#include "column-io/dataset_impl/path_parser.h"
 #include "column-io/dataset_impl/schema_parser.h"
 #include "column-io/framework/error_code.h"
 #include "column-io/framework/status.h"
@@ -38,7 +38,7 @@ public:
           const std::vector<std::string> &input_columns,
           const std::vector<std::string> &hash_features,
           const std::vector<std::string> &hash_types,
-          const std::vector<int32_t> &hash_buckets,
+          const std::vector<int64_t> &hash_buckets,
           const std::vector<std::string> &dense_features,
           const std::vector<Tensor> &dense_defaults)
       : DatasetBase(name), paths_(std::move(paths)),
@@ -62,6 +62,24 @@ public:
 
 private:
   class Iterator : public DatasetIterator<Dataset> {
+  private:
+    void ParseCurrentPointTag() {
+        std::string project = "";
+        std::string table = "";
+        if (file_cur_ < dataset()->paths_.size()) {
+            const std::string& filepath = dataset()->paths_[file_cur_];
+            // E.g. "odps://rec_test/tables/mainsearch/ds=20251231?start=1&end=10"
+            ParseOdpsUrl(filepath, project, table);
+            // 兼容tunnel传参格式
+            ParseTunnelTableFormat(filepath, project, table);
+        }
+        point_tag_ = std::make_shared<recis::monitor::PointTag>(std::map<std::string, std::string>{
+            {"ds_project", project.empty() ? "null" : project},
+            {"ds_table", table.empty() ? "null" : table},
+            {"ds_name", "odps_algo"}, // TODO: add ds_name_ for iterator from constructor
+            {"multiprocess_seq", std::to_string(this->get_child_order())}
+        });
+    }
   public:
     explicit Iterator(const std::shared_ptr<Dataset> datataset,
                       const std::string &prefix, const std::string &ds_name)
@@ -83,12 +101,24 @@ private:
         if (!(status_.ok())) {
           return status_;
         }
+        if (point_tag_ == nullptr) {
+            ParseCurrentPointTag();
+        }
         if (reader_) {
           *end_of_sequence = false;
           std::shared_ptr<arrow::RecordBatch> data;
           uint64_t size_before_read = reader_->GetReadBytes();
+          int64_t time_before_read_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+          
           auto s = reader_->ReadBatch(&data);
           uint64_t read_size = reader_->GetReadBytes() - size_before_read;
+          int64_t time_after_read_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+          int64_t delay_ms = std::max(0L, time_after_read_ms - time_before_read_ms);
+
+          metric_cli_->report("read_byte",  read_size, point_tag_, recis::monitor::PointType::kCounter);
+          metric_cli_->report("read_batch", 1, point_tag_, recis::monitor::PointType::kCounter);
+          metric_cli_->report("read_latency_ms", delay_ms, point_tag_, recis::monitor::PointType::kGauge);
+
           if (s.ok()) {
             RETURN_IF_ERROR(InitSchema(data));
           }
@@ -104,6 +134,7 @@ private:
             return s;
           }
           ++file_cur_;
+          ParseCurrentPointTag();
         } else {
           if (file_cur_ >= dataset()->paths_.size()) {
             reach_end_ = true;
@@ -111,7 +142,7 @@ private:
           }
           // open reader
           auto *fs = dataset()->fs_;
-          column::framework::ColumnReader *raw_reader = nullptr;
+          column::odps::AlgoReader *raw_reader = nullptr;
           int32_t batch_size = dataset()->batch_size_;
           if (dataset()->is_compressed_)
             batch_size = std::max(1, dataset()->batch_size_ / 8);
@@ -215,6 +246,7 @@ private:
     std::unique_ptr<column::odps::wrapper::OdpsTableReader> reader_;
     std::unique_ptr<ColumnDataFormater> formater_;
     bool reach_end_;
+    std::shared_ptr<recis::monitor::PointTag> point_tag_;
     Status status_;
   };
 
@@ -223,7 +255,7 @@ private:
   const std::vector<std::string> selected_columns_;
   const std::vector<std::string> hash_features_;
   const std::vector<std::string> hash_types_;
-  const std::vector<int32_t> hash_buckets_;
+  const std::vector<int64_t> hash_buckets_;
   const std::vector<std::string> dense_features_;
   std::vector<Tensor> dense_defaults_;
   bool is_compressed_;
@@ -236,7 +268,7 @@ Status ReadOdpsTableColumnBatch(const std::string &path,
                                 std::shared_ptr<arrow::RecordBatch> &output) {
   column::odps::wrapper::OdpsTableFileSystem *fs =
       odps::wrapper::OdpsTableFileSystem::Instance();
-  column::framework::ColumnReader *raw_reader = nullptr;
+  column::odps::AlgoReader *raw_reader = nullptr;
   auto algo_st = fs->CreateFileReader(path, &raw_reader, 1, {});
   if (!algo_st.ok()) {
     return algo_st;
@@ -254,7 +286,7 @@ Status GetInputColumnsFromOdpsSchema(
     const std::vector<std::string> &dense_features, bool is_compressed,
     std::vector<std::string> *input_columns_from_schema) {
   // init reader
-  framework::ColumnReader *raw_reader = nullptr;
+  odps::AlgoReader *raw_reader = nullptr;
   std::vector<std::string> empty_vec;
   auto s = fs->CreateFileReader(path, &raw_reader, 1, empty_vec);
   CHECK(s.ok() && raw_reader != nullptr)
@@ -316,7 +348,7 @@ ReadOdpsRecordBatch(const std::string &path,
   std::vector<std::string> input_columns_from_schema;
   GetInputColumnsFromOdpsSchema(fs, path, selected_columns, dense_features,
                                 is_compressed, &input_columns_from_schema);
-  framework::ColumnReader *raw_reader = nullptr;
+  odps::AlgoReader *raw_reader = nullptr;
   auto s =
       fs->CreateFileReader(path, &raw_reader, 8, input_columns_from_schema);
   CHECK(s.ok() && raw_reader != nullptr)
@@ -344,7 +376,7 @@ OdpsTableColumnDataset::MakeDataset(
     const std::vector<std::string> &input_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults) {
   return std::shared_ptr<DatasetBase>(
@@ -360,7 +392,7 @@ std::shared_ptr<DatasetBuilder> OdpsTableColumnDataset::MakeBuilder(
     const std::vector<std::string> &input_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults) {
   return DatasetBuilder::Make(
@@ -372,16 +404,18 @@ std::shared_ptr<DatasetBuilder> OdpsTableColumnDataset::MakeBuilder(
       });
 }
 
-std::pair<
+std::tuple<
     std::vector<std::string>,
-    std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>>
+    std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>,
+	std::string
+	>
 OdpsTableColumnDataset::ParseSchema(
     const std::vector<std::string> &paths,
     bool is_compressed,
     const std::unordered_set<std::string> &selected_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types, 
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults) {
   auto parser = SchemaParser::Make(ReadOdpsRecordBatch);
@@ -398,6 +432,7 @@ Status OdpsTableColumnDataset::GetTableSize(const std::string &path,
 
 std::unordered_map<std::string, std::string> OdpsTableColumnDataset::GetOdpsTableFeatures(const char* str_path, bool is_compressed) {
   std::string path = std::string(str_path);
+  LOG(INFO) << "OdpsTableColumnDataset::GetOdpsTableFeatures: " << path << "; is_compressed " << is_compressed;
   auto fs = odps::wrapper::OdpsTableFileSystem::Instance();
   std::unordered_map<std::string, std::string> tmp;
   if (!fs) {
@@ -405,7 +440,7 @@ std::unordered_map<std::string, std::string> OdpsTableColumnDataset::GetOdpsTabl
     return tmp; 
   }
 
-  column::framework::ColumnReader *raw_reader = nullptr;
+  column::odps::AlgoReader *raw_reader = nullptr;
   auto s = fs->CreateFileReader(path, &raw_reader);
   if (!s.ok()) {
     LOG(ERROR) << "Create OdpsTableReader failed, path: " << path;
@@ -428,4 +463,4 @@ std::unordered_map<std::string, std::string> OdpsTableColumnDataset::GetOdpsTabl
 } // namespace dataset
 } // namespace column
 
-#endif // (_GLIBCXX_USE_CXX11_ABI == 0)
+#endif // (_GLIBCXX_USE_CXX11_ABI != 0)

@@ -1,15 +1,15 @@
 include(ExternalProject)
-#FLAG: NEED_ODPS_COLUMN 表示启用ODPS storage接口. 副作用为使用Cxx11abi=1, 禁用直读接口和新ailake接口等不兼容新abi的功能
-if (NOT DEFINED NEED_ODPS_COLUMN OR NEED_ODPS_COLUMN STREQUAL "0")
+#FLAG: NEED_ODPS_COLUMN 表示启用ODPS storage接口. 副作用为使用Cxx11abi=1, 禁用直读algo接口这类不兼容新abi的功能
+if (DEFINED NEED_ODPS_COLUMN AND NEED_ODPS_COLUMN STREQUAL "0")
+    message(INFO "在 CXX11ABI=0 条件下编译Ailake模块, 注意本模块需要配合正确的libfslib-framework ABI0 版本")
     set(_GLIBCXX_USE_CXX11_ABI 0 CACHE INTERNAL "Use C++11ABI=0 for ailake")
     set(lake_sdk_URL "")
-    set(lake_sdk_MD5 "0")
+	  set(lake_sdk_MD5 "66a0ba35ac5ad841510d90ca18dbcd8e")
 else()
+    message(INFO "在 CXX11ABI=1 条件下编译Ailake模块, 注意本模块需要配合正确的libfslib-framework ABI1 版本")
     set(_GLIBCXX_USE_CXX11_ABI 1 CACHE INTERNAL "Use C++11ABI=1 for ailake")
-    # FIXME: ABI1功能下编译的lakebatchdataset模块, 试运行环境有可能无法正常处理schema、batch数据, 推荐用一层wrapper完全隔离ailake的符号
-    message(WARNING "在CXX11ABI=1条件下编译Ailake模块, 注意本模块目前无法在ABI0环境下正常工作")
     set(lake_sdk_URL "")
-    set(lake_sdk_MD5 "0")
+    set(lake_sdk_MD5 "b827c94d8aafa4fcd5e47a63b866e0f9")
 endif()
 ExternalProject_Add(
   lake_sdk

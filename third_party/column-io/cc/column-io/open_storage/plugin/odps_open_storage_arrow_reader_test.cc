@@ -122,7 +122,7 @@ class TestCases {
     Status st = test_InitOdpsOpenStorageSessions(session);
 
     //const std::string& path_str = "";  // 考虑增加这么一个 path_str = "" 的case测试
-    const std::string& path_str = "odps://project_name/tables/table_name/ds=ds_name/tag=tag_name?start=0&end=1000000";
+    const std::string& path_str = "odps://alimama_algo_s4_dev/tables/p4p_kgb_rank_darwin_v9_fix_channel_sample_farmhash/ds=20240429/tag=test?start=0&end=1000000";
     const int max_batch_rows = 10;
     std::shared_ptr<OdpsOpenStorageArrowReader> reader;
     LOG(INFO) << "before CreateReader";
@@ -154,8 +154,8 @@ class TestCases {
 
   const std::string access_id = "your_access_id";
   const std::string access_key = "your_access_key";
-  const std::string tunnel_endpoint = "xxx";
-  const std::string odps_endpoint = "xxx";
+  const std::string tunnel_endpoint = "11.228.56.211:80";
+  const std::string odps_endpoint = "";
   const std::string projects = "alimama_algo_s4_dev";
   const std::string project =  "alimama_algo_s4_dev";
   const std::string tables = "p4p_kgb_rank_darwin_v9_fix_channel_sample_farmhash";

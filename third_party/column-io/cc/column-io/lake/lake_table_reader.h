@@ -7,6 +7,7 @@
 #include <iostream>
 #include <memory>
 #include <vector>
+#include "arrow/c/bridge.h"
 
 namespace arrow {
 class RecordBatch;
@@ -46,7 +47,7 @@ private:
   std::function<int(void *, size_t)> _funcSeek;
   std::function<int(void *, size_t *)> _funcCountRecords;
   std::function<int64_t(void *)> _funcTell;
-  std::function<int(void *, void *)> _funcReadBatch;
+  std::function<int(void *, struct ArrowArray*, struct ArrowSchema* , int64_t)> _funcReadBatch;
   std::function<uint64_t(void *)> _funcStartPos;
   std::function<uint64_t(void *)> _funcEndPos;
   std::function<bool(void *)> _funcReachEnd;

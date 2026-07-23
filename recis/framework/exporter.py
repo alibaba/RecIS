@@ -10,7 +10,10 @@ from recis.info import is_internal_enabled
 from recis.nn.modules.hashtable import filter_out_sparse_param
 from recis.serialize import Loader, Saver
 from recis.utils.logger import Logger
-from recis.utils.torch_fx_tool.ExportTorchFxTool import ExportTorchFxTool
+try:
+    from recis.utils.torch_fx_tool.ExportTorchFxTool import ExportTorchFxTool
+except ImportError:
+    ExportTorchFxTool = None
 
 
 if is_internal_enabled() and not os.environ.get("BUILD_DOCUMENT", None) == "1":
@@ -157,11 +160,14 @@ class Exporter:
         else:
             self.mc_conf = fg.get_mc_conf()
 
-        self.fx_tool = ExportTorchFxTool(
-            fx_folder=os.path.join(TMP_EXPORT_LOCAL_PATH, export_folder_name),
-            model_name=self.export_model_name,
-        )
-        self.fx_tool.set_output_nodes_name(export_outputs)
+        if ExportTorchFxTool is not None:
+            self.fx_tool = ExportTorchFxTool(
+                fx_folder=os.path.join(TMP_EXPORT_LOCAL_PATH, export_folder_name),
+                model_name=self.export_model_name,
+            )
+            self.fx_tool.set_output_nodes_name(export_outputs)
+        else:
+            self.fx_tool = None
 
     def export(self):
         """Execute the complete model export process.
@@ -249,6 +255,11 @@ class Exporter:
         dense_data = self.sparse_model(data)
         if self.dense_optimizer:
             self.dense_optimizer.zero_grad()
+        if self.fx_tool is None:
+            raise RuntimeError(
+                "ExportTorchFxTool is not available in open-source version. "
+                "Model export requires the internal torch_fx_tool submodule."
+            )
         self.fx_tool.export_fx_model(self.dense_model, dense_data[0], self.mc_conf)
         dist.barrier()
         if self.rank == 0:

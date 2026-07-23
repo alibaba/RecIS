@@ -69,6 +69,7 @@ class OdpsOpenStorageArrowReaderProxy {
                                           const std::string& partition);
 
 	static Status RefreshReadSessionBatch();
+    static int64_t GetHaloAgentMetric(const char* halo_endpoint, int type);
 
     // When creating session, must create for every each partition, 
     // in case of wrong row_index and row count.
@@ -100,6 +101,7 @@ class OdpsOpenStorageArrowReaderProxy {
     static Status CreateReader(const std::string& path_str,
                                const int max_batch_rows,
                                const std::string& reader_name,
+                               const std::vector<std::string> input_columns,
                                std::shared_ptr<OdpsOpenStorageArrowReaderProxy>& ret);
     static Status GetTableSize(const std::string& path_str, uint64_t& table_size);
     static int64_t GetSessionExpireTimestamp(const std::string& session_id);

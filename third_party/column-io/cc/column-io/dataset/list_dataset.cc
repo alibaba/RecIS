@@ -47,7 +47,7 @@ private:
     }
     Status GetNextInternal(std::vector<Tensor> *outputs,
                            bool *end_of_sequence,
-                           std::vector<size_t> *outputs_row_spliter = nullptr) override {
+                           std::vector<size_t> *outputs_row_spliter = nullptr) override { 
       std::lock_guard<std::mutex> lock(mu_);
       if (index_ >= dataset()->inputs_.NumElements()) {
         *end_of_sequence = true;

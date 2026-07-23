@@ -211,7 +211,7 @@ public:
           const std::vector<std::string> &input_columns,
           const std::vector<std::string> &hash_features,
           std::vector<std::string> hash_types,
-          std::vector<int32_t> hash_buckets,
+          std::vector<int64_t> hash_buckets,
           const std::vector<std::string> &dense_columns,
           const std::vector<Tensor> &dense_defaults)
       : DatasetBase(name), paths_(paths), is_compressed_(is_compressed),
@@ -321,7 +321,7 @@ private:
   const std::vector<std::string> input_columns_;
   const std::vector<std::string> hash_features_;
   const std::vector<std::string> hash_types_;
-  const std::vector<int32_t> hash_buckets_;
+  const std::vector<int64_t> hash_buckets_;
   const std::vector<std::string> dense_columns_;
   const std::vector<Tensor> dense_defaults_;
 };
@@ -348,7 +348,7 @@ absl::StatusOr<std::shared_ptr<DatasetBase>> LocalRBStreamDataset::MakeDataset(
     const std::vector<std::string> &input_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults) {
   return std::shared_ptr<DatasetBase>(
@@ -363,7 +363,7 @@ std::shared_ptr<DatasetBuilder> LocalRBStreamDataset::MakeBuilder(
     const std::vector<std::string> &input_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults) {
   return DatasetBuilder::Make(
@@ -375,15 +375,17 @@ std::shared_ptr<DatasetBuilder> LocalRBStreamDataset::MakeBuilder(
       });
 }
 
-std::pair<
+std::tuple<
     std::vector<std::string>,
-    std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>>
+    std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>,
+	std::string
+	>
 LocalRBStreamDataset::ParseSchema(
     const std::vector<std::string> &paths, bool is_compressed,
     const std::unordered_set<std::string> &selected_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults) {
   auto parser = SchemaParser::Make(ReadRecordBatch);

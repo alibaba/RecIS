@@ -1,11 +1,13 @@
-#include <pybind11/numpy.h>
-#include <pybind11/pytypes.h>
-
+#ifndef COLUMN_PYINTERFACE_DATASET_H
+#define COLUMN_PYINTERFACE_DATASET_H
+#pragma once
 #include <cstddef>
 #include <functional>
 #include <map>
 #include <memory>
 #include <string>
+#include <pybind11/numpy.h>
+#include <pybind11/pytypes.h>
 
 #include "column-io/dataset/dataset.h"
 #include "column-io/dataset/parallel_dataset.h"
@@ -63,3 +65,5 @@ ParseOdpsSchema(const std::vector<std::string> &paths, bool is_compressed,
 size_t GetTableSize(const std::string &path);
 } // namespace dataset
 } // namespace column
+
+#endif // COLUMN_PYINTERFACE_DATASET_H

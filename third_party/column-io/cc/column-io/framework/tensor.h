@@ -21,7 +21,7 @@ limitations under the License.
 #include <vector>
 #include <dlpack.h>
 
-#include "absl/log/log.h"
+// #include "absl/log/log.h"
 #include "arrow/buffer.h"
 #include "arrow/array/array_base.h"
 #include "column-io/framework/allocator.h"
@@ -126,9 +126,15 @@ public:
   }
 
   std::vector<std::string> Flat() const {
-    const char** ptrs = Raw<const char*>(); 
-    state_->buffer->Ref();
-    return std::vector<std::string>(ptrs, ptrs + NumElements()); 
+    CHECK(Type() == kString) << "Tensor type is not kString";
+
+    const std::string* src = Raw<std::string>();
+    std::vector<std::string> ret;
+    ret.reserve(NumElements());
+    for (int i = 0; i < NumElements(); ++i) {
+      ret.emplace_back(src[i]);   // deep copy
+    }
+    return ret;
   }
 
   Buffer *GetBuffer() const {
@@ -140,7 +146,7 @@ public:
     return state_->dev;
   } 
 
-  std::string DebugString();
+  std::string DebugString() const;
 
   int64_t NullCount() const; // NOTE: deal with null item
   bool IsNull(int64_t i) const; // NOTE: deal with null item

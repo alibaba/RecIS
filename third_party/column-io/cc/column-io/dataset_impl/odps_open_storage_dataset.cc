@@ -1,18 +1,19 @@
-#if (_GLIBCXX_USE_CXX11_ABI != 0)
 #include "column-io/dataset_impl/odps_open_storage_dataset.h"
-#include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/str_cat.h"
+#include "absl/strings/str_split.h"
+#include "absl/strings/strip.h"
 #include "arrow/record_batch.h"
 #include "arrow/type.h"
 #include "column-io/dataset/formater.h"
 #include "column-io/dataset/vec_tensor_converter.h"
+#include "column-io/dataset_impl/path_parser.h"
 #include "column-io/dataset_impl/schema_parser.h"
 #include "column-io/framework/error_code.h"
 #include "column-io/framework/status.h"
 #include "column-io/open_storage/common-util/status.h"
 #include "column-io/open_storage/wrapper/odps_open_storage_arrow_reader.h"
+#include "column-io/monitor/metric_client.h"
 #include "column-io/framework/tensor.h"
 #include "column-io/framework/types.h"
 #include <cstddef>
@@ -24,6 +25,7 @@
 #include <utility>
 #include <vector>
 #include <tuple>
+#include <regex>
 namespace column {
 namespace dataset {
 namespace {
@@ -49,10 +51,29 @@ column::Status StatusConvert(apsara::odps::algo::commonio::Status source) {
     case apsara::odps::algo::commonio::Status::kUnauthenticated:    code = ErrorCode::UNAUTHENTICATED;      break;
 	default:	code = ErrorCode::UNKNOWN;              break;
   }
-  absl::string_view view(source.GetMsg());
+  std::string_view view(source.GetMsg());
   column::Status target(code, view);
   return target; 
 }
+
+size_t ParseNumberFromRegex(const std::string &text,
+                            const std::regex &pattern,
+                            size_t default_value,
+                            const std::string &label) {
+    std::smatch m;
+    if (std::regex_search(text, m, pattern)) {
+        try {
+            return std::stoull(m[1].str());
+        } 
+        catch (...) {
+            LOG(WARNING) << "get " << label << " value wrong! make " 
+                      << label << " = " << default_value;
+            return default_value;
+        }
+    }
+    return default_value;
+}
+
 const std::string kDatasetName = "OdpsOpenStorage";
 class Dataset : public DatasetBase {
 public:
@@ -64,7 +85,7 @@ public:
           const std::vector<std::string> &input_columns,
           const std::vector<std::string> &hash_features,
           const std::vector<std::string> &hash_types,
-          const std::vector<int32_t> &hash_buckets,
+          const std::vector<int64_t> &hash_buckets,
           const std::vector<std::string> &dense_features,
           const std::vector<Tensor> &dense_defaults,
           bool use_xrec)
@@ -88,11 +109,29 @@ public:
   MakeIteratorInternal(const std::string &prefix) override {
     return std::shared_ptr<IteratorBase>(
         new Iterator(std::dynamic_pointer_cast<Dataset>(shared_from_this()),
-                     absl::StrCat(prefix, "::OpenStorageDataset"), ds_name_));
+                     (prefix + "::OpenStorageDataset"), ds_name_));
   }
 
 private:
   class Iterator : public DatasetIterator<Dataset> {
+  private:
+    void ParseCurrentPointTag() {
+        std::string project = "";
+        std::string table = "";
+        if (file_cur_ < dataset()->paths_.size()) {
+            const std::string& filepath = dataset()->paths_[file_cur_];
+            // E.g. "odps://rec_test/tables/mainsearch/ds=20251231?start=1&end=10"
+            ParseOdpsUrl(filepath, project, table);
+            // 兼容tunnel传参格式
+            ParseTunnelTableFormat(filepath, project, table);
+        }
+        point_tag_ = std::make_shared<recis::monitor::PointTag>(std::map<std::string, std::string>{
+            {"ds_project", project.empty() ? "null" : project},
+            {"ds_table", table.empty() ? "null" : table},
+            {"ds_name", "odps_openstorage"}, // TODO: add ds_name_ for iterator from constructor
+            {"multiprocess_seq", std::to_string(this->get_child_order())}
+        });
+    }
   public:
     explicit Iterator(const std::shared_ptr<Dataset> datataset,
                       const std::string &prefix, const std::string &ds_name)
@@ -114,14 +153,32 @@ private:
         if (!(status_.ok())) {
           return status_;
         }
+        if (point_tag_ == nullptr) {
+            ParseCurrentPointTag();
+        }
         if (reader_) {
           *end_of_sequence = false;
           std::shared_ptr<arrow::RecordBatch> data;
-		  //Status s;
+          //Status s;
           uint64_t rows_before_read = reader_->Tell();
+          int64_t time_before_read_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
           auto common_st = reader_->ReadBatch(data);
-          uint64_t read_size = reader_->Tell() - rows_before_read;
+          int64_t time_after_read_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+          int64_t delay_ms = std::max(0L, time_after_read_ms - time_before_read_ms);
+          uint64_t rows_read = reader_->Tell() - rows_before_read ;
+
+          metric_cli_->report("read_row",  rows_read, point_tag_, recis::monitor::PointType::kCounter); //TODO: read bytes from halo
+          metric_cli_->report("read_batch", 1, point_tag_, recis::monitor::PointType::kCounter);
+          metric_cli_->report("read_latency_ms", delay_ms, point_tag_, recis::monitor::PointType::kGauge);
+
           if (common_st.Ok()) {
+            std::call_once(flag, [&]() {
+                LOG(INFO) << "the selected columns length in output: " << data->num_columns();
+                for (int i = 0; i < data->num_columns(); i++) {
+                    LOG(INFO) << data->column_name(i);
+                }
+            });
             RETURN_IF_ERROR(InitSchema(data));
             std::vector<std::shared_ptr<arrow::RecordBatch>> formated_data;
             RETURN_IF_ERROR(formater_->FormatSample(data, &formated_data));
@@ -156,12 +213,13 @@ private:
           if (common_st.Ok()) {
             return StatusConvert(common_st);
           }
-		  // deal with errors
+          // deal with errors
           reader_.reset();
-		  if (!common_st.GetCode() == apsara::odps::algo::commonio::Status::kOutOfRange) {
+          if (!common_st.GetCode() == apsara::odps::algo::commonio::Status::kOutOfRange) {
             return StatusConvert(common_st);
           }
-          ++file_cur_;		  
+          ++file_cur_;
+          ParseCurrentPointTag();
         } else {
           if (file_cur_ >= dataset()->paths_.size()) {
             reach_end_ = true;
@@ -179,14 +237,15 @@ private:
                      << ", batch_row_num: " << std::to_string(batch_size);
           }
           auto algo_st = apsara::odps::tunnel::algo::tf::OdpsOpenStorageArrowReader::CreateReader(
-                           dataset()->paths_[file_cur_], batch_size, dataset()->ds_name_, reader_);
+                           dataset()->paths_[file_cur_], batch_size, 
+                           dataset()->ds_name_, reader_, dataset()->input_columns_);
           if (!algo_st.Ok()) {
             status_ = Status::InvalidArgument(
                 "Create odps file reader failed: ", dataset()->paths_[file_cur_]);
             LOG(ERROR) << algo_st.GetMsg();
             return status_;
           }
-		  if (begin_cur_ >= 0) {  // begin_cur_ is inited from RestoreInternal
+          if (begin_cur_ >= 0) {  // begin_cur_ is inited from RestoreInternal
             // validate begin_cur_
             size_t table_size;
             algo_st = apsara::odps::tunnel::algo::tf::OdpsOpenStorageArrowReader::GetTableSize(dataset()->paths_[file_cur_],
@@ -195,6 +254,34 @@ private:
               status_ = Status::InvalidArgument(algo_st.GetMsg());
               reader_.reset();
               return status_;
+            }
+            // parse start_row value and end_row value
+            static const std::regex re_start(R"(\bstart=([0-9]+))");
+            static const std::regex re_end(R"(\bend=([0-9]+))");
+            size_t start_row = ParseNumberFromRegex(dataset()->paths_[file_cur_], re_start, 0, "start_row");
+            size_t end_row   = ParseNumberFromRegex(dataset()->paths_[file_cur_], re_end, table_size, "end_row");
+            // process bad value
+            if (start_row > table_size || end_row > table_size || start_row > end_row)
+            {
+              LOG(INFO) << "get bad value: [" << start_row << ", " << end_row <<"]" <<
+                           "use range: [0, " << table_size << "]";
+              start_row = 0;
+              end_row = table_size;
+            }
+            
+            if (begin_cur_ < start_row || begin_cur_ > end_row)
+            {
+              LOG(ERROR) << "begin_cur_: " << begin_cur_ << " is out of range: " <<
+                           "[" << start_row << ", " << end_row << "]";
+              status_ = Status::InvalidArgument(
+                  "begin_cur_: ", begin_cur_, " is out of range: ",
+                  "[", start_row, ", ", end_row, "]");
+              reader_.reset();
+              return status_;
+            }
+            else
+            {
+              LOG(INFO) << "slice range is: [" << start_row << ", " << end_row << "], and begin_cur_ is: " << begin_cur_;
             }
             if (begin_cur_ == table_size) {
               LOG(INFO) << "file: " << dataset()->paths_[file_cur_] <<
@@ -273,14 +360,16 @@ private:
     std::shared_ptr<apsara::odps::tunnel::algo::tf::OdpsOpenStorageArrowReader> reader_;
     std::unique_ptr<ColumnDataFormater> formater_;
     bool reach_end_;
+    std::shared_ptr<recis::monitor::PointTag> point_tag_;
     Status status_;
+    static std::once_flag flag;
   };
   const std::vector<std::string> paths_;
   const std::vector<std::string> input_columns_;
   const std::vector<std::string> selected_columns_;
   const std::vector<std::string> hash_features_;
   const std::vector<std::string> hash_types_;
-  const std::vector<int32_t> hash_buckets_;
+  const std::vector<int64_t> hash_buckets_;
   const std::vector<std::string> dense_features_;
   std::vector<Tensor> dense_defaults_;
   bool row_mode_tensor_split_;
@@ -289,6 +378,7 @@ private:
   std::string ds_name_;
   bool use_xrec_;
 };
+std::once_flag Dataset::Iterator::flag;
 
 const std::string kIndicator = "_indicator";
 Status GetInputColumnsFromOdpsOpenStorageSchema(const std::string& path,
@@ -332,6 +422,7 @@ Status GetInputColumnsFromOdpsOpenStorageSchema(const std::string& path,
     }
     input_columns_from_schema->push_back(column_name);
   }
+
   return Status::OK();
 }
 
@@ -347,7 +438,7 @@ Status ReadOdpsOpenStorageRecordBatch(
     std::vector<std::string> input_columns_from_schema;
     GetInputColumnsFromOdpsOpenStorageSchema(path, selected_columns, dense_features, is_compressed, &input_columns_from_schema);
     auto s = apsara::odps::tunnel::algo::tf::OdpsOpenStorageArrowReader::CreateReader(
-                path, 1, "SchemaReader", reader);
+                path, 1, "SchemaReader", reader, input_columns_from_schema);
 	CHECK(s.Ok() && reader != nullptr)
         << "failed to get reader from path: " << path << ", error:" << s.GetMsg();
     // read data
@@ -355,12 +446,13 @@ Status ReadOdpsOpenStorageRecordBatch(
     s = reader->ReadBatch(rb);
 	CHECK(s.Ok())
         << "fail to read RecordBatch from path: " << path << ", error: " << s.GetMsg();
-    //LOG(INFO) << "read data, schema: " << rb->schema()->ToString().c_str();  // FIXME: log to another file
+    // LOG(INFO) << "read data, schema: " << rb->schema()->ToString().c_str();  // FIXME: log to another file
     (*data) = rb;
     return Status::OK();
   } catch (const std::exception &ex) {
     CHECK(false) << "catch odps exception: " << ex.what();
   }
+  return Status::Internal("odps openstorage unknown error");
 }
 } // namespace
 
@@ -373,7 +465,7 @@ OdpsOpenStorageDataset::MakeDataset(
     const std::vector<std::string> &input_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults,
     bool use_xrec) {
@@ -392,7 +484,7 @@ std::shared_ptr<DatasetBuilder> OdpsOpenStorageDataset::MakeBuilder(
     const std::vector<std::string> &input_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults,
     bool use_xrec) {
@@ -405,16 +497,18 @@ std::shared_ptr<DatasetBuilder> OdpsOpenStorageDataset::MakeBuilder(
       });
 }
 
-std::pair<
+std::tuple<
     std::vector<std::string>,
-    std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>>
+    std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>,
+	std::string
+	>
 OdpsOpenStorageDataset::ParseSchema(
     const std::vector<std::string> &paths,
     bool is_compressed,
     const std::unordered_set<std::string> &selected_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults) {
   auto parser = SchemaParser::Make(ReadOdpsOpenStorageRecordBatch);
@@ -432,7 +526,17 @@ int64_t OdpsOpenStorageDataset::GetSessionExpireTimestamp(const std::string &ses
   return apsara::odps::tunnel::algo::tf::OdpsOpenStorageArrowReader::GetSessionExpireTimestamp(session_id);
 }
 
+std::unordered_map<std::string, std::string> OdpsOpenStorageDataset::GetOdpsTableFeatures(const char* str_path, bool is_compressed) {
+  // read schema
+  std::string path = std::string(str_path);
+  std::unordered_map<std::string, std::string> schema;
+  auto s = apsara::odps::tunnel::algo::tf::OdpsOpenStorageArrowReader::GetSchema(path, schema);
+  CHECK(s.Ok()) << "fail to GetSchema from path: " << path << ", error: " << s.GetMsg();
+  return schema; 
+}
+
+
+
 } // namespace dataset
 } // namespace column
 
-#endif

@@ -1,3 +1,6 @@
+#ifndef COLUMN_IO_CC_COLUMN_IO_DATASET_DATASET_H_
+#define COLUMN_IO_CC_COLUMN_IO_DATASET_DATASET_H_
+#pragma once
 #include <stddef.h>
 
 #include <functional>
@@ -6,13 +9,12 @@
 
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/str_cat.h"
+#include "column-io/monitor/metric_client.h"
 #include "column-io/framework/refcount.h"
 #include "column-io/framework/status.h"
 #include "column-io/framework/tensor.h"
 #include "column-io/framework/thread_pool.h"
-#ifndef COLUMN_IO_CC_COLUMN_IO_DATASET_DATASET_H_
-#define COLUMN_IO_CC_COLUMN_IO_DATASET_DATASET_H_
+
 namespace column {
 namespace dataset {
 class IteratorStateWriter {
@@ -117,7 +119,8 @@ public:
   virtual const std::string prefix() const { return params_.prefix; }
   DatasetIteratorBase(const BaseParam &param) : params_(param) {}
   const std::string fullname(const std::string &name) {
-    return absl::StrCat(prefix(), ":", name);
+    std::string fullname = prefix() + ":" + name;
+    return fullname;
   }
   ~DatasetIteratorBase() {}
 
@@ -136,8 +139,43 @@ public:
   DatasetIterator(const Param &param)
       : DatasetIteratorBase({param.dataset, param.prefix}) {
     typed_dataset_ = param.dataset;
+    metric_cli_ = recis::monitor::Factory::StaticInstance()->get_client("columnio.dataset");
   };
-
+protected:
+  std::shared_ptr<recis::monitor::Client> metric_cli_;
+  /**
+   * @brief 获取自身被父进程启动的顺序
+   * @return int 启动顺序
+   * 多进程模式下通过不同slice id实现多读, 但metric汇聚时 通过slice id或进程号等方式区分数据源 其开销过大.
+   * 不区分进程又会导致进程级别数据聚合紊乱. torch.dataloader未直接赋予columnio层子进程序号, 这里主动实现.
+  */
+  static int get_child_order() {
+    static int order = 0;
+    static std::once_flag once_flag;
+    std::call_once(once_flag, []() {
+      order = []() {
+        pid_t my_pid = getpid();
+        pid_t parent_pid = getppid();
+        char path[256];
+        snprintf(path, sizeof(path), "/proc/%d/task/%d/children", parent_pid, parent_pid);
+        
+        FILE* f = fopen(path, "r");
+        if (!f) return -1; // 打开错误, 返回默认值
+        int count = 0;
+        pid_t child_pid;
+        while (fscanf(f, "%d", &child_pid) == 1) {
+            count++;
+            if (child_pid == my_pid || count > 1024 ) { // 防止死循环. 虽然理论不会发生
+                fclose(f);
+                return count;
+            }
+        }
+        fclose(f);
+        return 0;
+      }();
+    });
+    return order;
+  }
 private:
   std::shared_ptr<DatasetType> typed_dataset_;
 };
@@ -175,4 +213,5 @@ private:
 
 } // namespace dataset
 } // namespace column
+
 #endif

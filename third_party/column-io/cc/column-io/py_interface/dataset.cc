@@ -1,31 +1,4 @@
 #include "column-io/py_interface/dataset.h"
-#include "absl/base/log_severity.h"
-#include "absl/log/globals.h"
-#include "absl/log/initialize.h"
-#include "absl/status/status.h"
-#include "absl/strings/str_cat.h"
-#include "absl/strings/string_view.h"
-#include "column-io/dataset/iterator.h"
-#include "column-io/dataset/list_dataset.h"
-#include "column-io/dataset/vec_tensor_converter.h"
-#include "column-io/dataset_impl/lake_stream_column_dataset.h"
-#include "column-io/dataset_impl/lake_batch_column_dataset.h"
-#include "column-io/dataset_impl/local_rb_stream_dataset.h"
-#include "column-io/dataset_impl/local_orc_dataset.h"
-#if (_GLIBCXX_USE_CXX11_ABI == 0 )
-#include "column-io/dataset_impl/odps_table_column_dataset.h"
-#else
-#include "column-io/dataset_impl/odps_open_storage_dataset.h"
-#endif
-#include "column-io/dataset_impl/odps_table_column_combo_dataset.h"
-#include "column-io/framework/error_code.h"
-#include "column-io/framework/status.h"
-#include "column-io/framework/tensor.h"
-#include "column-io/framework/tensor_shape.h"
-#include "column-io/framework/types.h"
-#include "column-io/py_interface/converter.h"
-#include "pybind11/numpy.h"
-#include "pybind11/stl.h"
 #include <cstddef>
 #include <cstring>
 #include <exception>
@@ -38,19 +11,48 @@
 #include <pybind11/pytypes.h>
 #include <string>
 #include <vector>
+#include "pybind11/numpy.h"
+#include "pybind11/stl.h"
+#include "absl/base/log_severity.h"
+#include "absl/log/globals.h"
+#include "absl/log/initialize.h"
+#include "absl/status/status.h"
+
+#include "column-io/dataset/iterator.h"
+#include "column-io/dataset/list_dataset.h"
+#include "column-io/dataset/vec_tensor_converter.h"
+#include "column-io/dataset_impl/lake_stream_column_dataset.h"
+#include "column-io/dataset_impl/lake_multi_cf_stream_column_dataset.h"
+#include "column-io/dataset_impl/lake_batch_column_dataset.h"
+#include "column-io/dataset_impl/local_rb_stream_dataset.h"
+#include "column-io/dataset_impl/local_orc_dataset.h"
+#if (_GLIBCXX_USE_CXX11_ABI != 1 )
+#include "column-io/dataset_impl/odps_table_column_dataset.h"
+#endif
+#include "column-io/dataset_impl/odps_open_storage_dataset.h"
+#include "column-io/dataset_impl/odps_combo_dataset.h"
+#include "column-io/framework/error_code.h"
+#include "column-io/framework/status.h"
+#include "column-io/framework/tensor.h"
+#include "column-io/framework/tensor_shape.h"
+#include "column-io/framework/types.h"
+#include "column-io/py_interface/converter.h"
+
 namespace column {
 namespace dataset {
 namespace detail {
 struct StatusExcept : std::exception {
-  StatusExcept(const absl::string_view &err_info) : err_info_(err_info) {}
+  StatusExcept(const std::string_view &err_info) : err_info_(err_info) {}
   const char *what() const noexcept override { return err_info_.c_str(); }
   static StatusExcept FromStatus(const Status &st) {
-    return StatusExcept(absl::StrCat("error_code: ", st.code(),
-                                     " error msg:", st.error_message()));
+    std::ostringstream excp_msg;
+    excp_msg << "error_code: " << st.code() << " error msg:" << st.error_message();
+    return StatusExcept(excp_msg.str());
   }
   static StatusExcept FromStatus(const absl::Status &st) {
-    return StatusExcept(
-        absl::StrCat("error_code: ", st.code(), " error msg:", st.message()));
+    std::ostringstream excp_msg;
+    excp_msg << "error_code: " << st.code() << " error msg:" << st.message();
+    return StatusExcept(excp_msg.str());
   }
 
 private:
@@ -69,6 +71,10 @@ absl::LogSeverity AbslGetLogLevelFromEnv() {
 }
 
 void GlobalInit() {
+  // 防止与 column_io (GPU) 同进程加载时重复初始化 absl::InitializeLog 导致 crash
+  static bool initialized = false;
+  if (initialized) return;
+  initialized = true;
   // do initialize for absl log.
   // TODO: merge three log frameworks
   absl::SetStderrThreshold(absl::LogSeverity::kInfo);
@@ -87,6 +93,9 @@ pybind11::object GetNextFromIterator(std::shared_ptr<IteratorBase> iterator, boo
   Status st;
   {
     pybind11::gil_scoped_release lock;
+    if (!iterator) {
+        throw std::runtime_error("Iterator is null or expired");
+    }
     st = iterator->GetNext(&outputs, &end_of_sequence, &outputs_row_spliter);
   }
   if (end_of_sequence) {
@@ -154,7 +163,7 @@ std::shared_ptr<DatasetBase> LocalRBStreamDataset::MakeDatasetWrapper(
     const std::vector<std::string> &input_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults) {
   auto st =
@@ -171,13 +180,9 @@ size_t GetTableSize(const std::string &path) {
   size_t ret;
   Status st;
   if (IsTurnOnOdpsOpenStorage()) {
-#if (_GLIBCXX_USE_CXX11_ABI ==0 )
-    throw std::runtime_error("ColumnIO Not support GetTableSize in this ABI0 version");
-#else
     st = OdpsOpenStorageDataset::GetTableSize(path, &ret);
-#endif
   } else {
-#if (_GLIBCXX_USE_CXX11_ABI ==0 )
+#if (_GLIBCXX_USE_CXX11_ABI != 1 )
     st = OdpsTableColumnDataset::GetTableSize(path, &ret);
 #else
     throw std::runtime_error("ColumnIO Not support GetTableSize in this algosdk version");
@@ -190,7 +195,7 @@ size_t GetTableSize(const std::string &path) {
   return ret;
 }
 
-#if (_GLIBCXX_USE_CXX11_ABI == 0)
+#if (_GLIBCXX_USE_CXX11_ABI != 1)
 std::shared_ptr<DatasetBase> OdpsTableColumnDataset::MakeDatasetWrapper(
     const std::vector<std::string> &paths,
     bool is_compressed,
@@ -199,7 +204,7 @@ std::shared_ptr<DatasetBase> OdpsTableColumnDataset::MakeDatasetWrapper(
     const std::vector<std::string> &input_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults) {
   auto st =
@@ -210,30 +215,32 @@ std::shared_ptr<DatasetBase> OdpsTableColumnDataset::MakeDatasetWrapper(
   }
   return st.value();
 }
+#endif
 
-std::shared_ptr<DatasetBase> OdpsTableColumnComboDataset::MakeDatasetWrapper(
+std::shared_ptr<DatasetBase> OdpsComboDataset::MakeDatasetWrapper(
     const std::vector<std::vector<std::string>> &paths,
     bool is_compressed,
     int64_t batch_size,
-    const std::vector<std::string> &selected_columns,
+    const std::vector<std::vector<std::string>> &selected_columns,
     const std::vector<std::vector<std::string>> &input_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults,
     const bool &check_data,
-    const std::string &primary_key) {
+    const std::string &primary_key,
+    bool turn_on_odps_open_storage) {
   auto st =
       MakeDataset(paths, is_compressed, batch_size, selected_columns,
                   input_columns, hash_features, hash_types, hash_buckets,
-                  dense_columns, dense_defaults, check_data, primary_key);
+                  dense_columns, dense_defaults, check_data, primary_key, turn_on_odps_open_storage);
   if (!st.ok()) {
     throw detail::StatusExcept::FromStatus(st.status());
   }
   return st.value();
 }
-#else
+
 std::shared_ptr<DatasetBase> OdpsOpenStorageDataset::MakeDatasetWrapper(
     const std::vector<std::string> &paths,
     bool is_compressed,
@@ -242,7 +249,7 @@ std::shared_ptr<DatasetBase> OdpsOpenStorageDataset::MakeDatasetWrapper(
     const std::vector<std::string> &input_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults,
     bool use_xrec) {
@@ -255,7 +262,6 @@ std::shared_ptr<DatasetBase> OdpsOpenStorageDataset::MakeDatasetWrapper(
   }
   return st.value();
 }
-#endif
 
 std::shared_ptr<DatasetBase> LakeStreamColumnDatase::MakeDatasetWrapper(
     const std::string &path,
@@ -263,7 +269,33 @@ std::shared_ptr<DatasetBase> LakeStreamColumnDatase::MakeDatasetWrapper(
     const std::vector<std::string> &input_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
+    const std::vector<std::string> &dense_features,
+    const std::vector<std::vector<float>> &dense_defaults,
+    bool is_compressed,
+    int64_t batch_size,
+    bool use_prefetch,
+    int64_t prefetch_thread_num,
+    int64_t prefetch_buffer_size) {
+  auto st =
+      MakeDataset(path, selected_columns, input_columns,
+                  hash_features, hash_types, hash_buckets,
+                  dense_features, dense_defaults,
+                  is_compressed, batch_size,
+                  use_prefetch, prefetch_thread_num, prefetch_buffer_size);
+  if (!st.ok()) {
+    throw detail::StatusExcept::FromStatus(st.status());
+  }
+  return st.value();
+}
+
+std::shared_ptr<DatasetBase> LakeMultiCFStreamColumnDatase::MakeDatasetWrapper(
+    const std::string &path,
+    const std::vector<std::string> &selected_columns,
+    const std::vector<std::string> &input_columns,
+    const std::vector<std::string> &hash_features,
+    const std::vector<std::string> &hash_types,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_features,
     const std::vector<std::vector<float>> &dense_defaults,
     bool is_compressed,
@@ -289,7 +321,7 @@ std::shared_ptr<DatasetBase> LakeBatchColumnDatase::MakeDatasetWrapper(
     const std::vector<std::string> &input_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_features,
     const std::vector<std::vector<float>> &dense_defaults,
     bool is_compressed,
@@ -308,7 +340,7 @@ std::shared_ptr<DatasetBase> LakeBatchColumnDatase::MakeDatasetWrapper(
   }
   return st.value();
 }
-#else
+#endif
 
 std::shared_ptr<DatasetBase> LocalOrcDataset::MakeDatasetWrapper(
     const std::vector<std::string> &paths, bool is_compressed,
@@ -316,7 +348,7 @@ std::shared_ptr<DatasetBase> LocalOrcDataset::MakeDatasetWrapper(
     const std::vector<std::string> &input_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults) {
   auto st =
@@ -327,7 +359,6 @@ std::shared_ptr<DatasetBase> LocalOrcDataset::MakeDatasetWrapper(
   }
   return st.value();
 }
-#endif
 
 } // namespace dataset
 } // namespace column

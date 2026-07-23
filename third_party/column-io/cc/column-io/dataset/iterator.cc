@@ -1,18 +1,21 @@
 #include "column-io/dataset/iterator.h"
-#include "absl/container/flat_hash_map.h"
+
+#include <memory>
+#include <string>
+// #include "absl/container/flat_hash_map.h"
+
 #include "column-io/framework/status.h"
 #include "column-io/framework/tensor.h"
 #include "column-io/framework/tensor.pb.h"
 #include "column-io/framework/tensor_util.h"
 #include "column-io/framework/types.h"
-#include <memory>
-#include <string>
+
 namespace column {
 namespace dataset {
 namespace {
 class IteratorStateWriterImpl : public IteratorStateWriter {
 public:
-  IteratorStateWriterImpl(absl::flat_hash_map<std::string, Tensor> *states_map)
+  IteratorStateWriterImpl(std::unordered_map<std::string, Tensor> *states_map)
       : states_map_(states_map) {}
   Status WriteString(const std::string &key, const std::string &val) {
     COLUMN_RETURN_NOT_OK(CheckKey(key));
@@ -58,13 +61,13 @@ private:
     return Status::OK();
   }
 
-  absl::flat_hash_map<std::string, Tensor> *states_map_;
+  std::unordered_map<std::string, Tensor> *states_map_;
 };
 
 class IteratorStateReaderImpl : public IteratorStateReader {
 public:
   IteratorStateReaderImpl(
-      const absl::flat_hash_map<std::string, Tensor> *states_map)
+      const std::unordered_map<std::string, Tensor> *states_map)
       : states_map_(states_map) {}
   bool Contain(const std::string &key) { return states_map_->count(key); }
   bool Contains(const std::string &key) { return states_map_->count(key); }
@@ -116,10 +119,10 @@ private:
     tensor = (*states_map_).at(key);
     return Status::OK();
   }
-  const absl::flat_hash_map<std::string, Tensor> *states_map_;
+  const std::unordered_map<std::string, Tensor> *states_map_;
 };
 
-Status EncodeStates(const absl::flat_hash_map<std::string, Tensor> states,
+Status EncodeStates(const std::unordered_map<std::string, Tensor> states,
                     std::string *msg) {
   TensorDataProto proto;
   for (auto &&it : states) {
@@ -134,7 +137,7 @@ Status EncodeStates(const absl::flat_hash_map<std::string, Tensor> states,
 }
 
 Status DecodeStates(const std::string &msg,
-                    absl::flat_hash_map<std::string, Tensor> &states) {
+                    std::unordered_map<std::string, Tensor> &states) {
   TensorDataProto proto;
   if (!proto.ParseFromString(msg)) {
     return Status::Internal("Decode iterator state failed!");

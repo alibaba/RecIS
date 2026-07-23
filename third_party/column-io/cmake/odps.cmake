@@ -10,12 +10,25 @@ ExternalProject_Add(algo_sdk
                     BUILD_COMMAND bash -c "echo skipping build step"
                     BUILD_IN_SOURCE true
                     INSTALL_COMMAND bash -c "echo skipping install step")
+
+# Record the ODPS SDK version
+file(WRITE ${CMAKE_SOURCE_DIR}/column_io/ODPS_SDK_VERSION "${algo_sdk_URL}\n")
+
+# algo_sdk bundles a stale GTest (headers + static libs) that conflicts with
+# the FetchContent GTest 1.17 used by unit tests. Removes it!
+ExternalProject_Add_Step(algo_sdk remove_stale_gtest
+    COMMENT "Removing stale GTest headers/libs bundled in algo_sdk"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf <SOURCE_DIR>/sdk/include/gtest
+    COMMAND ${CMAKE_COMMAND} -E rm -f  <SOURCE_DIR>/sdk/lib/libgtest.a
+    COMMAND ${CMAKE_COMMAND} -E rm -f  <SOURCE_DIR>/sdk/lib/libgtest_main.a
+    DEPENDEES install
+    ALWAYS FALSE
+)
 ExternalProject_Get_Property(algo_sdk SOURCE_DIR)
 set(algo_sdk_INCLUDE_BASE ${SOURCE_DIR}/sdk/include)
 set(algo_sdk_LIBRARY_BASE ${SOURCE_DIR}/sdk/lib)
 
-#declare library
-#arrow
+
 add_library(arrow INTERFACE)
 target_include_directories(arrow INTERFACE ${algo_sdk_INCLUDE_BASE})
 message("algo_sdk_LIBRARY_BASE is ${algo_sdk_LIBRARY_BASE}")

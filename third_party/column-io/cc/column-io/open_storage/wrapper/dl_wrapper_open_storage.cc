@@ -162,11 +162,20 @@ BIND_ODPS_OPEN_STORAGE_FUNC(
     void* status);
 
 BIND_ODPS_OPEN_STORAGE_FUNC(
+    void,
+	GetHaloAgentMetric,
+    const char* halo_endpoint,
+    int type,
+    int64_t* value);
+
+BIND_ODPS_OPEN_STORAGE_FUNC(
     CAPI_ODPS_SDK_OdpsOpenStorageArrowReader*,
     CreateReader,
     const char* path_str,
     int max_batch_rows,
     const char* reader_name,
+    const char* const* cols, 
+    size_t n,
     void* status);
 
 BIND_ODPS_OPEN_STORAGE_FUNC(

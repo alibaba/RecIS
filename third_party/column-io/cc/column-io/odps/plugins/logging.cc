@@ -23,6 +23,7 @@
 #include <iostream>
 #include <sstream>
 #include <unistd.h>
+#include <stdint.h>
 
 namespace apsara {
 namespace odps {

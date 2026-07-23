@@ -1,2 +1,4 @@
 global-include *.so
 include column_io/lib/libprotobuf.so.18
+include column_io/CURRENT_REVISION.json
+include column_io/ODPS_SDK_VERSION

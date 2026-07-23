@@ -18,7 +18,7 @@ public:
               const std::vector<std::string> &input_columns,
               const std::vector<std::string> &hash_features,
               const std::vector<std::string> &hash_types,
-              const std::vector<int32_t> &hash_buckets,
+              const std::vector<int64_t> &hash_buckets,
               const std::vector<std::string> &dense_columns,
               const std::vector<std::vector<float>> &dense_defaults);
 
@@ -29,7 +29,7 @@ public:
                      const std::vector<std::string> &input_columns,
                      const std::vector<std::string> &hash_features,
                      const std::vector<std::string> &hash_types,
-                     const std::vector<int32_t> &hash_buckets,
+                     const std::vector<int64_t> &hash_buckets,
                      const std::vector<std::string> &dense_columns,
                      const std::vector<std::vector<float>> &dense_defaults);
 
@@ -39,18 +39,20 @@ public:
               const std::vector<std::string> &input_columns,
               const std::vector<std::string> &hash_features,
               const std::vector<std::string> &hash_types,
-              const std::vector<int32_t> &hash_buckets,
+              const std::vector<int64_t> &hash_buckets,
               const std::vector<std::string> &dense_columns,
               const std::vector<std::vector<float>> &dense_defaults);
 
-  static std::pair<
+  static std::tuple<
       std::vector<std::string>,
-      std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>>
+      std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>,
+	  std::string
+	  >
   ParseSchema(const std::vector<std::string> &paths, bool is_compressed,
               const std::unordered_set<std::string> &selected_columns,
               const std::vector<std::string> &hash_features,
               const std::vector<std::string> &hash_types,
-              const std::vector<int32_t> &hash_buckets,
+              const std::vector<int64_t> &hash_buckets,
               const std::vector<std::string> &dense_columns,
               const std::vector<std::vector<float>> &dense_defaults);
 };

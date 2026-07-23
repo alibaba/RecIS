@@ -1,12 +1,13 @@
 # -*- coding: utf8 -*-
 import json
 import os
+import time
 from odps import ODPS
 from collections import defaultdict
 from column_io.dataset.log_util import logger, varlogger, LOG_DIR
 from column_io.dataset.secret_util import decode
 
-PARTITION_MODE_KEY_NAME = "partition_mode"
+ODPS_PARTITION_MODE_KEY_NAME = "ODPS_PARTITION_MODE"
 
 class TablePartitionStruct:
     def __init__(self, project, table, logical_partition):
@@ -294,15 +295,58 @@ class PartitionMode:
     def gen_partition_struct(cls, proj_tbl_part_set, partition_mode, ODPS_ENDPOINT):
         # set<tuple<str, str, str>>, str, str
         partition_mode = cls.parse(partition_mode)
-        return cls.gen_full_partition_if_need(proj_tbl_part_set, partition_mode, ODPS_ENDPOINT)
+        res = cls.gen_full_partition_if_need(proj_tbl_part_set, partition_mode, ODPS_ENDPOINT)
+        cls.check_result(res)
+        return res
 
+    @classmethod
+    def check_result(cls, table_partition_struct_list):
+        if not table_partition_struct_list:
+            return
+        empty_partition_structs = []
+        for struct in table_partition_struct_list:
+            if not struct.physical_partitions:  # len(physical_partitions) == 0
+                empty_partition_structs.append(struct)
+        if empty_partition_structs:
+            header_msg = "Found {} partitions Not Exist or no partitions START with them !".format(len(empty_partition_structs))
+            logger.error(header_msg)
+            body_msg = ""
+            for struct in empty_partition_structs:
+                body_msg += "    - odps://{}/tables/{}/{}\n".format(struct.project, struct.table, struct.logical_partition)
+            logger.error(body_msg)
+            raise ValueError(header_msg + "\n" + body_msg)
+
+def get_odps_partition_modified_timestamp(is_odps_endpoint_reachable, access_id, access_key, project_name, table_name, partition_name, odps_endpoint):
+        if is_odps_endpoint_reachable:
+            try:
+                odps = ODPS(access_id=access_id,
+                        secret_access_key=access_key,
+                        project=project_name,
+                        endpoint=odps_endpoint)
+                table = odps.get_table(table_name)
+                partition = table.get_partition(partition_name.replace("/", ","))
+                if hasattr(partition, "last_data_modified_time") and partition.last_data_modified_time:
+                    last_modified_time = partition.last_data_modified_time
+                elif hasattr(partition, "last_modified_time") and partition.last_modified_time:
+                    last_modified_time = partition.last_modified_time
+                timestamp = str(int(time.mktime(last_modified_time.timetuple())))
+            except Exception as e:
+                logger.warning("error when get partition modified timestamp, the message is: {}".format(e))
+                # 如果 last_data_modified_time 取值异常，就用当前时间
+                timestamp = str(int(time.time()))
+        else:
+          timestamp = str(int(time.time()))
+          msg = "odps service: [{}] is not reachable, and going to use now time as partition last modified timestamp!".format(odps_endpoint)
+          logger.warning(msg)
+          varlogger.warning(msg)
+        return timestamp
 
 
 def test_prefixed_match_rule():
     t = ("LTA*****N8m", "QJD*****1Yw", "palgo_fpage", "generanking_eg_sample_mergeclk2k_opt_hh_v3")
     ak, sk, project_name, table_name = t
 
-    odps_endpoint = "xxx"
+    odps_endpoint = os.getenv("ODPS_ENDPOINT", "")
     odps_client = ODPS(access_id=ak,
                        secret_access_key=sk,
                        project=project_name,
@@ -379,13 +423,34 @@ def test_gen_partition_struct():
   ]
 }
     '''
+    # Partition table with multipartition-as-one
+    t = ("LTA*****9Yc", "k39*****hyL", "palgo_fpage", "generanking_eg_sample_mergeclk2k_growvideo_hh_v3__omega", "ds=20231012")
+    '''
+[2025-10-23 16:26:13,683] [ERROR] [partition_util.py:311] Found 3 partitions Not Exist or no partitions START with them !
+[2025-10-23 16:26:13,683] [ERROR] [partition_util.py:315]     - odps://palgo_fpage/tables/generanking_eg_sample_mergeclk2k_growvideo_hh_v3__omega/ds=20231010
+
+[2025-10-23 16:26:13,683] [ERROR] [partition_util.py:315]     - odps://palgo_fpage/tables/generanking_eg_sample_mergeclk2k_growvideo_hh_v3__omega/ds=20231010
+    - odps://palgo_fpage/tables/generanking_eg_sample_mergeclk2k_growvideo_hh_v3__omega/ds=20231011
+
+[2025-10-23 16:26:13,683] [ERROR] [partition_util.py:315]     - odps://palgo_fpage/tables/generanking_eg_sample_mergeclk2k_growvideo_hh_v3__omega/ds=20231010
+    - odps://palgo_fpage/tables/generanking_eg_sample_mergeclk2k_growvideo_hh_v3__omega/ds=20231011
+    - odps://palgo_fpage/tables/generanking_eg_sample_mergeclk2k_growvideo_hh_v3__omega/ds=20251013
+
+ValueError: Found 3 partitions Not Exist or no partitions START with them !
+    - odps://palgo_fpage/tables/generanking_eg_sample_mergeclk2k_growvideo_hh_v3__omega/ds=20231010
+    - odps://palgo_fpage/tables/generanking_eg_sample_mergeclk2k_growvideo_hh_v3__omega/ds=20231011
+    - odps://palgo_fpage/tables/generanking_eg_sample_mergeclk2k_growvideo_hh_v3__omega/ds=20251013
+    '''
+
     ak, sk, prj_name, tbl_name, partition_prefix = t
     os.environ["access_id"] = ak
     os.environ["access_key"] = sk
-    odps_endpoint = "xxx"
+    odps_endpoint = os.getenv("ODPS_ENDPOINT", "")
 
     proj_tbl_part = set()
     proj_tbl_part.add((prj_name, tbl_name, partition_prefix))
+    proj_tbl_part.add((prj_name, tbl_name, "ds=20231010"))
+    proj_tbl_part.add((prj_name, tbl_name, "ds=20231011"))
     res = PartitionMode.gen_partition_struct(proj_tbl_part, PartitionMode.PREFIX_MERGE, odps_endpoint)
     for r in res:
         print("Finally output: {}".format(r))

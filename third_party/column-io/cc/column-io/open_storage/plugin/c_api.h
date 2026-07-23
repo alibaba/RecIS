@@ -107,11 +107,20 @@ DECLARE_INTERFACE_OPEN_STORAGE(
     void* status);
 
 DECLARE_INTERFACE_OPEN_STORAGE(
+    void,
+    GetHaloAgentMetric,
+    const char* halo_endpoint,
+    int type,
+    int64_t* value);
+
+DECLARE_INTERFACE_OPEN_STORAGE(
     CAPI_ODPS_SDK_OdpsOpenStorageArrowReader*,
     CreateReader,
     const char* path_str,
     int max_batch_rows,
     const char* reader_name,
+    const char* const* cols, 
+    size_t n,
     void* status);
 
 DECLARE_INTERFACE_OPEN_STORAGE(

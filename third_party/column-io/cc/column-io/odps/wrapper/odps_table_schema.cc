@@ -45,7 +45,7 @@ Status OdpsTableSchema::Sync(OdpsTableFileSystem *fs,
   type_infos_.clear();
 
   for (const auto &path : paths) {
-    framework::ColumnReader *raw_reader = nullptr;
+    odps::AlgoReader *raw_reader = nullptr;
     auto s = fs->CreateFileReader(path, &raw_reader);
     if (!s.ok()) {
       LOG(ERROR) << "Create OdpsTableReader failed, path: " << path;

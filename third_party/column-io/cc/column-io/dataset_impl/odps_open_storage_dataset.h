@@ -22,7 +22,7 @@ public:
               const std::vector<std::string> &input_columns,
               const std::vector<std::string> &hash_features,
               const std::vector<std::string> &hash_types,
-              const std::vector<int32_t> &hash_buckets,
+              const std::vector<int64_t> &hash_buckets,
               const std::vector<std::string> &dense_columns,
               const std::vector<std::vector<float>> &dense_defaults,
               bool use_xrec);
@@ -35,7 +35,7 @@ public:
                      const std::vector<std::string> &input_columns,
                      const std::vector<std::string> &hash_features,
                      const std::vector<std::string> &hash_types,
-                     const std::vector<int32_t> &hash_buckets,
+                     const std::vector<int64_t> &hash_buckets,
                      const std::vector<std::string> &dense_columns,
                      const std::vector<std::vector<float>> &dense_defaults,
                      bool use_xrec);
@@ -47,25 +47,29 @@ public:
               const std::vector<std::string> &input_columns,
               const std::vector<std::string> &hash_features,
               const std::vector<std::string> &hash_types,
-              const std::vector<int32_t> &hash_buckets,
+              const std::vector<int64_t> &hash_buckets,
               const std::vector<std::string> &dense_columns,
               const std::vector<std::vector<float>> &dense_defaults,
               bool use_xrec);
 
-  static std::pair<
+  static std::tuple<
       std::vector<std::string>,
-      std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>>
+      std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>,
+	  std::string
+	  >
   ParseSchema(const std::vector<std::string> &paths,
               bool is_compressed,
               const std::unordered_set<std::string> &selected_columns,
               const std::vector<std::string> &hash_features,
               const std::vector<std::string> &hash_types,
-              const std::vector<int32_t> &hash_buckets,
+              const std::vector<int64_t> &hash_buckets,
               const std::vector<std::string> &dense_columns,
               const std::vector<std::vector<float>> &dense_defaults);
 
   static Status GetTableSize(const std::string &path, size_t *ret);
   static int64_t GetSessionExpireTimestamp(const std::string &session_id);
+  // is_compressed参数可以去掉
+  static std::unordered_map<std::string, std::string> GetOdpsTableFeatures(const char* str_path, bool is_compressed);
 };
 } // namespace dataset
 } // namespace column

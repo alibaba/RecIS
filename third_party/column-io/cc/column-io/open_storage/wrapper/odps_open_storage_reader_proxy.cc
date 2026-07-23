@@ -184,19 +184,38 @@ Status OdpsOpenStorageArrowReaderProxy::RefreshReadSessionBatch() {
   return st;
 }
 
+int64_t OdpsOpenStorageArrowReaderProxy::GetHaloAgentMetric(const char* halo_endpoint, int type) {
+  OdpsOpenStorageLib* lib;
+  auto st = OdpsOpenStorageLib::GetLib(lib);
+  if (!st.Ok()) {
+    return -1;
+  }
+  int64_t value = -1;
+  lib->GetHaloAgentMetric(halo_endpoint, type, reinterpret_cast<int64_t*>(&value));
+  return value;
+}
+
 Status OdpsOpenStorageArrowReaderProxy::CreateReader(const std::string& path_str,
                                                      const int max_batch_rows,
                                                      const std::string& reader_name,
+                                                     const std::vector<std::string> input_columns,
                                                      std::shared_ptr<OdpsOpenStorageArrowReaderProxy>& ret) {
   OdpsOpenStorageLib* lib;
   auto st = OdpsOpenStorageLib::GetLib(lib);
   if (!st.Ok()) {
     return st;
   }
+  std::vector<const char*> ccols;
+  ccols.reserve(input_columns.size());
+  for (const auto& s : input_columns) {
+      ccols.push_back(s.c_str()); 
+  }
   CAPI_ODPS_SDK_OdpsOpenStorageArrowReader* reader = lib->CreateReader(
       path_str.c_str(),
       max_batch_rows,
       reader_name.c_str(),
+      ccols.data(),
+      ccols.size(),
       reinterpret_cast<void*>(&st));
   if (!st.Ok()) {
     return st;

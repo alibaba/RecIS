@@ -36,7 +36,7 @@ LakeScanReader::~LakeScanReader() {
 }
 
 Status LakeScanReader::Init() {
-  _libHandle = dlopen(getenv("LAKERUNTIMEso"), RTLD_LAZY | RTLD_DEEPBIND );
+  _libHandle = dlopen(getenv("LAKERUNTIMEso"), RTLD_LAZY | RTLD_DEEPBIND | RTLD_LOCAL);
   if (!_libHandle) {
     return Status::IOError("lake so not found! so path: " + std::string(getenv("LAKERUNTIMEso")));
   }
@@ -134,7 +134,20 @@ Status LakeScanReader::SeekTimeStampRange(int64_t begin, int64_t end) {
 Status LakeScanReader::ReadBatch(std::shared_ptr<arrow::RecordBatch>* batch) {
   CHECK_FUNC_VALID(_funcReadBatch);
   char* error_message;
-  int code = _funcReadBatch(_readerPtr, batch, &error_message, -1);
+  ArrowArray Cbatch{};
+  ArrowSchema Cschema{};
+  int code = _funcReadBatch(_readerPtr, &Cbatch, &Cschema, &error_message, -1);
+  if(code!=Status::Code::kOk)
+  {
+    return Status(Status::Code(code),"ReadBatch error with error message: " + std::string(error_message));
+  }
+
+  auto result = arrow::ImportRecordBatch(&Cbatch, &Cschema);
+  if(!result.ok())
+  {
+    return Status(Status::Code::kError, "ImportRecordBatch error with arrow error: " + result.status().ToString());
+  }
+  *batch = result.MoveValueUnsafe();
   return Status(Status::Code(code));
 }
 

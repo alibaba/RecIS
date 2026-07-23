@@ -1,7 +1,10 @@
 .vscode/
 .idea/
+.coverage
+coverage.xml
 build/
 dist/
+log/
 .cache/
 column_io/**/*.so
 column_io/CURRENT_REVISION.json
@@ -9,3 +12,5 @@ column_io/CURRENT_REVISION.json
 *.excp
 *.pyc
 _pycache__/
+CLAUDE.md
+column_io_cpu/

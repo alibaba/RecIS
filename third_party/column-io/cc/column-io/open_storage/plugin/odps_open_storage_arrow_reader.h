@@ -6,6 +6,7 @@
 #include "column-io/open_storage/common-util/status.h"
 #include <unordered_map>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 namespace arrow {
@@ -65,6 +66,8 @@ class OdpsOpenStorageArrowReader {
     static Status CreateReader(const std::string& path_str,
                                const int max_batch_rows,
                                const std::string& reader_name,
+                               const char* const* cols, 
+                               size_t n,
                                std::shared_ptr<OdpsOpenStorageArrowReader>& ret);
     static Status GetTableSize(const std::string& path_str, uint64_t& table_size);
     static int64_t GetSessionExpireTimestamp(const std::string& session_id);
@@ -81,6 +84,7 @@ class OdpsOpenStorageArrowReader {
   
   private:
     class OdpsOpenStorageArrowReaderImpl;
+    static std::once_flag no_columns_log_once_flag_;  // 控制 "No columns" 日志打印
 
     std::shared_ptr<OdpsOpenStorageArrowReaderImpl> impl_;
 };

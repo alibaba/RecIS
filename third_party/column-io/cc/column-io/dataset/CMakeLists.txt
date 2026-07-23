@@ -7,6 +7,7 @@ set(DATASET_LIBRARY
     PRIVATE absl::log
     PRIVATE absl::log_globals
     ${ARROW_LIBRARY}
+    PRIVATE plugin_aoti_load
     )
 
 if (INTERNAL_VERSION)

@@ -1,8 +1,50 @@
 # -*- coding: utf-8 -*-
 import os,sys,time,datetime
 import threading
-import pykmonitor # TODO: reimport pykmonitor if need
-from column_io.dataset.job_info import get_work_id,get_job_info
+import subprocess
+from column_io.dataset.job_info import get_work_id,get_job_info,is_notebook
+
+# ========== 确保在第三方模块`kmonitor` import 前设好这些环境变量 ==========
+def _ensure_hippo_env():
+    if "HIPPO_APP" not in os.environ:
+        os.environ["HIPPO_APP"] = os.getenv("APP_ID", "null")
+    if "HIPPO_SERVICE_NAME" not in os.environ:
+        os.environ["HIPPO_SERVICE_NAME"] = os.getenv(
+            "CALCULATE_CLUSTER", "null"
+        ).upper()
+    if "HIPPO_ROLE" not in os.environ:
+        os.environ["HIPPO_ROLE"] = os.getenv("TASK_NAME", "worker")
+        print(
+            "[INFO] HIPPO_ROLE not set, use TASK_NAME:{} instead".format(
+                os.environ["HIPPO_ROLE"]
+            )
+        )
+    if "HIPPO_SLAVE_IP" in os.environ:
+        return
+    def _get_k8s_node_ip_internal():
+        # 1. if env "RequestedIP" exist and is ipv6, then use /etc/hostinfo-ipv6
+        if ":" in os.getenv("RequestedIP", "") and os.path.exists("/etc/hostinfo-ipv6"):
+            # read file content of /etc/hostinfo-ipv6,
+            with open("/etc/hostinfo-ipv6", "r") as f:
+                # file content is like: "alicloud-alpha-bj-a\n1.2.3.4"
+                for line in f:
+                    if line.count(":") > 0:
+                        return str(line.strip())  # line is ipv6
+            return "localhost"
+        # 2. if env "RequestedIP" not exist or not ipv6, then use /etc/hostinfo
+        if os.path.exists("/etc/hostinfo"):
+            with open("/etc/hostinfo", "r") as f:
+                for line in f:
+                    if line.count(".") == 3 and \
+                        all(0 <= int(num) < 256 for num in line.rstrip().split(".") ):
+                        return str(line.strip())  # line is ipv4
+            return "localhost"
+        # 3. use default env "KUBERNETES_NODE_IP" or "localhost"
+        return os.getenv("KUBERNETES_NODE_IP", "localhost")
+    os.environ["HIPPO_SLAVE_IP"] = _get_k8s_node_ip_internal()
+
+# ensure HIPPO_* env for `kmonitor` can recognize the container
+_ensure_hippo_env()
 
 class MetricStatus():
     # expected status
@@ -20,6 +62,11 @@ class MetricStatus():
     CODEC_ERROR = 3002 # e.g. utf-8 error
     FIELD_ERROR = 3003 # field missing, type-wrong or other relative error
     OUTDATE_ERROR = 3011  # context(session, token,,,) is expired
+
+    # not to use old session
+    PATITION_MODIDIFIED = 4001
+    FORCE_RECREATE_SESSION = 4002
+
 
     # un classified errors
     UNKNOWN_ERROR = 9999
@@ -49,30 +96,63 @@ class NebulaIOFatalError(Exception):
     def __str__(self):
         # return "NebulaIOFatalError: {}".format(self.msg)
         return self.msg
+    
+class VirtualMonitor():
+    # Why need me here? to silent thrift exception, when need not metric(e.g. notebook)
+    def __init__(self, *args, **kwargs):
+        self.is_alive_ = True
+    def is_alive(self):
+        return self.is_alive_
+    def close(self):
+        self.is_alive_ = False
+    def run(self):
+        pass
+    def report(self, metric_name, immutable_metrics_tags, value):
+        pass
+    def report_metric(self, metric_name, value, extra_tags):
+        pass
+    def register(self, name, metric_type, priority, statistics_type=None):
+        pass
+    def register_metric(self, type, name, tags):
+        pass
+
+class VirtualKmonitor():
+    class MetricTypes:
+        GAUGE_METRIC = None
+        ACC_METRIC = None
+        COUNTER_METRIC = None
+    class KMonitor(VirtualMonitor):
+        pass
+
+try:
+    from kmonitor import kmonitor
+except ImportError as e:
+    print("[WARN] import kmonitor error: {}. A mock monitor will be used".format(e), file=sys.stderr)
+    class kmonitor(VirtualKmonitor):
+        pass
 
 class MetricPoints():
     class Point():
-        def __init__(self, name, metric_type=pykmonitor.MetricType.GAUGE, priority=pykmonitor.PriorityType.MAJOR, statistics_type=None):
+        def __init__(self, name, metric_type=kmonitor.MetricTypes.GAUGE_METRIC, priority=None, statistics_type=None):
             self.name = name # type: str # point name 
-            self.metric_type = metric_type # type: pykmonitor.MetricType # the point static type 
-            self.priority = priority # type: pykmonitor.PriorityType # the point static period level
-            self.statistics_type = statistics_type # type: pykmonitor.StatisticsType # the point static statistics type
+            self.metric_type = metric_type # type: kmonitor.MetricTypes # the point static type 
 
     # TODO: v1/v2 prefix in future if need
     # GAUGE
     # E.g. xdl.metric.openstorage_session_refresh.latency_ipc_ms/xdl.metric.openstorage_session_cache.cache_qps
-    latency_get_ms = Point("latency_get_ms", metric_type=pykmonitor.MetricType.GAUGE, statistics_type=pykmonitor.StatisticsType.AVG)
-    latency_post_ms = Point("latency_post_ms", metric_type=pykmonitor.MetricType.GAUGE, statistics_type=pykmonitor.StatisticsType.AVG)
-    latency_ipc_ms = Point("latency_ipc_ms", metric_type=pykmonitor.MetricType.GAUGE, statistics_type=pykmonitor.StatisticsType.AVG)
+    latency_get_ms = Point("latency_get_ms", metric_type=kmonitor.MetricTypes.GAUGE_METRIC, statistics_type=None)
+    latency_post_ms = Point("latency_post_ms", metric_type=kmonitor.MetricTypes.GAUGE_METRIC, statistics_type=None)
+    latency_ipc_ms = Point("latency_ipc_ms", metric_type=kmonitor.MetricTypes.GAUGE_METRIC, statistics_type=None)
     
-    cache_qps = Point("cache_qps", metric_type=pykmonitor.MetricType.GAUGE, statistics_type=pykmonitor.StatisticsType.SUM)
-    create_qps = Point("create_qps", metric_type=pykmonitor.MetricType.GAUGE, statistics_type=pykmonitor.StatisticsType.SUM)
-    refresh_qps = Point("refresh_qps", metric_type=pykmonitor.MetricType.GAUGE, statistics_type=pykmonitor.StatisticsType.SUM)
+    cache_qps = Point("cache_qps", metric_type=kmonitor.MetricTypes.COUNTER_METRIC, statistics_type=None)
+    create_qps = Point("create_qps", metric_type=kmonitor.MetricTypes.COUNTER_METRIC, statistics_type=None)
+    refresh_qps = Point("refresh_qps", metric_type=kmonitor.MetricTypes.COUNTER_METRIC, statistics_type=None)
 
-    init_qps = Point("init_qps", metric_type=pykmonitor.MetricType.GAUGE, statistics_type=pykmonitor.StatisticsType.SUM)
+    init_qps = Point("init_qps", metric_type=kmonitor.MetricTypes.COUNTER_METRIC, statistics_type=None)
 
     # COUNTER
-    pass
+    read_byte = Point("read_byte", metric_type=kmonitor.MetricTypes.ACC_METRIC, statistics_type=None)
+
     # QPS
     pass
 
@@ -87,16 +167,15 @@ class MetricPoints():
             MetricPoints.create_qps,
             MetricPoints.refresh_qps,
             MetricPoints.init_qps,
+            MetricPoints.read_byte,
         ]
   
     @staticmethod
-    def regist_all_metric_points(kmonitor):
-        # type: (pykmonitor.KMonitor) -> None
+    def regist_all_metric_points(_kmonitor, prefix=""):
+        # type: (kmonitor.KMonitor, str) -> None # type: ignore
         for p in MetricPoints._get_points():
-            if p.statistics_type:
-                kmonitor.register(p.name, p.metric_type, p.priority, p.statistics_type)
-            else:
-                kmonitor.register(p.name, p.metric_type, p.priority)
+            real_name = "{}.{}".format(prefix, p.name)
+            _kmonitor.register_metric(p.metric_type, real_name, {})
             # logger.debug("successfully regist metric {}".format(name))
 
 
@@ -104,49 +183,37 @@ class KMonitorClient():
     def __init__(self, namespace, module, tenant, global_tag_map):
         # self._metric_namespace = namespace
         self._status_mutex = threading.Lock()
-        self._metric_module = module
+        self.namespace_prefix = "{}.{}".format(namespace, module)
         self._global_tag_map = global_tag_map #type: dict
         # self._tenant = tenant
-        host_ip = global_tag_map["host_ip"]
-        host_port = global_tag_map["host_port"]
-        host_ip = "[{}]".format(host_ip) if ":" in host_ip else host_ip
-        sink_address = "{}:{}".format(host_ip, host_port)
+
+        # host_ip = global_tag_map["host_ip"]
+        # host_port = global_tag_map["host_port"]
+        # host_ip = "[{}]".format(host_ip) if ":" in host_ip else host_ip
+        # sink_address = "{}:{}".format(host_ip, host_port)
+        if "host_ip" in self._global_tag_map:
+            del self._global_tag_map["host_ip"]
+        if "host_port" in self._global_tag_map:
+            del self._global_tag_map["host_port"]
+
         # print("[{}] [INFO] start init pykmonitor.KMonitorFactory, service_name:{}, sink_address:{}, global_map count:{}".format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S:%f"), namespace, sink_address, len(global_tag_map)), file=sys.stderr)
-        pykmonitor.KMonitorConfig.set_sink_address(sink_address) # done but need fix in pykmonitor.KMonitor.__init__
-        pykmonitor.KMonitorConfig.set_service_name(namespace)
-        self._kmonitor = pykmonitor.KMonitor(self._metric_module) #type: pykmonitor.KMonitor 
-        # self._kmonitor = KMonitorFactory.get_kmonitor(self._metric_module) #type: pykmonitor.KMonitor # cannot destroy in factory when close
-        MetricPoints.regist_all_metric_points(self._kmonitor)
+        self._kmonitor = None # type: kmonitor.KMonitor
+        if is_notebook():
+            self._kmonitor = VirtualMonitor()
+        else:
+            self._kmonitor = kmonitor.KMonitor(self._global_tag_map)
+            MetricPoints.regist_all_metric_points(self._kmonitor, self.namespace_prefix)
 
 
     def try_start(self):
-        if self._kmonitor and self._kmonitor.is_alive():
-            return
-        with self._status_mutex:
-            self._kmonitor = pykmonitor.KMonitor(self._metric_module) #type: pykmonitor.KMonitor 
-            MetricPoints.regist_all_metric_points(self._kmonitor)
+        pass
 
     def running(self):
-        with self._status_mutex:
-            return self._kmonitor and self._kmonitor.is_alive()
+        return True
 
     def try_close(self):
-        # print("[{}] [DEBUG] try closeing kmonitor metric for {}".format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S:%f"), self._metric_module))
         time.sleep(1.5) # wait for metric agent report
-        with self._status_mutex:
-            if self._kmonitor and self._kmonitor.is_alive():
-                self._kmonitor.close()
-                # print("[{}] [DEBUG] try closed kmonitor metric for {}".format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S:%f"), self._metric_module))
-        # print("[{}] [DEBUG] try close done kmonitor metric for {}".format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S:%f"), self._metric_module))
-
-    def _build_tags(self, tag_map):
-        if len(tag_map) == 0: # for faster
-            all_tag_map = self._global_tag_map
-        else:
-            all_tag_map = {}
-            all_tag_map.update(self._global_tag_map)
-            all_tag_map.update(tag_map)
-        return pykmonitor.ImmutableMetricTags(all_tag_map)
+        return
 
     """
     Args:
@@ -156,14 +223,9 @@ class KMonitorClient():
     """
     def report(self, point, metric_value, tag_map={}):
         # type: (MetricPoints.Point, float, dict) -> None
-        if not self._kmonitor.is_alive():
-            # print("[{}] [WARN] kmonitor is not running, skip report".format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S:%f")))
-            return
-        # if not re.match("^[a-zA-Z0-9\.\-_]+$", metric_name):
-        #   raise ValueError("metric_name {} contains char other than a-z A-Z 0-9 . - _".format(metric_name))
-        tags = self._build_tags(tag_map)
-        # print("[{}] [INFO] report kmonitor metric name:{}, value:{}, tag_map:{}, tags:{}".format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S:%f"), self._metric_module+"."+point.name, metric_value, tag_map, tags))
-        self._kmonitor.report(metric_name=point.name, immutable_metrics_tags=tags, value=metric_value, )
+        real_name = "{}.{}".format(self.namespace_prefix, point.name)
+        # print("[{}] [INFO] report kmonitor metric name:{}, value:{}, tag_map:{}".format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S:%f"), real_name, metric_value, tag_map))
+        self._kmonitor.report_metric(metric_name=real_name, value=metric_value, extra_tags=tag_map, )
 
 
 _k8s_node_ip = None
@@ -172,29 +234,7 @@ def get_k8s_node_ip():
     global _k8s_node_ip
     if _k8s_node_ip:
         return _k8s_node_ip
-    def get_k8s_node_ip_internal():
-        # 1. if env "RequestedIP" and is ipv6, then use /etc/hostinfo-ipv6
-        if os.environ.get("RequestedIP") and ":" in os.environ.get("RequestedIP") and os.path.exists("/etc/hostinfo-ipv6"):
-            # read file content of /etc/hostinfo-ipv6, multi-line like: "tre-3-a100-535-0035\n33.103.193.157"
-            with open("/etc/hostinfo-ipv6", "r") as f:
-                for line in f:
-                    if ":" in line:
-                        return str(line.strip()) # line is ipv6
-        # 2. if env "RequestedIP" not exist, or it is ipv6, then use /etc/hostinfo
-        if os.path.exists("/etc/hostinfo"):
-            with open("/etc/hostinfo", "r") as f:
-                for line in f:
-                    if line.count('.') == 3 and all(0<=int(num)<256 for num in line.rstrip().split('.')):
-                        return str(line.strip()) # line is ipv4
-        # 3. use env "KUBERNETES_NODE_IP"
-        if os.environ.get("KUBERNETES_NODE_IP"):
-            return os.environ.get("KUBERNETES_NODE_IP")
-        # 4. if all above not exist, then use "localhost"
-        return "localhost"
-    # IPV6策略尚有问题
-    # _k8s_node_ip = get_k8s_node_ip_internal()
-    _k8s_node_ip = os.environ.get("KUBERNETES_NODE_IP", "localhost")
-
+    _k8s_node_ip = os.getenv("HIPPO_SLAVE_IP", "localhost")
     # KMONITOR_SINK_ADDRESS tell c++ to get new style NODE_IP. C++ no need to imple again(also more complex)
     os.environ["KMONITOR_SINK_ADDRESS"] = _k8s_node_ip
     return _k8s_node_ip
@@ -209,7 +249,7 @@ class KMonitorClientFactory():
         "global_tag_map": {
             "io_type": __name__.split('.')[0], # e.g. paiio/column/common => paiio,
             "host_ip": get_k8s_node_ip(),
-            "host_port": 4141,
+            "host_port": str(4141),
             "task_id": str(job_info._task_id),
             "app_id": str(job_info._app_id),
             "user_id": str(job_info._user_id),
@@ -228,6 +268,27 @@ class KMonitorClientFactory():
     def __init__(self):
         self._client_map = {} # type: dict[str, KMonitorClient] # {module: KMonitorClient}
         self._mutex = threading.Lock()
+        self._launch_collector_daemon()
+
+    @staticmethod
+    def _launch_collector_daemon():
+        try:
+            import recis # recis framework provide collector daemon already
+            return
+        except Exception:
+            pass
+        collector_dir = os.path.dirname(os.path.abspath(__file__))
+        collector_path = os.path.join(collector_dir, "collector.py")
+        _ = subprocess.Popen(
+            f"python {collector_path}",
+            shell=True,
+            stdout=subprocess.DEVNULL,  # drop stdout
+            stderr=subprocess.DEVNULL,  # drop stderr
+            stdin=subprocess.DEVNULL,  # drop stdin
+            start_new_session=True,  # detach from self process
+        )
+        # logger.debug(f"launch collector daemon pid: {proc.pid}")
+
     def get(self, module):
         # type : (str) -> KMonitorClient
         if module in self._client_map:
@@ -246,10 +307,7 @@ class KMonitorClientFactory():
 
 metric_factory = KMonitorClientFactory()
 
-
-
-
-def test_metric_point(times = 5):
+def test_metric_point():
     metric_client = metric_factory.get("openstorage_session_cache")
     metric_client.try_start()
 
@@ -262,7 +320,12 @@ def test_metric_point(times = 5):
     metric_client.try_close()
     print("[{}] [INFO] metric_client close done".format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S:%f")))
 
-# Test me if need. I work fine
-# if __name__ == "__main__":
-#     test_metric_point()
+def test_metric(times = 5):
+    for i in range(times):
+        test_metric_point()
+        time.sleep(1)
 
+# Test me if need. I work fine
+if __name__ == "__main__":
+    test_metric()
+    time.sleep(11)

@@ -17,11 +17,10 @@ limitations under the License.
 #define EULER_COMMON_REFCOUNT_H_
 
 #include <assert.h>
-
 #include <atomic>
 #include <utility>
 
-#include "absl/log/log.h"
+// #include "absl/log/log.h"
 
 namespace column {
 

@@ -6,6 +6,8 @@
 #include <future>
 #include <cstdint>
 
+#include "storage_api/include/get_halo_metrics.hpp"
+
 #include "column-io/open_storage/plugin/odps_open_storage_session.h"
 #include "column-io/open_storage/common-util/logging.h"
 #include "column-io/open_storage/common-util/common_util.h"
@@ -26,6 +28,9 @@ OdpsOpenStorageSession::ConfigToSessionMap OdpsOpenStorageSession::config_to_ses
 OdpsOpenStorageSession::ConfigToFutureMap OdpsOpenStorageSession::config_to_futures_;
 std::mutex OdpsOpenStorageSession::config_to_open_storage_session_lock_;
 
+static std::unique_ptr<recis::monitor::Factory> monitor_factory_;
+static std::mutex monitor_factory_mutex_ = std::mutex();
+
 using xdl::paiio::third_party::common_util::StrSplit;
 using xdl::paiio::third_party::common_util::SimpleThreadPool;
 
@@ -42,9 +47,35 @@ const std::string& kNORMAL = "NORMAL";
 const int kConfigurationRetryTimes = 300;
 const int kSessionCreationLoopWaitSeconds = 10;
 const std::string& kEmptySessionId = "";
+const int kDefaultReaderCompressType = -1;
 
+int GetReaderCompressionType() {
+  const char* compression_type = getenv("OPEN_STORAGE_READER_COMPRESSION_TYPE");
+  if (compression_type == nullptr) {
+    return kDefaultReaderCompressType;
+  }
+  int res = atoi(compression_type);
+  if (res != 0 && res != 1 && res != 2) {
+    LOG(INFO) << "OPEN_STORAGE_READER_COMPRESSION_TYPE value: " << res
+                 << " is invalid, return default: " << kDefaultReaderCompressType;
+    res = kDefaultReaderCompressType;
+  }
+  return res;
+}
 } // anonymous namespace
 
+void OdpsOpenStorageSession::InitCompressionType() {
+  int env_type = GetReaderCompressionType();
+  if (env_type >= 0) {
+    compression_type_ = env_type;
+    LOG(INFO) << "env set compression_type_: " << compression_type_;
+  } else {
+    const auto& tunnel_endpoint = configuration_.GetTunnelEndpoint();
+    bool is_halo_endpoint = (tunnel_endpoint.find("ipc://") == 0);
+    compression_type_ = is_halo_endpoint ? 0 : 1; // 0 is UNCOMPRESSED, 1 is ZSTD
+    LOG(INFO) << "tunnel endpoint: " << tunnel_endpoint << ", " << "auto set compression_type_: " << compression_type_;
+  }
+}
 
 // required_data_columns: 表示columns的参数, 用于切列, 必须保证列按照表的顺序排序好, 目前可以考虑只为一种schema服务
 // 支持从头创建session, 也应该支持接受传入session, 后面优化目标是避免每个worker自建session
@@ -277,8 +308,8 @@ Status OdpsOpenStorageSession::GetOdpsOpenStorageSession(const std::string& proj
     }
     *session = config_to_session_[key].get();
     if (*session == nullptr) {
-      LOG(ERROR) << "[ERROR] GetOdpsOpenStorageSession " << common_msg << " unexceptedly nullptr !";
-      st.Assign(Status::kInternal, "GetOdpsOpenStorageSession " + common_msg + " session is unexceptedly nullptr !");
+      LOG(ERROR) << "[ERROR] GetOdpsOpenStorageSession " << common_msg << " unexpectedly nullptr !";
+      st.Assign(Status::kInternal, "GetOdpsOpenStorageSession " + common_msg + " session is unexpectedly nullptr !");
       return st;
     }
     //LOG(INFO) << "Successfully " << common_msg
@@ -290,6 +321,20 @@ Status OdpsOpenStorageSession::GetOdpsOpenStorageSession(const std::string& proj
 int64_t OdpsOpenStorageSession::GetSessionExpireTimestamp(const std::string& session_id) {
     std::lock_guard<std::mutex> lock(config_to_open_storage_session_lock_);
     for (const auto& [key, session_ptr] : config_to_session_) {
+        if (!session_ptr) {
+            LOG(WARNING) << "[GetSessionExpireTimestamp] Null session detected for key: "
+                         << "project='" << std::get<0>(key) << "', "
+                         << "table='"   << std::get<1>(key)  << "', "
+                         << "partition='" << std::get<2>(key) << "'";
+            continue;
+        }
+        if (!session_ptr->initialized_) {
+            LOG(WARNING) << "[GetSessionExpireTimestamp] Found uninitialized session for key: "
+                         << "project='" << std::get<0>(key) << "', "
+                         << "table='"   << std::get<1>(key)  << "', "
+                         << "partition='" << std::get<2>(key) << "'";
+            continue;
+        }
         if (session_ptr->session_id_ == session_id) {
             return (int64_t)session_ptr->expiration_time_;
         }
@@ -511,6 +556,13 @@ Status OdpsOpenStorageSession::RefreshReadSessionBatch() {
     // const auto& key = session.first;
     // const auto& tmp_session = session.second;
     if (tmp_session) {
+      if (!tmp_session->initialized_) {
+        LOG(WARNING) << "[RefreshReadSessionBatch] Found uninitialized session for  key: "
+                     << "project='" << std::get<0>(key) << "', "
+                     << "table='"   << std::get<1>(key)  << "', "
+                     << "partition='" << std::get<2>(key) << "'";
+        continue;
+      }
       LOG(INFO) << "session message: ("
                 << std::get<0>(key) << ", " << std::get<1>(key)
                 << ", " << std::get<2>(key) << ")";
@@ -529,13 +581,48 @@ Status OdpsOpenStorageSession::RefreshReadSessionBatch() {
         st = st_single;
       }
     } else {
-      LOG(INFO) << "session has no instance for: (" 
-            << std::get<0>(key) << ", " << std::get<1>(key) << ", " << std::get<2>(key) << ")" ;
+      LOG(WARNING) << "[RefreshReadSessionBatch] Null session detected for key: "
+                   << "project='" << std::get<0>(key) << "', "
+                   << "table='"   << std::get<1>(key)  << "', "
+                   << "partition='" << std::get<2>(key) << "'";
       st.Assign(Status::kRefreshFailed, "session_instance lost!");
     }
   }
 
   return st;
+}
+
+using apsara::odps::sdk::storage_api::GetHaloMetrics;
+int64_t OdpsOpenStorageSession::GetHaloAgentMetric(const char* halo_endpoint, int type){
+    static std::unordered_map<std::string, GetHaloMetrics> EndpointMap;
+    // EndpointMap 原先无锁, 靠 Python GIL 隐式串行化. 显式加 mutex 增强线程安全,
+    // 使多线程/多上下文调用此函数时不依赖外部锁保证正确性.
+    // 同时为切换 free-threaded Python (3.14t+) 后 GIL 不再存在的场景提供安全保障.
+    static std::mutex endpoint_map_mutex;
+
+    std::string endpoint = halo_endpoint;
+    GetHaloMetrics* metric_cli_ptr = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(endpoint_map_mutex);
+        auto it = EndpointMap.find(endpoint);
+        if (it == EndpointMap.end()) {
+            auto res = EndpointMap.emplace(endpoint, GetHaloMetrics(endpoint));
+            it = res.first;
+        }
+        metric_cli_ptr = &(it->second);
+    }
+    switch (type) {
+    case 1:{
+        uint64_t resp = metric_cli_ptr->GetReadBytes();
+        return static_cast<int64_t>(resp);
+    }
+    case 2:{
+        uint64_t resp = metric_cli_ptr->GetAndResetReadBytes();
+        return static_cast<int64_t>(resp);
+    }
+    default:
+        return -10;
+    }
 }
 
 Status OdpsOpenStorageSession::RefreshReadSession(const std::string& access_id,
@@ -700,6 +787,7 @@ long OdpsOpenStorageSession::GetTableSize() {
 }
 
 std::unordered_map<std::string, std::string> OdpsOpenStorageSession::GetSchema() {
+  auto st = ExtractSessionDef(&session_def_);
   return schema_;
 }
 
@@ -709,11 +797,11 @@ std::unordered_map<std::string, std::string> OdpsOpenStorageSession::GetSchema()
 std::shared_ptr<apsara::odps::sdk::storage_api::arrow_adapter::Reader>
 OdpsOpenStorageSession::CreateOpenStorageReader(long start, long end,
                                                 int max_batch_rows, int max_batch_raw_size,
-                                                int compression_type, int cache_size,
+                                                int cache_size,
                                                 bool data_columns_unordered,
-                                                const std::string& reader_name) {
-  openstorage::DeferUpdater updater(metric_reporter_, 
-        std::make_shared<openstorage::UpdateKey>(openstorage::MetricName::ReadRows), std::make_shared<openstorage::UpdateVal>(1));
+                                                const std::string& reader_name,
+                                                const std::vector<std::string>& input_columns) {
+  openstorage::DeferUpdater updater(metric_reporter_, openstorage::MetricName::ReadRows, 1);
   apsara::odps::sdk::storage_api::TableIdentifier table_identifier;
   table_identifier.project_ = project_;
   table_identifier.table_ = table_;
@@ -725,10 +813,13 @@ OdpsOpenStorageSession::CreateOpenStorageReader(long start, long end,
   if (max_batch_raw_size > 0) {
     req.max_batch_raw_size_ = max_batch_raw_size;
   }
-  req.compression_ = static_cast<apsara::odps::sdk::storage_api::Compression::type>(compression_type);
+
+  req.compression_ = static_cast<apsara::odps::sdk::storage_api::Compression::type>(compression_type_);
+
   req.row_index_ = start;
   req.row_count_ = end - start;
   req.data_columns_unordered_ = data_columns_unordered ? "true" : "false";
+  req.data_columns_ = input_columns;
   std::shared_ptr<apsara::odps::sdk::storage_api::arrow_adapter::ArrowClient> arrow_client;
   arrow_client.reset(GetArrowClient(configuration_));
 
@@ -903,12 +994,30 @@ Status OdpsOpenStorageSession::InitOpenStorageSession(const std::string& access_
     expiration_time_ = expiration_time;
     record_count_ = record_count;
     initialized_ = true;
-    metric_reporter_.reset(new openstorage::MetricReporter("openstorage_reader",
-                                                          {   {"session_id", session_id_},
-                                                              {"odps_project", project_},
-                                                              {"odps_table", table_},
-                                                              {"odps_partition", partition_spec_}
-                                                          } ));
+    InitCompressionType();
+    // metric_reporter_.reset(new openstorage::MetricReporter("openstorage_reader",
+    //                                                       {   {"session_id", session_id_},
+    //                                                           {"odps_project", project_},
+    //                                                           {"odps_table", table_},
+    //                                                           {"odps_partition", partition_spec_}
+    //                                                       } ));
+    {
+        std::lock_guard<std::mutex> lg(monitor_factory_mutex_);
+        if (monitor_factory_ == nullptr) {
+            monitor_factory_ = recis::monitor::Factory::MakeInstance("", std::chrono::seconds(10));
+        }
+    }
+    metric_reporter_ = std::make_pair<std::shared_ptr<recis::monitor::Client>, std::shared_ptr<recis::monitor::PointTag>>(
+        monitor_factory_->get_client("xdl.metrics.openstorage_reader"),
+        std::make_shared<recis::monitor::PointTag>(std::map<std::string, std::string>{
+            {"multiprocess_seq", std::to_string(openstorage::get_child_order())},
+            {"session_id", session_id_},
+            {"ds_project", project_},
+            {"ds_table", table_},
+            {"ds_name", "odps_openstorage"}
+            // {"odps_partition", partition_spec_}        
+        })
+    );
     return st;
   }
 
@@ -956,18 +1065,36 @@ Status OdpsOpenStorageSession::InitOpenStorageSession(const std::string& access_
     std::string sink_address_ip = getenv("KMONITOR_SINK_ADDRESS") ? getenv("KMONITOR_SINK_ADDRESS") : "localhost";
     // std::string sink_address_ip = getenv("KUBERNETES_NODE_IP") ? getenv("KUBERNETES_NODE_IP") : "localhost";
     std::string scheduler_queue = std::getenv("SCHEDULER_QUEUE") ? std::getenv("SCHEDULER_QUEUE") : "null";
-    openstorage::MetricReporter::UpdateImmediate("create_qps", 1,
-                                                {   {"session_id", "null"},
-                                                    {"app_id", app_id},
-                                                    {"host_ip", sink_address_ip},
-                                                    {"scheduler_queue", scheduler_queue},
-                                                    {"odps_project", project_},
-                                                    {"odps_table", table_},
-                                                    {"odps_partition", partition_spec_},
-                                                    {"code", std::to_string(openstorage::MetricStatus::REQUEST_ERROR)},
-                                                    {"status", "fail"}
-                                                },
-                                                "openstorage_session_create");
+    {
+        std::lock_guard<std::mutex> lg(monitor_factory_mutex_);
+        if (monitor_factory_ == nullptr) {
+            monitor_factory_ = recis::monitor::Factory::MakeInstance("", std::chrono::seconds(10));
+        }
+    }
+    auto client_ = monitor_factory_->get_client("xdl.metrics.openstorage_session_create");
+    auto pTag_ = std::make_shared<recis::monitor::PointTag>(std::map<std::string, std::string>{
+        {"multiprocess_seq", std::to_string(openstorage::get_child_order())},
+        {"session_id", "null"},
+        {"ds_project", project_},
+        {"ds_table", table_},
+        {"ds_name", "odps_openstorage"},
+        // {"odps_partition", partition_spec_},
+        {"code", std::to_string(openstorage::MetricStatus::REQUEST_ERROR)},
+        {"status", "fail"}
+    });
+    client_->report("create_qps", 1, pTag_, recis::monitor::PointType::kGauge);
+    // openstorage::MetricReporter::UpdateImmediate("create_qps", 1,
+    //                                             {   {"session_id", "null"},
+    //                                                 {"app_id", app_id},
+    //                                                 {"host_ip", sink_address_ip},
+    //                                                 {"scheduler_queue", scheduler_queue},
+    //                                                 {"odps_project", project_},
+    //                                                 {"odps_table", table_},
+    //                                                 {"odps_partition", partition_spec_},
+    //                                                 {"code", std::to_string(openstorage::MetricStatus::REQUEST_ERROR)},
+    //                                                 {"status", "fail"}
+    //                                             },
+    //                                             "openstorage_session_create");
     std::this_thread::sleep_for(std::chrono::seconds(10)); // 10=kmonitor::MetricLevel::NORMAL 聚合粒度,避免打点失败; 后续进程会退出
     return st;
   }
@@ -979,12 +1106,30 @@ Status OdpsOpenStorageSession::InitOpenStorageSession(const std::string& access_
     return st;
   }
   initialized_ = true;
-  metric_reporter_.reset(new openstorage::MetricReporter("openstorage_reader", 
-                                                        {   {"session_id", session_id_},
-                                                            {"odps_project", project_},
-                                                            {"odps_table", table_},
-                                                            {"odps_partition", partition_spec_}
-                                                        } ));
+  InitCompressionType();
+  // metric_reporter_.reset(new openstorage::MetricReporter("openstorage_reader", 
+  //                                                       {   {"session_id", session_id_},
+  //                                                           {"odps_project", project_},
+  //                                                           {"odps_table", table_},
+  //                                                           {"odps_partition", partition_spec_}
+  //                                                       } ));
+    {
+        std::lock_guard<std::mutex> lg(monitor_factory_mutex_);
+        if (monitor_factory_ == nullptr) {
+            monitor_factory_ = recis::monitor::Factory::MakeInstance("", std::chrono::seconds(10));
+        }
+    }
+  metric_reporter_ = std::make_pair<std::shared_ptr<recis::monitor::Client>, std::shared_ptr<recis::monitor::PointTag>>(
+    monitor_factory_->get_client("xdl.metrics.openstorage_reader"),
+    std::make_shared<recis::monitor::PointTag>(std::map<std::string, std::string>{
+        {"multiprocess_seq", std::to_string(openstorage::get_child_order())},
+        {"session_id", session_id_},
+        {"ds_project", project_},
+        {"ds_table", table_},
+        {"ds_name", "odps_openstorage"}
+        // {"ds_partition", partition_spec_}        
+    })
+  );
   LOG(INFO) << "Successfully initialized session, "
             << common_msg;
   return st;
@@ -1007,6 +1152,7 @@ OdpsOpenStorageSession::OdpsOpenStorageSession(
     mode_(mode), default_project_(default_project) {
 
   initialized_ = true;
+  InitCompressionType();
   LOG(INFO) << "Initialized session id: " << session_id_
             << " with project: "<< project_
             << " table: " << table_

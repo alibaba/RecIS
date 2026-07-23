@@ -10,7 +10,7 @@ namespace dataset {
 
 static const int64_t kint64max = ((int64_t)0x7FFFFFFFFFFFFFFFll);
 
-int64_t StringToHash(const char *data, size_t n, const std::string hash_type, int32_t hash_bucket)
+int64_t StringToHash(const char *data, size_t n, const std::string hash_type, int64_t hash_bucket)
 {
   // init hash func
   uint64_t (*hash_func)(const char *, size_t);
@@ -21,20 +21,16 @@ int64_t StringToHash(const char *data, size_t n, const std::string hash_type, in
   }
   uint64_t hash_value = hash_func(data, n);
   int64_t out_value;
-
   if (hash_type == "ev_farm" && hash_bucket > 0) {
-    // Compatibility Logic: To restore EV in TF to Non-EV in Torch
     out_value = (hash_value & kint64max) % hash_bucket;
-  } else if (hash_bucket == 0) {
-    // TF/Torch EV mode
+  } else if (hash_type == "ev_farm" && hash_bucket == 0) {
     out_value = hash_value & kint64max;
   } else if (hash_bucket > 0) {
-    // TF/Torch Non-EV mode
     out_value = hash_value % hash_bucket;
   } else {
-    // Default path
     out_value = hash_value;
   }
+
   return out_value;
 }
 

@@ -1,4 +1,6 @@
 set(CMAKE_CXX_STANDARD 17)
+message(STATUS "Use C++11ABI=${_GLIBCXX_USE_CXX11_ABI} in open_storage module")
+add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=${_GLIBCXX_USE_CXX11_ABI})
 add_subdirectory(common-util)
 add_subdirectory(plugin)
 add_subdirectory(wrapper)

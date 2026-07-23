@@ -1,21 +1,5 @@
 #include "column-io/dataset_impl/local_orc_dataset.h"
-#include "absl/status/status.h"
-#include "absl/status/statusor.h"
-#include "absl/strings/match.h"
-#include "absl/strings/str_cat.h"
-#include "arrow/buffer.h"
-#include "arrow/io/api.h"
-#include <arrow/adapters/orc/adapter.h>
-#include "arrow/record_batch.h"
-#include "arrow/type.h"
-#include "arrow/type_fwd.h"
-#include "column-io/dataset/formater.h"
-#include "column-io/dataset/vec_tensor_converter.h"
-#include "column-io/dataset_impl/schema_parser.h"
-#include "column-io/framework/error_code.h"
-#include "column-io/framework/status.h"
-#include "column-io/framework/tensor.h"
-#include "column-io/framework/types.h"
+#include <random>
 #include <cstddef>
 #include <cstring>
 #include <dirent.h>
@@ -25,86 +9,28 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <set>
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/match.h"
+#include "arrow/record_batch.h"
+#include "arrow/type.h"
+#include "arrow/type_fwd.h"
+
+#include "column-io/dataset/formater.h"
+#include "column-io/dataset/vec_tensor_converter.h"
+#include "column-io/dataset_impl/schema_parser.h"
+#include "column-io/framework/error_code.h"
+#include "column-io/framework/status.h"
+#include "column-io/framework/tensor.h"
+#include "column-io/framework/types.h"
+#include "column-io/arrow_reader/abstract_reader.h"
+#include "column-io/arrow_reader/local_orc_reader.h"
+
 namespace column {
 namespace dataset {
 namespace {
-class LocalFileReader {
-public:
-  static Status OpenFile(const std::string file_path,
-                         const std::vector<std::string> &selected_columns,
-                         std::unique_ptr<LocalFileReader> *out) {
-    (*out).reset(new LocalFileReader(file_path, selected_columns));
-    return (*out)->Init();
-  }
 
-  Status ReadRecordBatch(std::shared_ptr<arrow::RecordBatch> *out) {
-    auto st = reader_->ReadNext(out);
-    if (!st.ok()) {
-      return Status::Internal(st.message());
-    } else if (!(*out)) {
-      return Status::OutOfRange();
-    }
-    return Status::OK();
-  }
-
-  Status Seek(int64_t index) {
-    while (index != index_) {
-      std::shared_ptr<arrow::RecordBatch> rb;
-      auto st = ReadRecordBatch(&rb);
-      if (!st.ok()) {
-        return st;
-      }
-      index_++;
-    }
-    return Status::OK();
-  }
-
-  int64_t Tell() { return index_; }
-
-private:
-  LocalFileReader(const std::string file_path,
-                  const std::vector<std::string> &selected_columns)
-      : file_path_(file_path),
-        selected_columns_(selected_columns),
-        index_(0) {
-  }
-
-  Status Init() {
-    auto file = arrow::io::ReadableFile::Open(file_path_);
-    if (!file.ok()) {
-      return Status::Internal(file.status().message());
-    }
-    arrow::MemoryPool* pool = arrow::default_memory_pool();
-    auto orc_reader = arrow::adapters::orc::ORCFileReader::Open(file.ValueOrDie(), pool);
-    if (!orc_reader.ok()) {
-      return Status::Internal(orc_reader.status().message());
-    }
-    orc_reader_ = std::move(orc_reader).ValueOrDie();
-    InitSchema();
-    auto reader = orc_reader_->GetRecordBatchReader(1024, selected_columns_);
-    if (!reader.ok()) {
-      return Status::Internal(reader.status().message());
-    }
-    reader_ = std::move(reader).ValueOrDie();
-    return Status::OK();
-  }
-
-  Status InitSchema() {
-    auto schema = orc_reader_->ReadSchema();
-     if (!schema.ok()) {
-      return Status::Internal(schema.status().message());
-    }
-    schema_ = schema.ValueOrDie();
-    return Status::OK();
-  }
-
-  std::string file_path_;
-  std::vector<std::string> selected_columns_;
-  std::shared_ptr<arrow::adapters::orc::ORCFileReader> orc_reader_;
-  std::shared_ptr<arrow::RecordBatchReader> reader_;
-  std::shared_ptr<arrow::Schema> schema_;
-  int64_t index_;
-};
 
 const std::string kDatasetName = "LocalOrcDataset";
 class Dataset : public DatasetBase {
@@ -115,7 +41,7 @@ public:
           const std::vector<std::string> &input_columns,
           const std::vector<std::string> &hash_features,
           std::vector<std::string> hash_types,
-          std::vector<int32_t> hash_buckets,
+          std::vector<int64_t> hash_buckets,
           const std::vector<std::string> &dense_columns,
           const std::vector<Tensor> &dense_defaults)
       : DatasetBase(name), paths_(paths), is_compressed_(is_compressed),
@@ -147,11 +73,12 @@ private:
       }
       while (true) {
         if (!reader_) {
-          RETURN_IF_ERROR(
-              LocalFileReader::OpenFile(dataset()->paths_[index_], dataset()->selected_columns_, &reader_));
+          RETURN_IF_ERROR(column::BatchReader::LocalOrcReaderImpl::Create(
+                              dataset()->paths_[index_], dataset()->input_columns_, &reader_));
         }
         std::shared_ptr<arrow::RecordBatch> rb;
-        auto st = reader_->ReadRecordBatch(&rb);
+        auto st = reader_->ReadBatch(&rb);
+        //TODO: add byte, latency if need in local mode
         if (st.code() == ErrorCode::OUT_OF_RANGE) {
           if (index_ == dataset()->paths_.size() - 1) {
             *end_of_sequence = true;
@@ -187,8 +114,8 @@ private:
       int64_t file_cur;
       RETURN_IF_ERROR(reader->ReadInt(fullname("file_cur"), file_cur));
       index_ = index;
-      RETURN_IF_ERROR(
-          LocalFileReader::OpenFile(dataset()->paths_[index_], dataset()->selected_columns_, &reader_));
+      RETURN_IF_ERROR(column::BatchReader::LocalOrcReaderImpl::Create(
+                          dataset()->paths_[index_], dataset()->input_columns_, &reader_));
       RETURN_IF_ERROR(reader_->Seek(file_cur));
       return Status::OK();
     }
@@ -213,7 +140,8 @@ private:
       }
       return Status::OK();
     }
-    std::unique_ptr<LocalFileReader> reader_;
+    // std::unique_ptr<LocalOrcReader> reader_;
+    std::unique_ptr<column::BatchReader::AbstractReader> reader_;
     std::unique_ptr<ColumnDataFormater> formater_;
     std::mutex mu_;
     int64 index_;
@@ -225,22 +153,70 @@ private:
   const std::vector<std::string> input_columns_;
   const std::vector<std::string> hash_features_;
   const std::vector<std::string> hash_types_;
-  const std::vector<int32_t> hash_buckets_;
+  const std::vector<int64_t> hash_buckets_;
   const std::vector<std::string> dense_columns_;
   const std::vector<Tensor> dense_defaults_;
 };
 const std::string kIndicator = "_indicator";
+Status GetInputColumnsFromOrcSchema(
+    const std::string &path,
+    const std::unordered_set<std::string> &selected_columns,
+    const std::vector<std::string> &dense_features, bool is_compressed,
+    std::vector<std::string> *input_columns_from_schema) {
+  std::unique_ptr<column::BatchReader::AbstractReader> tmp_reader;
+  RETURN_IF_ERROR(column::BatchReader::LocalOrcReaderImpl::Create(path, *input_columns_from_schema, &tmp_reader));
+  std::unordered_set<std::string> useful_names;
+  for (auto &feature : selected_columns) {
+    useful_names.insert(feature);
+  }
+  for (auto &feature : dense_features) {
+    useful_names.insert(feature);
+  }
+  if (is_compressed) {
+    useful_names.insert(kIndicator);
+  }
+  std::shared_ptr<arrow::Schema> schema;
+  RETURN_IF_ERROR(tmp_reader->ReadSchema(&schema));
+  std::set<std::string> column_names;
+  for (int i = 0; i < schema->num_fields(); ++i) {
+    column_names.insert(schema->field(i)->name());
+  }
+  for (auto &column_name : column_names) {
+    if (is_compressed) {
+      size_t pos = column_name.find_last_of("_");
+      if (pos == std::string::npos) {
+        LOG(INFO) << "compressed column name has no indicator suffix, skip: "
+                  << column_name;
+        continue;
+      }
+      std::string alias = column_name.substr(0, pos);
+      if (useful_names.count(alias) == 0) {
+        LOG(INFO) << "compressed column not use, skip: " << column_name;
+        continue;
+      }
+    } else {
+      if (useful_names.count(column_name) == 0) {
+        LOG(INFO) << "column not use, skip: " << column_name;
+        continue;
+      }
+    }
+    input_columns_from_schema->push_back(column_name);
+  }
+  return Status::OK();
+}
 
-Status ReadRecordBatch(const std::string &path,
+Status ReadBatch(const std::string &path,
                        const std::unordered_set<std::string> &selected_columns,
                        const std::vector<std::string> &dense_features,
                        bool is_compressed,
                        std::shared_ptr<arrow::RecordBatch> *data) {
   // init reader
-  std::vector<std::string> columns(selected_columns.begin(), selected_columns.end());
-  std::unique_ptr<LocalFileReader> reader;
-  RETURN_IF_ERROR(LocalFileReader::OpenFile(path, columns, &reader));
-  auto st = reader->ReadRecordBatch(data);
+  std::vector<std::string> input_columns_from_schema;//有后缀的列column
+  GetInputColumnsFromOrcSchema(path, selected_columns, dense_features,
+                                is_compressed, &input_columns_from_schema);
+  std::unique_ptr<column::BatchReader::AbstractReader> reader;
+  RETURN_IF_ERROR(column::BatchReader::LocalOrcReaderImpl::Create(path, input_columns_from_schema, &reader));
+  auto st = reader->ReadBatch(data);
   CHECK(st.ok()) << "Read batch failed at path [" << path << "]";
   LOG(INFO) << "read data, schema: " << (*(data))->schema()->ToString().c_str();
   return Status::OK();
@@ -253,7 +229,7 @@ absl::StatusOr<std::shared_ptr<DatasetBase>> LocalOrcDataset::MakeDataset(
     const std::vector<std::string> &input_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults) {
   return std::shared_ptr<DatasetBase>(
@@ -268,7 +244,7 @@ std::shared_ptr<DatasetBuilder> LocalOrcDataset::MakeBuilder(
     const std::vector<std::string> &input_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults) {
   return DatasetBuilder::Make(
@@ -280,18 +256,20 @@ std::shared_ptr<DatasetBuilder> LocalOrcDataset::MakeBuilder(
       });
 }
 
-std::pair<
+std::tuple<
     std::vector<std::string>,
-    std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>>
+    std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>,
+	std::string
+	>
 LocalOrcDataset::ParseSchema(
     const std::vector<std::string> &paths, bool is_compressed,
     const std::unordered_set<std::string> &selected_columns,
     const std::vector<std::string> &hash_features,
     const std::vector<std::string> &hash_types,
-    const std::vector<int32_t> &hash_buckets,
+    const std::vector<int64_t> &hash_buckets,
     const std::vector<std::string> &dense_columns,
     const std::vector<std::vector<float>> &dense_defaults) {
-  auto parser = SchemaParser::Make(ReadRecordBatch);
+  auto parser = SchemaParser::Make(ReadBatch);
   return parser->ParseSchema(paths, is_compressed, selected_columns,
                              hash_features, hash_types, hash_buckets, dense_columns,
                              detail::VecsToTensor(dense_defaults));

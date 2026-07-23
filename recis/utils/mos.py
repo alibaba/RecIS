@@ -3,20 +3,30 @@ import re
 import time
 from typing import Optional
 
-from openlm_hub import add_or_update_ckpt_metrics
+try:
+    from openlm_hub import add_or_update_ckpt_metrics
+except ImportError:
+    add_or_update_ckpt_metrics = None
 
 from recis.framework.metrics import get_mos_metrics
 from recis.utils.logger import Logger
 
 
 if not os.environ.get("BUILD_DOCUMENT", None) == "1":
-    from openlm_hub.openlm_api import (
-        add_or_sync_mos_ckpt,
-        delete_ckpt,
-        get_mos_ckpt_info,
-        get_or_create_mos_version,
-    )
-    from openlm_hub.utils.storage import get_ckpt_access_path
+    try:
+        from openlm_hub.openlm_api import (
+            add_or_sync_mos_ckpt,
+            delete_ckpt,
+            get_mos_ckpt_info,
+            get_or_create_mos_version,
+        )
+        from openlm_hub.utils.storage import get_ckpt_access_path
+    except ImportError:
+        add_or_sync_mos_ckpt = None
+        delete_ckpt = None
+        get_mos_ckpt_info = None
+        get_or_create_mos_version = None
+        get_ckpt_access_path = None
 
 logger = Logger(__name__)
 

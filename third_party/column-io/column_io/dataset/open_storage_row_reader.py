@@ -181,6 +181,21 @@ def odps_table_path_parse_impl(odps_table_path: str):
             is_partition_set = True
     else:
         ret[kTableNameTag] = odps_table_path[old_pos:new_pos]
+    
+    # 兼容tunnel传参格式
+    parts = [p.strip() for p in ret[kTableNameTag].split(".")]  # 过滤空片段（如 ".."）
+    n = len(parts)
+
+    if n == 1:
+        ret[kTableNameTag] = parts[0]
+    elif n == 2:
+        ret[kProjectNameTag] = parts[0] if parts[0] else ret[kProjectNameTag]
+        ret[kTableNameTag] = parts[1] if parts[1] else ret[kTableNameTag]
+    elif n==3:
+        ret[kProjectNameTag] = parts[0] if parts[0] else ret[kProjectNameTag]
+        ret[kTableNameTag] = parts[2] if parts[2] else ret[kTableNameTag]
+    else:
+        raise ValueError("Invalid table path {}".format(odps_table_path))
 
     # extract partitions
     new_pos += 1
@@ -273,7 +288,7 @@ class OpenStorageConf(object):
         if not self.account_key:
              raise ValueError("access_key is None.")
         self.account_type = os.getenv('ACCOUNT_TYPE', 'aliyun')
-        self.odps_endpoint = os.getenv('ODPS_ENDPOINT', "xxx")
+        self.odps_endpoint = os.getenv('ODPS_ENDPOINT', "")
         if not self.odps_endpoint:
             raise ValueError("odps_endpoint is None.")
 

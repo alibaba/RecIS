@@ -24,7 +24,7 @@ public:
               const std::vector<std::string> &input_columns,
               const std::vector<std::string> &hash_features,
               const std::vector<std::string> &hash_types,
-              const std::vector<int32_t> &hash_buckets,
+              const std::vector<int64_t> &hash_buckets,
               const std::vector<std::string> &dense_features,
               const std::vector<Tensor> &dense_defaults,
               bool is_compressed,
@@ -37,7 +37,7 @@ public:
                      const std::vector<std::string> &input_columns,
                      const std::vector<std::string> &hash_features,
                      const std::vector<std::string> &hash_types,
-                     const std::vector<int32_t> &hash_buckets,
+                     const std::vector<int64_t> &hash_buckets,
                      const std::vector<std::string> &dense_features,
                      const std::vector<std::vector<float>> &dense_defaults,
                      bool is_compressed, int64_t batch_size, bool use_prefetch,
@@ -48,7 +48,7 @@ public:
               const std::vector<std::string> &input_columns,
               const std::vector<std::string> &hash_features,
               const std::vector<std::string> &hash_types,
-              const std::vector<int32_t> &hash_buckets,
+              const std::vector<int64_t> &hash_buckets,
               const std::vector<std::string> &dense_features,
               const std::vector<std::vector<float>> &dense_defaults,
               bool is_compressed,
@@ -57,15 +57,17 @@ public:
               int64_t prefetch_thread_num,
               int64_t prefetch_buffer_size);
 
-  static std::pair<
+  static std::tuple<
       std::vector<std::string>,
-      std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>>
+      std::vector<std::map<std::string, std::vector<std::vector<std::string>>>>,
+	  std::string
+	  >
   ParseSchema(const std::string &paths,
               bool is_compressed,
               const std::unordered_set<std::string> &selected_columns,
               const std::vector<std::string> &hash_features,
               const std::vector<std::string> &hash_types,
-              const std::vector<int32_t> &hash_buckets,
+              const std::vector<int64_t> &hash_buckets,
               const std::vector<std::string> &dense_columns,
               const std::vector<std::vector<float>> &dense_defaults);
 
@@ -76,7 +78,7 @@ public:
                     const std::vector<std::string> &selected_columns,
                     const std::vector<std::string> &hash_features,
                     const std::vector<std::string> &hash_types,
-                    const std::vector<int32_t> &hash_buckets,
+                    const std::vector<int64_t> &hash_buckets,
                     const std::vector<std::string> &dense_columns,
                     const std::vector<std::vector<float>> &dense_defaults);
 };

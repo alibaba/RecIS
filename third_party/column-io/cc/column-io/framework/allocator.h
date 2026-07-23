@@ -35,7 +35,7 @@ public:
 
 Allocator* GetAllocator(bool pin);
 
-Allocator* GetCudaAllocator(cudaStream_t stream, int device_id);
+Allocator* CreateCudaAllocator(cudaStream_t stream, int device_id);
 
 } // namespace column
 

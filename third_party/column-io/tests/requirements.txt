@@ -1,0 +1,9 @@
+pytest
+pytest-cov
+coverage
+diff-cover
+psutil
+numpy
+pycryptodome
+requests<3,>=2.27.0     #some image takes old version requests
+pyodps

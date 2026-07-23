@@ -18,14 +18,14 @@
 
 #include "absl/log/check.h"
 #include "absl/log/globals.h"
-#include "absl/log/log.h"
+// #include "absl/log/log.h"
 #include "arrow/record_batch.h"
 #include "column-io/framework/tensor.h"
 #include "column-io/framework/tensor_shape.h"
 #include "column-io/framework/types.h"
 namespace column {
 namespace {
-template <DataType T> std::string Tensor2Str(Tensor &tensor) {
+template <DataType T> std::string Tensor2Str(const Tensor &tensor) {
   if (!tensor.Initialized()) {
     return "";
   }
@@ -151,7 +151,7 @@ void Tensor::InitWithType(DataType type) {
   }
   }
 }
-std::string Tensor::DebugString() {
+std::string Tensor::DebugString() const {
   switch (Type()) {
   case DataType::kString:
     return Tensor2Str<DataType::kString>(*this);

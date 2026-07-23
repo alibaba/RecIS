@@ -9,7 +9,7 @@ from Crypto.PublicKey import RSA
 from column_io.dataset.log_util import logger, varlogger, LOG_DIR
 
 PRIVATE_KEY = os.getenv("NEBULA_ENCODE_ACCESS_PRIVATE_KEY")
-PUBLIC_KEY = ""
+PUBLIC_KEY = "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlHZk1BMEdDU3FHU0liM0RRRUJBUVVBQTRHTkFEQ0JpUUtCZ1FDM3FoV09WNGc2cS9hVmUyZFE3RzUrd1A2cgpMUlhqYTQ1STVqdkxFTmQxSkNhWmFDdldqbzZ6cVRkbmtreUVXWGFEMnRBNE4vZmhYNW9rTyt0SE5oZU0yVjdvCkJtMmxUaWVVTTVtV2VQTDMwd1N0Z25mQjJrRVgvTExudXdENFdlZGtwU0c0NjZKOFRPNmNUbWxCc1Y2anp2aGQKSzhTWEpVeE1STEtvVFI0aHVRSURBUUFCCi0tLS0tRU5EIFBVQkxJQyBLRVktLS0tLQ=="
 
 def decode(data, private_key=PRIVATE_KEY, binary_code='utf-8'):
     if data is None or str(data) == '':

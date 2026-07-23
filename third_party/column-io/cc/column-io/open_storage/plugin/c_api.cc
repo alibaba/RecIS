@@ -159,18 +159,30 @@ DECLARE_INTERFACE_OPEN_STORAGE(
 }
 
 DECLARE_INTERFACE_OPEN_STORAGE(
+    void,
+    GetHaloAgentMetric,
+    const char* halo_endpoint,
+    int type,
+    int64_t* value) {
+  *value = OdpsOpenStorageSession::GetHaloAgentMetric(halo_endpoint, type);
+}
+
+DECLARE_INTERFACE_OPEN_STORAGE(
     CAPI_ODPS_SDK_OdpsOpenStorageArrowReader*,
     CreateReader,
     const char* path_str,
     int max_batch_rows,
     const char* reader_name,
+    const char* const* cols, 
+    size_t n,
     void* status) {
+  // TODO: fix this small memory leak
   CAPI_ODPS_SDK_OdpsOpenStorageArrowReader* reader = new CAPI_ODPS_SDK_OdpsOpenStorageArrowReader;
   reader->reader_ = new std::shared_ptr<OdpsOpenStorageArrowReader>();
   Status* status_ = reinterpret_cast<Status*>(status);
   *status_ =  OdpsOpenStorageArrowReader::CreateReader(
                 path_str, max_batch_rows, reader_name,
-                *(reader->reader_));
+                cols, n, *(reader->reader_));
   return reader;
 }
 

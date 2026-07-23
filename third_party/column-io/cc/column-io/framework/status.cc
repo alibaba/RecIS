@@ -14,7 +14,6 @@ limitations under the License.
 ==============================================================================*/
 
 #include "column-io/framework/status.h"
-#include "absl/strings/string_view.h"
 
 #include <string>
 #include <vector>
@@ -23,7 +22,7 @@ namespace column {
 
 Status::Status() : code_(ErrorCode::OK) {}
 
-Status::Status(ErrorCode code, const absl::string_view &message)
+Status::Status(ErrorCode code, const std::string_view &message)
     : code_(code), message_(message.data(), message.size()) {}
 
 std::string Status::DebugString() const {

@@ -1,12 +1,13 @@
 #ifndef COLUMN_OPEN_STORAGE_WRAPPER_H
 #define COLUMN_OPEN_STORAGE_WRAPPER_H
-
+#pragma once
 #include <sstream>
 #include <sys/time.h>
 #include "arrow/type.h"
 #include "rapidjson/document.h"
 #include "rapidjson/writer.h"
 #include "rapidjson/stringbuffer.h"
+
 #include "column-io/open_storage/wrapper/odps_open_storage_arrow_reader.h"
 
 namespace column
@@ -31,6 +32,8 @@ enum FsType {
   kFsTypeOdpsTunnel = 2,
   kFsTypeLakeStream = 3,
   kFsTypeOdpsOpenStorage = 4,
+  kFsTypeLakeBatch = 5,
+  kFsTypeLakeMultiCFStream = 6,
 };
 
 namespace tensorflow 
@@ -157,6 +160,11 @@ int RefreshReadSessionBatch() {
   } else {
 	return 1;
   } 
+}
+
+int64_t GetHaloAgentMetric(const char* halo_endpoint, int type) {
+  int64_t ret = OdpsOpenStorageArrowReader::GetHaloAgentMetric(halo_endpoint, type);
+  return ret;
 }
 
 const char* GetOdpsOpenStorageTableFeatures(const char* str_path, bool is_compressed) {

@@ -20,7 +20,6 @@ limitations under the License.
 #include <sstream>
 #include <string>
 
-#include "absl/strings/string_view.h"
 #include "column-io/framework/error_code.h"
 #include "column-io/framework/macros.h"
 
@@ -40,7 +39,7 @@ class Status {
 public:
   Status();
 
-  Status(ErrorCode code, const absl::string_view &msg);
+  Status(ErrorCode code, const std::string_view &msg);
 
   static Status OK() { return Status(); }
 

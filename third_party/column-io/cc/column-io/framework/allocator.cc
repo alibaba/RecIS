@@ -2,27 +2,33 @@
 #include <unordered_map>
 #include <queue>
 
+#ifndef CPU_ONLY
 #ifdef USE_ROCM
 #include <hipcub/util_allocator.hpp>
 #else
 #include <cub/util_allocator.cuh>
 #endif
+#endif // CPU_ONLY
 
 #include "absl/log/check.h"
 #include "column-io/framework/gpu_runtime.h"
 #include "column-io/framework/allocator.h"
 #include "column-io/framework/cuda_utils.h"
 
+#ifndef CPU_ONLY
 #define CUDA_CHECK(EXPR)                                       \
   do {                                                         \
     const cudaError_t __err = EXPR;                            \
     CHECK_EQ(__err, cudaSuccess) << cudaGetErrorString(__err); \
   } while (0)
+#endif
 
 namespace column {
 
+#ifndef CPU_ONLY
 #ifdef USE_ROCM
 namespace cub = hipcub;
+#endif
 #endif
 
 namespace {
@@ -214,6 +220,7 @@ private:
   alignas(64) std::vector<FreeBlockList<B>> free_list_ = std::vector<FreeBlockList<B>>(64);
 };
 
+#ifndef CPU_ONLY
 class CUDACachingHostAllocatorImpl
     : public CachingHostAllocatorImpl<HostBlock> {
 public:
@@ -238,6 +245,18 @@ private:
 
   unsigned int flag_;
 };
+#else
+class MallocCachingHostAllocatorImpl
+    : public CachingHostAllocatorImpl<HostBlock> {
+private:
+  void allocate_host_memory(size_t size, void** ptr) override {
+    *ptr = malloc(size);
+  }
+  void free_block(HostBlock* block) override {
+    ::free(block->ptr_);
+  }
+};
+#endif // CPU_ONLY
 }  // namespace
 
 class MallocAllocator : public column::Allocator {
@@ -251,6 +270,7 @@ public:
   }
 };
 
+#ifndef CPU_ONLY
 class PinnedMemoryAllocator : public Allocator {
 public:
   std::pair<void*, void*> Allocate(size_t size) override {
@@ -262,6 +282,19 @@ public:
 private:
   CUDACachingHostAllocatorImpl impl_;
 };
+#else
+class PinnedMemoryAllocator : public Allocator {
+public:
+  std::pair<void*, void*> Allocate(size_t size) override {
+    return impl_.allocate(size);
+  }
+  void Deallocate(void* ctx) override {
+    impl_.free(ctx);
+  }
+private:
+  MallocCachingHostAllocatorImpl impl_;
+};
+#endif // CPU_ONLY
 
 Allocator* GetAllocator(bool pin) {
   if (pin) {
@@ -273,32 +306,34 @@ Allocator* GetAllocator(bool pin) {
   }
 }
 
+#ifndef CPU_ONLY
 class CudaAllocator : public Allocator {
  public:
-  CudaAllocator(cudaStream_t stream, int device_id): a_((unsigned int)8, (unsigned int)3), stream_(stream), device_id_(device_id) {}
+  CudaAllocator(
+      cub::CachingDeviceAllocator& a,
+      cudaStream_t stream,
+      int device_id): a_(a), stream_(stream), device_id_(device_id) {}
   std::pair<void*, void*> Allocate(size_t size) override {
     void* ret;
     GPU_CK(a_.DeviceAllocate(device_id_, &ret, size, stream));
     return {ret, ret};
-  } 
+  }
   void Deallocate(void* ctx) override {
     GPU_CK(a_.DeviceFree(device_id_, ctx));
   }
  private:
-  cub::CachingDeviceAllocator a_;
+  cub::CachingDeviceAllocator& a_;
   cudaStream_t stream_;
   int device_id_;
 };
 
-Allocator* GetCudaAllocator(cudaStream_t stream, int device_id) {
-  static std::unordered_map<cudaStream_t, std::unique_ptr<CudaAllocator>> allocators;
-  static std::mutex mu;
-  std::lock_guard<std::mutex> l(mu);
-  auto it = allocators.find(stream);
-  if (it != allocators.end()) {
-    return it->second.get();
-  } else {
-    return (allocators[stream] = std::make_unique<CudaAllocator>(stream, device_id)).get();
-  }
+Allocator* CreateCudaAllocator(cudaStream_t stream, int device_id) {
+  static cub::CachingDeviceAllocator a((unsigned int)8, (unsigned int)3);
+  return new CudaAllocator(a, stream, device_id);
 }
+#else
+Allocator* CreateCudaAllocator(cudaStream_t, int) {
+  return GetAllocator(false);
+}
+#endif // CPU_ONLY
 }  // namespace column

@@ -31,6 +31,7 @@ namespace tf
 
 using apsara::odps::algo::commonio::Status;
 using xdl::paiio::third_party::common_util::StrSplit;
+using xdl::paiio::third_party::common_util::strip;
 //using namespace apsara::odps::sdk::storage_api;
 //using namespace apsara::odps::sdk::storage_api::arrow_adapter;
 namespace {
@@ -42,7 +43,6 @@ const char* kStartTag="start";
 const char* kEndTag="end";
 const int kDefaultReaderRetryTimes = 5;
 const int kDefaultReaderRetryWaitSeconds = 60;
-const int kDefaultReaderCompressType = 0;
 
 int GetReaderRetryTimes() {
   const char* reader_retry_times = getenv("OPEN_STORAGE_READER_RETRY_TIMES");
@@ -59,19 +59,6 @@ int GetReaderRetryWaitSeconds() {
   return atoi(reader_wait_seconds);
 }
 
-int GetReaderCompressionType() {
-  const char* compression_type = getenv("OPEN_STORAGE_READER_COMPRESSION_TYPE");
-  if (compression_type == nullptr) {
-    return kDefaultReaderCompressType;
-  }
-  int res = atoi(compression_type);
-  if (res != 0 && res != 1 && res != 2) {
-    LOG(WARNING) << "OPEN_STORAGE_READER_COMPRESSION_TYPE value: " << res
-                 << " is invalid, return default: " << kDefaultReaderCompressType;
-    res = kDefaultReaderCompressType;
-  }
-  return res;
-}
 int GetReaderMaxBatchRows() {
   const char* max_batch_rows = getenv("OPEN_STORAGE_READER_MAX_BATCH_ROWS");
   if (max_batch_rows == nullptr) {
@@ -79,7 +66,7 @@ int GetReaderMaxBatchRows() {
   }
   int res = atoi(max_batch_rows);
   if (res <= 0) {
-    LOG(WARNING) << "OPEN_STORAGE_READER_MAX_BATCH_ROWS value <=0 is invalid and useless.";
+    LOG(INFO) << "OPEN_STORAGE_READER_MAX_BATCH_ROWS value <=0 is invalid and useless.";
     res = -1;
   }
   return res;
@@ -91,7 +78,7 @@ int GetReaderMaxBatchRawSize() {
   }
   int res = atoi(max_batch_raw_size);
   if (res <= 0) {
-    LOG(WARNING) << "OPEN_STORAGE_READER_MAX_BATCH_RAW_SIZE value <=0 is invalid and useless.";
+    LOG(INFO) << "OPEN_STORAGE_READER_MAX_BATCH_RAW_SIZE value <=0 is invalid and useless.";
     res = -1;
   }
   return res;
@@ -105,6 +92,39 @@ bool GetReaderDataColumnsUnordered() {
     return true;
   }
   return false;
+}
+
+// 解析 tunnel 传参格式的表名
+void ParseTunnelTableFormat(std::unordered_map<std::string, std::string>& ret,
+                            const std::string& config) {
+    // 兼容tunnel传参格式
+    std::vector<std::string> parts;
+    for (const std::string& s : StrSplit(ret[kTableNameTag], ".", false)) {
+        parts.emplace_back(strip(s));  // 你的 strip(const std::string&)：去掉首尾空白
+    }
+
+    if (parts.size() == 1) {
+        ret[kTableNameTag] = parts[0];
+    }
+    else if (parts.size() == 2) {
+        if (!parts[0].empty()) {
+            ret[kProjectNameTag] = parts[0];
+        }
+        if (!parts[1].empty()) {
+            ret[kTableNameTag]  = parts[1];
+        }
+    }
+    else if (parts.size() == 3) {
+        if (!parts[0].empty()) {
+            ret[kProjectNameTag] = parts[0];
+        }
+        if (!parts[2].empty()) {
+            ret[kTableNameTag]  = parts[2];
+        }
+    }
+    else {
+        throw std::invalid_argument("Invalid table path " + config);
+    }
 }
 
 void ParseConfig(const std::string& config, std::unordered_map<std::string, std::string>& ret) {
@@ -134,6 +154,9 @@ void ParseConfig(const std::string& config, std::unordered_map<std::string, std:
       ret[kTableNameTag] = config.substr(old_pos, config.size() - old_pos);
       ret[KPartitionSpecTag] = "";
       is_partition_set = true;
+                  
+      // 兼容tunnel传参格式
+      ParseTunnelTableFormat(ret, config);
       return;
     } else {  // for none-partition table with ?start=xx&end=xx
       auto s = config.substr(old_pos, tmp_pos);
@@ -144,6 +167,9 @@ void ParseConfig(const std::string& config, std::unordered_map<std::string, std:
   } else {
     ret[kTableNameTag] = config.substr(old_pos, new_pos - old_pos);
   }
+
+  // 兼容tunnel传参格式
+  ParseTunnelTableFormat(ret, config);
 
   //extract partitions
   new_pos += 1;
@@ -185,7 +211,7 @@ class OdpsOpenStorageArrowReader::OdpsOpenStorageArrowReaderImpl {
       reader_.reset();
     }
 
-    Status InitReader(const std::unordered_map<std::string, std::string>& config) {
+    Status InitReader(const std::unordered_map<std::string, std::string>& config, const std::vector<std::string>& input_columns) {
       config_ = config;
       start_ = 0;
       auto st = Status();
@@ -233,11 +259,13 @@ class OdpsOpenStorageArrowReader::OdpsOpenStorageArrowReaderImpl {
           st.Assign(Status::kInternal, "start should be less than end");
           return st;
         }
+        //WARN: input_columns会导致url过长. 请在极端场景下关闭选列功能(取消该入参), 并等待odps侧修复问题
         reader_ = open_storage_session_->CreateOpenStorageReader(
                                            start_, end_, local_max_batch_rows_,
                                            env_max_batch_raw_size_,
-                                           env_compression_type_, cache_size,
-                                           env_data_columns_unordered_, name_);
+                                           cache_size,
+                                           env_data_columns_unordered_, name_,
+                                           input_columns);
         metric_reporter_ = open_storage_session_->metric_reporter_; // reader_ will re-use session's metric
       } catch (apsara::odps::sdk::OdpsException& e){
         st.Assign(Status::kInternal, e.what());
@@ -250,8 +278,7 @@ class OdpsOpenStorageArrowReader::OdpsOpenStorageArrowReaderImpl {
 
     Status ReadBatchImpl(std::shared_ptr<arrow::RecordBatch>& batch) {
       auto st = Status();
-      openstorage::DeferUpdater updater(metric_reporter_, 
-            std::make_shared<openstorage::UpdateKey>(openstorage::MetricName::ReadBatchImpl), std::make_shared<openstorage::UpdateVal>(1));
+      openstorage::DeferUpdater updater(metric_reporter_, openstorage::MetricName::ReadBatchImpl, 1);
       try {
         // auto start_time = std::chrono::steady_clock::now();
         bool success = reader_->Read(batch);
@@ -273,30 +300,46 @@ class OdpsOpenStorageArrowReader::OdpsOpenStorageArrowReaderImpl {
                        << "].";
             st.Assign(Status::kInternal, "Status: [" + std::to_string(reader_st)
                                        + "], RequestID: [" + requestId + "].");
-            updater.Key()->kmetric_tag = &openstorage::MetricTag::Fail;
+            updater.SetSuccess(false);
           } else {
             //LOG(INFO) << "[INFO] Normal OutOfRange: " << path_str_;  // FIXME: log to another file
             st.Assign(Status::kOutOfRange, "OutOfRange");
           }
           // metric_reporter_->UpdateReadBatch(1, elapsed_time.count(), reader_st == apsara::odps::sdk::storage_api::Status::OK); // TODO: 实现mutableMetric风格汇报接口, 汇报st详细值
           return st;
+        } else {
+          if (batch->num_rows() == 0) {
+            if (cur_ == end_) {
+              LOG(WARNING) << "Got empty batch at end of range.";
+              st.Assign(Status::kOutOfRange, "OutOfRange");
+            } else {
+              LOG(ERROR) << "Read rows invalid, cur_: [" << std::to_string(cur_)
+                         << "] not equal end_: [" << std::to_string(end_)
+                         << "] but got empty batch!";
+              st.Assign(Status::kInternal, "Read rows invalid, cur_: [" + std::to_string(cur_)
+                                         + "] not equal end_: [" + std::to_string(end_)
+                                         + "] but got empty batch!");
+              updater.SetSuccess(false);
+            }
+            return st;
+          }
         }
         // metric_reporter_->UpdateReadBatch(1, elapsed_time.count(), success);// NOTE: 此为供openstorage panel统计用点(成功/失败均汇报). 与基于tf的(DataIOMetrics)metric_->Update(data->num_rows()不混淆
         if (!record_batch_schema_) {
           record_batch_schema_ = batch->schema();
         }
-        cur_ += batch->num_rows();
+        cur_ += batch->num_rows(); 
       } catch (apsara::odps::sdk::OdpsException& e) {
         st.Assign(Status::kInternal, e.what());
-        updater.Key()->kmetric_tag = &openstorage::MetricTag::Fail;
+        // updater.Key()->kmetric_tag = &openstorage::MetricTag::Fail;
+        updater.SetSuccess(false);
         return st;
       }
       return st;
     }
 
     Status ReadBatch(std::shared_ptr<arrow::RecordBatch>& batch) {
-      openstorage::DeferUpdater updater(metric_reporter_, 
-            std::make_shared<openstorage::UpdateKey>(openstorage::MetricName::ReadBatch), std::make_shared<openstorage::UpdateVal>(1));
+      openstorage::DeferUpdater updater(metric_reporter_, openstorage::MetricName::ReadBatch, 1);
       Status st;
       int retry_idx= -1, retry_wait_sec= GetReaderRetryWaitSeconds();
       do{
@@ -308,7 +351,7 @@ class OdpsOpenStorageArrowReader::OdpsOpenStorageArrowReaderImpl {
         st = Seek(cur_);
         if (!st.Ok()) {
             LOG(ERROR) << "[ERROR] ReadBatch read failed and seek failed. ";
-            updater.Key()->kmetric_tag = &openstorage::MetricTag::Fail;
+            updater.SetSuccess(false);
             return st;
         }
         // sleep and retry another time, maybe need log something.
@@ -317,15 +360,21 @@ class OdpsOpenStorageArrowReader::OdpsOpenStorageArrowReaderImpl {
         std::this_thread::sleep_for(std::chrono::seconds(retry_wait_sec * retry_idx));
       } while( retry_idx < GetReaderRetryTimes() );
       LOG(ERROR) << "[ERROR] ReadBatch read failed, stop retrying, total times: " << GetReaderRetryTimes();
-      updater.Key()->kmetric_tag = &openstorage::MetricTag::Fail;
+      updater.SetSuccess(false);
       return st;
     }
 
     Status Seek(size_t pos) {
       auto st = Status();
       if ( pos < start_||pos > end_) {
-        LOG(ERROR) << "seek out of range";
-        st.Assign(Status::kInternal, "seek out of range");
+        LOG(ERROR) << "Seek pos: [" << pos
+                   << "] invalid,  < start: [" << start_
+                   << "] or > end_: [" << end_
+                   << "].";
+        st.Assign(Status::kInternal, "Seek pos: [" + std::to_string(pos)
+                                   + "] invalid,  < start: [" + std::to_string(start_)
+                                   + "] or > end_: [" + std::to_string(end_) + "].");
+        return st;
       }
       st = Close();
       if (!st.Ok()) {
@@ -335,7 +384,7 @@ class OdpsOpenStorageArrowReader::OdpsOpenStorageArrowReaderImpl {
         reader_ = open_storage_session_->CreateOpenStorageReader(
                                            pos, end_, local_max_batch_rows_,
                                            env_max_batch_raw_size_,
-                                           env_compression_type_, cache_size,
+                                           cache_size,
                                            env_data_columns_unordered_, name_);
         // metric_reporter_ = open_storage_session_->metric_reporter_; // Seek needn't refresh metric reporter!
       } catch (apsara::odps::sdk::OdpsException& e) {
@@ -371,28 +420,25 @@ class OdpsOpenStorageArrowReader::OdpsOpenStorageArrowReaderImpl {
 
   private:
     static void initParamFromEnv() {
-      env_compression_type_ = GetReaderCompressionType();
       env_data_columns_unordered_ = GetReaderDataColumnsUnordered();
       env_max_batch_rows_ = GetReaderMaxBatchRows();
       env_max_batch_raw_size_ = (GetReaderMaxBatchRawSize() > 0) ? GetReaderMaxBatchRawSize() : 0;
-      LOG(WARNING) << "OdpsOpenStorageArrowReaderImpl env_compression_type_: " << env_compression_type_;
-      LOG(WARNING) << "OdpsOpenStorageArrowReaderImpl env_data_columns_unordered_: " << env_data_columns_unordered_;
+      LOG(INFO) << "OdpsOpenStorageArrowReaderImpl env_data_columns_unordered_: " << env_data_columns_unordered_;
       if (env_max_batch_rows_ > 0) {
-        LOG(WARNING) << "OdpsOpenStorageArrowReaderImpl OPEN_STORAGE_READER_MAX_BATCH_ROWS valid, "
+        LOG(INFO) << "OdpsOpenStorageArrowReaderImpl OPEN_STORAGE_READER_MAX_BATCH_ROWS valid, "
                      << "env_max_batch_rows_: " << env_max_batch_rows_;
       }
       if (env_max_batch_raw_size_ > 0) {
-        LOG(WARNING) << "OdpsOpenStorageArrowReaderImpl OPEN_STORAGE_READER_MAX_BATCH_RAW_SIZE valid, "
+        LOG(INFO) << "OdpsOpenStorageArrowReaderImpl OPEN_STORAGE_READER_MAX_BATCH_RAW_SIZE valid, "
                      << "env_max_batch_raw_size_: " << env_max_batch_raw_size_;
       }
     }
-    static int env_compression_type_;   // 0: UNCOMPRESSED; 1: ZSTD; 2: LZ4_FRAME
     static int env_max_batch_rows_;     // row num, 优先于`local_max_batch_rows_`(若OPEN_STORAGE_READER_MAX_BATCH_ROWS被定义)
     static int env_max_batch_raw_size_; // bytes, 0 means useless
     static bool env_data_columns_unordered_;    // false: 要求data列保持scheme同样的顺序; true: 允许两者顺序不一致
     static std::once_flag param_init_flag_;
 
-    //apsara::odps::sdk::IArrowRecordReaderPtr reader_;
+    //apsara::odps::sdk::IArrowReaderPtr reader_;
     //std::vector<std::string> cols_;
     OdpsOpenStorageSession* open_storage_session_ = nullptr;
     bool initialized_ = false;
@@ -403,17 +449,17 @@ class OdpsOpenStorageArrowReader::OdpsOpenStorageArrowReaderImpl {
     std::unordered_map<std::string, std::string> config_;
     std::shared_ptr<arrow::Schema> record_batch_schema_;
     std::shared_ptr<apsara::odps::sdk::storage_api::arrow_adapter::Reader> reader_;
-    std::shared_ptr<openstorage::MetricReporter> metric_reporter_;
+    std::pair<std::shared_ptr<recis::monitor::Client>, std::shared_ptr<recis::monitor::PointTag>> metric_reporter_;
     size_t start_;
     size_t end_;
     size_t cur_;
 };
 
-int OdpsOpenStorageArrowReader::OdpsOpenStorageArrowReaderImpl::env_compression_type_ = 0;
 int OdpsOpenStorageArrowReader::OdpsOpenStorageArrowReaderImpl::env_max_batch_rows_ = 1024;
 int OdpsOpenStorageArrowReader::OdpsOpenStorageArrowReaderImpl::env_max_batch_raw_size_ = 0;
 bool OdpsOpenStorageArrowReader::OdpsOpenStorageArrowReaderImpl::env_data_columns_unordered_ = true;
 std::once_flag OdpsOpenStorageArrowReader::OdpsOpenStorageArrowReaderImpl::param_init_flag_;
+std::once_flag OdpsOpenStorageArrowReader::no_columns_log_once_flag_;
 
 Status OdpsOpenStorageArrowReader::InitOdpsOpenStorageSessions(const std::string& access_id,
                                                              const std::string& access_key,
@@ -468,13 +514,49 @@ Status OdpsOpenStorageArrowReader::RegisterOdpsOpenStorageSession(
 Status OdpsOpenStorageArrowReader::CreateReader(const std::string& path_str,
                                                 const int max_batch_rows,
                                                 const std::string& reader_name,
+                                                const char* const* cols, 
+                                                size_t n,
                                                 std::shared_ptr<OdpsOpenStorageArrowReader>& ret) {
   std::unordered_map<std::string, std::string> config_dict;
   ParseConfig(path_str, config_dict);
   auto reader = new OdpsOpenStorageArrowReader();
   reader->impl_.reset(new OdpsOpenStorageArrowReaderImpl(reader_name, path_str, max_batch_rows));
   ret.reset(reader);
-  return reader->impl_->InitReader(config_dict);
+  // 将C风格的字符串指针数组再转换回std::vector<std::string>
+  std::vector<std::string> input_columns;
+  input_columns.reserve(n);
+  if (cols) {
+    for (size_t consumed = 0; consumed < n; ++consumed) {
+      try {
+        const char* p = cols[consumed];
+        if (!p) {
+          LOG(ERROR) << "Get " << consumed << " column wrong! Get Null! Need to check the reason!";
+          auto st = Status();
+          st.Assign(Status::kInvalidArgument, "Get " + std::to_string(consumed) + " column wrong! Get Null! Need to check the reason!");
+          return st;
+        }
+        input_columns.emplace_back(p); // 拷贝，拥有自己的存储
+      }
+      catch (const std::exception& e) {
+        LOG(ERROR) << "Get " << consumed << " column wrong! The error information is: " << e.what();
+        auto st = Status();
+        st.Assign(Status::kInvalidArgument, "Get " + std::to_string(consumed) + " column wrong! The error information is: " + std::string(e.what()));
+        return st;
+      }
+      catch (...) {
+        LOG(ERROR) << "Get " << consumed << " column wrong! And is not std error!";
+        auto st = Status();
+        st.Assign(Status::kInvalidArgument, "Get " + std::to_string(consumed) + " column wrong! And is not std error!");
+        return st;
+      }
+    }
+  }
+  else {
+    std::call_once(no_columns_log_once_flag_, []{
+      LOG(INFO) << "No columns selected by user, Will read all columns.";
+    });
+  }
+  return reader->impl_->InitReader(config_dict, input_columns);
 }
 
 Status OdpsOpenStorageArrowReader::GetTableSize(const std::string& path_str,

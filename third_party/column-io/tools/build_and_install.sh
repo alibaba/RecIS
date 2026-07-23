@@ -1,3 +1,5 @@
+#!/bin/bash
+
 INTERNAL_VERSION=${1}
 if [ -z ${INTERNAL_VERSION} ];then
     INTERNAL_VERSION=1

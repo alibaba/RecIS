@@ -7,6 +7,7 @@
 #include <sstream>
 #include <cstring>
 #include <unistd.h>
+#include <stdint.h>
 
 namespace xdl
 {

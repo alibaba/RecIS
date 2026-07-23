@@ -8,6 +8,13 @@
 
 namespace column {
 
+#ifdef CPU_ONLY
+#define GPU_CK(call) (void)0
+
+inline int GetCudaDeviceId() { return 0; }
+
+#else
+
 #define GPU_CK(call) {                              \
     cudaError_t err = call;                         \
     if (err != cudaSuccess) {                       \
@@ -24,9 +31,15 @@ inline int GetCudaDeviceId() {
   if (local_rank) {
     return std::stoi(local_rank);
   }
-  LOG(WARNING) << "LOCAL_RANK not set, defaulting to 0";
+  // LOG(WARNING) << "LOCAL_RANK not set, defaulting to 0"; //TODO: use a internal log library. not absl log
+  auto time_chrono = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+  char time_buf[64];
+  std::strftime(time_buf, sizeof(time_buf), "%Y%m%d %H%M%S", std::localtime(&time_chrono));
+  printf("[%s] [WARN] [%s:%d] LOCAL_RANK not set, defaulting to 0\n",
+      time_buf, __FILE__, __LINE__);
   return 0;
 }
+#endif // CPU_ONLY
 
 #define CUDA_LOOP(i, size) \
   for (size_t i = threadIdx.x + blockIdx.x * blockDim.x; i < size; i += gridDim.x * blockDim.x)

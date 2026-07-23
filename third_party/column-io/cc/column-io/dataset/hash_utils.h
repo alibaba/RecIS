@@ -6,7 +6,7 @@
 namespace column {
 namespace dataset {
 
-int64_t StringToHash(const char *data, size_t n, const std::string hash_type, int32_t hash_bucket);
+int64_t StringToHash(const char *data, size_t n, const std::string hash_type, int64_t hash_bucket);
 
 uint64_t MurMurHash64(const char* data, size_t n, uint64_t seed);
 
