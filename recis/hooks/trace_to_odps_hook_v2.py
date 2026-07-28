@@ -48,6 +48,13 @@ if not os.environ.get("BUILD_DOCUMENT", None) == "1":
 logger = Logger(__name__)
 
 
+def _to_storage_partition_spec(partition: Optional[str]) -> Optional[str]:
+    """Convert Tunnel-style multi-level partitions to Storage API format."""
+    if not partition or "," not in partition:
+        return partition
+    return "/".join(part.strip() for part in partition.split(","))
+
+
 def retry(retry_count: int, interval: float, retryable=Exception):
     """带 warning log 的重试装饰器。
 
@@ -158,6 +165,7 @@ class TraceWriterV2(threading.Thread):
 
         self.table_name = config["table_name"]
         self.partition = config.get("partition", None)
+        self._storage_partition = _to_storage_partition_spec(self.partition)
         self.fields = fields
         self.types = types
         self.write_id = writer_id
@@ -294,7 +302,7 @@ class TraceWriterV2(threading.Thread):
             return
         try:
             write_req = TableBatchWriteRequest()
-            write_req.partition_spec = self.partition
+            write_req.partition_spec = self._storage_partition
             write_req.overwrite = False
             write_resp = self._client.create_write_session(write_req)
 
@@ -332,7 +340,7 @@ class TraceWriterV2(threading.Thread):
     def _open_write_session(self):
         """创建 storage write session,准备接收数据。"""
         write_req = TableBatchWriteRequest()
-        write_req.partition_spec = self.partition
+        write_req.partition_spec = self._storage_partition
         write_req.overwrite = False
         write_resp = self._client.create_write_session(write_req)
         self._session_id = write_resp.session_id

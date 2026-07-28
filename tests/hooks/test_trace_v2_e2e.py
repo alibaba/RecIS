@@ -1,9 +1,10 @@
-"""TraceToOdpsHookV2 端到端集成测试任务。
+"""TraceToOdpsHookV2 多级分区端到端集成测试任务。
 
-模拟真实 eval 场景:多 step 写入 → 自动 flush/commit → 验证 ODPS 数据完整性。
+模拟真实 eval 场景:用户传入逗号分隔的两级分区 → Storage API 使用斜杠分隔
+的分区格式建 session → 多 step 写入 → 自动 flush/commit。
 
 测的内容:
-  1. 基础写入:1D + 2D 混合,验证行数
+  1. 基础写入:1D + 2D 混合
   2. 大批量写入:自适应阈值触发多次 flush
   3. 时间保底 flush:手动等待 _MAX_FLUSH_INTERVAL 触发
   4. 多 writer 并发:4 线程写入
@@ -12,10 +13,10 @@
 环境前提:
   - REST endpoint 不通,只有 tunnel endpoint 通
   - 测试表需预先建好(schema 见下方 FULL_FIELDS / FULL_TYPES)
+  - 测试表必须使用两级分区:PARTITIONED BY (ds STRING, model_name STRING)
 
 跑:
   python tests/hooks/test_trace_v2_e2e.py
-  python tests/hooks/test_trace_v2_e2e.py --skip-cleanup  # 跑完不删分区,方便人工查看
 """
 
 import argparse
@@ -31,13 +32,17 @@ from recis.hooks import TraceToOdpsHook, add_to_trace
 DEFAULT_ACCESS_ID = "***"
 DEFAULT_ACCESS_KEY = "***"
 DEFAULT_PROJECT = "nebula_ai_dev"
-DEFAULT_ENDPOINT = "http://127.0.0.1:1/api"
-# DEFAULT_ENDPOINT = "http://service.odps.aliyun-inc.com/api"
+# DEFAULT_ENDPOINT = "http://127.0.0.1:1/api"
+DEFAULT_ENDPOINT = "http://service.odps.aliyun-inc.com/api"
 DEFAULT_TUNNEL_ENDPOINT = "http://dt.ea118.odps.aliyun-inc.com"
+DEFAULT_TUNNEL_ENDPOINT = None
 # DEFAULT_TUNNEL_ENDPOINT = "http://dt.xcluster.odps.aliyun-inc.com"
 DEFAULT_QUOTA_NAME = ""
 
-TEST_TABLE = os.environ.get("ODPS_TEST_TABLE", "gwj_trace_v2_e2e_test")
+TEST_TABLE = os.environ.get(
+    "ODPS_TEST_TABLE", "gwj_trace_v2_e2e_multi_partition_test"
+)
+PARTITION_COLUMNS = ("ds", "model_name")
 
 # 单一大表 schema — 所有浮点列统一用 double,避免 float 精度丢失
 FULL_FIELDS = [
@@ -92,7 +97,8 @@ def add_with_padding(real_data: dict, n: int):
 
 
 def _make_config(suffix: str) -> dict:
-    """生成 trace hook config,分区带时间戳+后缀避免冲突。"""
+    """生成 trace hook config,按 V1/TableTunnel 格式传入两级分区。"""
+    ds = f"e2e_{time.strftime('%Y%m%d%H%M%S')}"
     return {
         "access_id": os.environ.get("ODPS_ACCESS_ID", DEFAULT_ACCESS_ID),
         "access_key": os.environ.get("ODPS_ACCESS_KEY", DEFAULT_ACCESS_KEY),
@@ -102,9 +108,36 @@ def _make_config(suffix: str) -> dict:
             "ODPS_TUNNEL_ENDPOINT", DEFAULT_TUNNEL_ENDPOINT
         ),
         "table_name": TEST_TABLE,
-        "partition": f"ds=e2e_{time.strftime('%Y%m%d%H%M%S')}_{suffix}",
+        "partition": f"ds={ds},model_name={suffix}",
         "quota_name": os.environ.get("ODPS_QUOTA_NAME", DEFAULT_QUOTA_NAME),
     }
+
+
+def _verify_multi_level_partition(hook: TraceToOdpsHook, cfg: dict):
+    """确认用户格式未变,writer 建 Storage session 前已转换为斜杠格式。"""
+    user_partition = cfg["partition"]
+    partition_parts = [part.strip() for part in user_partition.split(",")]
+    partition_keys = tuple(part.split("=", 1)[0] for part in partition_parts)
+    if partition_keys != PARTITION_COLUMNS:
+        hook.end()
+        raise AssertionError(
+            f"expected partition columns {PARTITION_COLUMNS}, got {partition_keys}"
+        )
+
+    expected_storage_partition = "/".join(partition_parts)
+    actual_storage_partitions = {
+        writer._storage_partition for writer in hook.writers
+    }
+    if actual_storage_partitions != {expected_storage_partition}:
+        hook.end()
+        raise AssertionError(
+            "Storage API partition mismatch: "
+            f"expected={expected_storage_partition}, "
+            f"actual={actual_storage_partitions}"
+        )
+
+    print(f"  [partition] config  : {user_partition}")
+    print(f"  [partition] storage : {expected_storage_partition}")
 
 
 def _read_back_count(cfg: dict) -> int | None:
@@ -171,6 +204,7 @@ def test_basic_write():
         config=cfg, fields=FULL_FIELDS, types=FULL_TYPES,
         worker_num=1, size_threshold=4 * 1024,  # 4 KB,几乎每步都 flush
     )
+    _verify_multi_level_partition(hook, cfg)
     for i in range(n):
         add_with_padding({
             "id": np.arange(batch, dtype=np.int64) + i * batch,
@@ -200,6 +234,7 @@ def test_large_batch_auto_threshold():
         config=cfg, fields=FULL_FIELDS, types=FULL_TYPES,
         worker_num=2, size_threshold=None,  # 自适应
     )
+    _verify_multi_level_partition(hook, cfg)
     for i in range(n):
         add_with_padding({
             "user_id": np.arange(batch, dtype=np.int64) + i * batch,
@@ -231,6 +266,7 @@ def test_time_based_flush():
         config=cfg, fields=FULL_FIELDS, types=FULL_TYPES,
         worker_num=1, size_threshold=1024 * 1024 * 1024,  # 1 GB,永远不会按大小 flush
     )
+    _verify_multi_level_partition(hook, cfg)
     # monkey-patch:将保底间隔从 6h 缩短到 3s
     for w in hook.writers:
         w._MAX_FLUSH_INTERVAL = 3
@@ -263,6 +299,7 @@ def test_multi_writer():
         config=cfg, fields=FULL_FIELDS, types=FULL_TYPES,
         worker_num=4, size_threshold=16 * 1024,
     )
+    _verify_multi_level_partition(hook, cfg)
     for i in range(n):
         add_with_padding({
             "id": np.arange(batch, dtype=np.int64) + i * batch,
@@ -293,6 +330,7 @@ def test_graceful_end():
         config=cfg, fields=FULL_FIELDS, types=FULL_TYPES,
         worker_num=1, size_threshold=1024 * 1024 * 1024,  # 1 GB,不触发大小 flush
     )
+    _verify_multi_level_partition(hook, cfg)
     add_with_padding({
         "id": np.arange(batch, dtype=np.int64),
         "val": [f"end-{j}" for j in range(batch)],
@@ -318,6 +356,7 @@ def main():
 
     print("[info] test target : TraceToOdpsHookV2 E2E")
     print(f"[info] test table  : {TEST_TABLE}")
+    print(f"[info] partitions  : {PARTITION_COLUMNS}")
 
     all_tests = [
         ("1", "basic_write", test_basic_write),
