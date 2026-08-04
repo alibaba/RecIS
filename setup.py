@@ -143,6 +143,25 @@ def get_main_extension():
     return ext
 
 
+def get_gpu_shard_extension():
+    """GPU 分片负样本采样器的 fused CUDA kernels 扩展。
+
+    编译产物为 recis/lib/gpu_shard_kernels.so，
+    由 recis.data.gpu_shard_sampler 通过 `from recis.lib import gpu_shard_kernels` 导入。
+    """
+    sources = get_source_files(["gpu_shard_sampler"], "csrc", set(), True)
+    nvcc_args = ["-O2", "-lineinfo"]
+    return cpp_extension.CUDAExtension(
+        name="recis.lib.gpu_shard_kernels",
+        sources=sources,
+        include_dirs=[os.path.join(BASEDIR, "csrc")],
+        extra_compile_args={
+            "cxx": ["-g"],
+            "nvcc": nvcc_args,
+        },
+    )
+
+
 def is_internal_enabled():
     return int(os.environ.get("INTERNAL_VERSION", 0))
 
@@ -204,7 +223,7 @@ version = get_wheel_version()
 print(f"[INFO] version: {version}")
 setup(
     version=version,
-    ext_modules=[get_main_extension()],
+    ext_modules=[get_main_extension(), get_gpu_shard_extension()],
     data_files=[],
     packages=find_packages(),
     include_package_data=True,
