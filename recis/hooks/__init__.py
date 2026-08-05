@@ -5,7 +5,10 @@ from .filter_hook import HashTableFilterHook
 from .hook import Hook
 from .initial_profiler_hook import _InitialProfilerHook
 from .logger_hook import LoggerHook
+from .memory_access_hook import MemoryAccessHook
+from .module_flops_hook import ModuleFlopsHook
 from .monitor_report_hook import MetricReportHook
+from .nvtx_profile_hook import NvtxProfileHook
 from .profiler_hook import ProfilerHook
 
 
@@ -14,9 +17,12 @@ __all__ = [
     "LoggerHook",
     "_InitialProfilerHook",
     "ProfilerHook",
+    "ModuleFlopsHook",
     "HashTableFilterHook",
     "MetricReportHook",
     "ClipGradNormHook",
+    "MemoryAccessHook",
+    "NvtxProfileHook",
 ]
 
 if is_internal_enabled():
@@ -33,7 +39,12 @@ if is_internal_enabled():
     TraceToOdpsHook = TraceToOdpsHookV2
 
     __all__.extend(
-        ["MLTrackerHook", "add_to_ml_tracker",
-         "TraceToOdpsHook", "TraceToOdpsHookV1", "TraceToOdpsHookV2",
-         "add_to_trace"]
+        [
+            "MLTrackerHook",
+            "add_to_ml_tracker",
+            "TraceToOdpsHook",
+            "TraceToOdpsHookV1",
+            "TraceToOdpsHookV2",
+            "add_to_trace",
+        ]
     )
