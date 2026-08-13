@@ -280,13 +280,43 @@ Advanced Features
 
 **Performance monitoring**
 
+The built-in ``Trainer`` automatically reports QPS, FLOPS, and MFU. Use
+``monitor_report_args`` to configure the interval, eval/train FLOPS ratio, and
+MFU quality threshold:
+
+.. code-block:: python
+
+    from recis.hooks.monitor_report_hook import ReportArguments
+
+    report_args = ReportArguments(
+        interval_step=100,
+        eval_flops_ratio=1.0 / 3.0,
+        min_peak_coverage=0.99,
+    )
+
+    trainer = Trainer(
+        # Other arguments are omitted
+        monitor_report_args=report_args,
+    )
+
+Add ``ProfilerHook`` separately only when an operator-level Timeline is needed:
+
 .. code-block:: python
 
     from recis.hooks import ProfilerHook
-    
-    # Add Profiler Hook
-    
-    trainer.add_hooks([ProfilerHook(wait=1, warmup=28, active=2, repeat=1, output_dir="./timeline/")])
+
+    trainer.add_hooks([
+        ProfilerHook(
+            wait=1,
+            warmup=28,
+            active=2,
+            repeat=1,
+            output_dir="./timeline/",
+        )
+    ])
+
+See :doc:`monitoring_en` for automatic metrics, mixed-precision MFU, the
+startup sampling lifecycle, and how to disable monitoring.
 
 Next Steps
 ----------

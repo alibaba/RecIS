@@ -317,13 +317,23 @@ class Trainer:
                 self.saver, self._global_step, self._epoch, ckpt_load_arg
             )
         )
-        self.hooks.append(_InitialProfilerHook(scheduler=None))
+        metric_report_hook = MetricReportHook(
+            model=self.model,
+            report_args=self._monitor_report_args,
+            mixed_precision=self.mixed_precision,
+        )
         self.hooks.append(
-            MetricReportHook(
-                model=self.model,
-                report_args=self._monitor_report_args,
+            _InitialProfilerHook(
+                flops_state=metric_report_hook.flops_state,
+                eval_flops_ratio=metric_report_hook.args.eval_flops_ratio,
+                collect_input_dtypes=metric_report_hook.collect_input_dtypes,
+                mixed_precision=self.mixed_precision,
+                scalar_tflops_peak=metric_report_hook.scalar_tflops_peak,
+                scalar_precision_basis=metric_report_hook.scalar_precision_basis,
+                min_peak_coverage=metric_report_hook.args.min_peak_coverage,
             )
         )
+        self.hooks.append(metric_report_hook)
         if self.args.eval_mos_report_uri:
             self.hooks.append(MosReporterEvalHook(self.args.eval_mos_report_uri))
 

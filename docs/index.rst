@@ -25,6 +25,8 @@ RecIS (Recommendation Intelligence System) 是一个统一架构的深度学习�
      - :doc:`installation_en`
    * - :doc:`quickstart`
      - :doc:`quickstart_en`
+   * - :doc:`monitoring`
+     - :doc:`monitoring_en`
    * - :doc:`best_practice/index`
      - :doc:`best_practice/index`
    * - :doc:`api/index`
@@ -62,6 +64,7 @@ RecIS (Recommendation Intelligence System) 是一个统一架构的深度学习�
    introduction
    installation
    quickstart
+   monitoring
    best_practice/index
    api/index
    examples/index

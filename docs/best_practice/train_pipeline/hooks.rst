@@ -47,6 +47,13 @@ Hooks
     )
     trainer.add_hooks([trace_hook])
 
+运行指标监控
+------------
+
+内置 ``Trainer`` 会自动注册运行指标 hook，上报 QPS、FLOPS 和 MFU；无需手工
+添加 ``MetricReportHook``。配置方式、启动采样机制和混合精度口径详见
+:doc:`../../monitoring`。
+
 Timeline分析
 ------------------
 
@@ -64,3 +71,6 @@ Timeline分析
             output_dir=output_dir,
         )
         trainer.add_hook(hooks)
+
+公开 profiler 在全局 step 10 创建，``wait/warmup/active/repeat`` 从该位置开始
+按相对 schedule 执行。

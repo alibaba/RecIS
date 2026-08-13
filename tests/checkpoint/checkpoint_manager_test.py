@@ -13,7 +13,9 @@ import sys
 
 # 仅在 recis.so 不存在时设置 BUILD_DOCUMENT（本地开发环境）。
 # CI 环境中 .so 必须正常加载，以保证 torch.classes 注册成功。
-_recis_so = os.path.join(os.path.dirname(__file__), "..", "..", "recis", "lib", "recis.so")
+_recis_so = os.path.join(
+    os.path.dirname(__file__), "..", "..", "recis", "lib", "recis.so"
+)
 if not os.path.exists(os.path.abspath(_recis_so)):
     os.environ["BUILD_DOCUMENT"] = "1"
 
@@ -156,6 +158,11 @@ class TestUpdateCkptIndex(unittest.TestCase):
 class TestEvictOldCkpt(unittest.TestCase):
     """测试 _evict_old_ckpt 方法：旧 ckpt 淘汰与 MOS 注销逻辑。"""
 
+    class FakePanguException(Exception):
+        def __init__(self, pangu_err_no):
+            self.pangu_err_no = pangu_err_no
+            super().__init__(f"pangu errno={pangu_err_no}")
+
     def _make_saver_stub(self, is_openlm_hub=False):
         stub = MagicMock()
         stub._is_openlm_hub_ckpt = is_openlm_hub
@@ -189,6 +196,55 @@ class TestEvictOldCkpt(unittest.TestCase):
 
         fs.rm.assert_not_called()
         stub.openlm_hub_helper.delete.assert_called_once_with("ckpt-old")
+
+    def test_openlm_hub_mode_ignores_file_not_found(self):
+        """旧 ckpt 已不存在时，继续更新版本列表并注销 MOS 记录。"""
+        stub = self._make_saver_stub(is_openlm_hub=True)
+        stub.openlm_hub_helper.pop_write_path.return_value = "/write/ckpt-old"
+        fs = MagicMock()
+        fs.rm.side_effect = FileNotFoundError("already removed")
+
+        Saver._evict_old_ckpt(stub, "ckpt-old", "/write/ckpt-new", fs)
+
+        stub.openlm_hub_helper.delete.assert_called_once_with("ckpt-old")
+        self.assertEqual(stub._checkpoint_version_list, ["ckpt-new"])
+
+    def test_openlm_hub_mode_ignores_pangu_not_found(self):
+        """Pangu errno=2 与 FileNotFoundError 一样按删除成功处理。"""
+        stub = self._make_saver_stub(is_openlm_hub=True)
+        stub.openlm_hub_helper.pop_write_path.return_value = "/write/ckpt-old"
+        fs = MagicMock()
+        fs.rm.side_effect = self.FakePanguException(2)
+
+        with patch(
+            "recis.framework.checkpoint_manager.PanguException",
+            self.FakePanguException,
+        ):
+            Saver._evict_old_ckpt(stub, "ckpt-old", "/write/ckpt-new", fs)
+
+        stub.openlm_hub_helper.delete.assert_called_once_with("ckpt-old")
+        self.assertEqual(stub._checkpoint_version_list, ["ckpt-new"])
+
+    def test_openlm_hub_mode_reraises_other_pangu_errors(self):
+        """权限、IO、只读等 Pangu 错误不能被误吞。"""
+        for pangu_err_no in (3, 5, 11):
+            with self.subTest(pangu_err_no=pangu_err_no):
+                stub = self._make_saver_stub(is_openlm_hub=True)
+                stub.openlm_hub_helper.pop_write_path.return_value = "/write/ckpt-old"
+                fs = MagicMock()
+                fs.rm.side_effect = self.FakePanguException(pangu_err_no)
+
+                with patch(
+                    "recis.framework.checkpoint_manager.PanguException",
+                    self.FakePanguException,
+                ):
+                    with self.assertRaises(self.FakePanguException):
+                        Saver._evict_old_ckpt(stub, "ckpt-old", "/write/ckpt-new", fs)
+
+                stub.openlm_hub_helper.delete.assert_not_called()
+                self.assertEqual(
+                    stub._checkpoint_version_list, ["ckpt-old", "ckpt-new"]
+                )
 
     def test_old_protocol_removes_dir_and_updates_index(self):
         """老协议下淘汰旧 ckpt：删目录、更新索引文件、调 MOS ckpt_update 注销。"""
@@ -443,7 +499,12 @@ class TestLoadPathResolution(unittest.TestCase):
         """direct_path=True 时按字面路径加载，不走任何解析逻辑。"""
         stub = self._make_saver_stub(is_openlm_hub=False)
 
-        Saver.load(stub, ckpt_path="/explicit/path", direct_path=True, model_bank_conf={"*": {}})
+        Saver.load(
+            stub,
+            ckpt_path="/explicit/path",
+            direct_path=True,
+            model_bank_conf={"*": {}},
+        )
 
         stub.load_by_config.assert_called_once_with("/explicit/path", 0, {"*": {}})
 

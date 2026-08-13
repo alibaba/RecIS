@@ -279,13 +279,42 @@
 
 **性能监控**
 
+内置 ``Trainer`` 会自动上报 QPS、FLOPS 和 MFU。可以通过
+``monitor_report_args`` 配置汇报周期、eval/train FLOPS 比例和 MFU 质量门槛：
+
+.. code-block:: python
+
+    from recis.hooks.monitor_report_hook import ReportArguments
+
+    report_args = ReportArguments(
+        interval_step=100,
+        eval_flops_ratio=1.0 / 3.0,
+        min_peak_coverage=0.99,
+    )
+
+    trainer = Trainer(
+        # 其他参数省略
+        monitor_report_args=report_args,
+    )
+
+如需分析具体算子，再额外添加 ``ProfilerHook`` 生成 Timeline：
+
 .. code-block:: python
 
     from recis.hooks import ProfilerHook
-    
-    # 添加监控Hook
-    
-    trainer.add_hooks([ProfilerHook(wait=1, warmup=28, active=2, repeat=1, output_dir="./timeline/")])
+
+    trainer.add_hooks([
+        ProfilerHook(
+            wait=1,
+            warmup=28,
+            active=2,
+            repeat=1,
+            output_dir="./timeline/",
+        )
+    ])
+
+自动指标、混合精度 MFU、启动采样机制和关闭方式详见
+:doc:`monitoring`。
 
 下一步
 ------

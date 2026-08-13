@@ -51,7 +51,8 @@ class EmbeddingEngineTest(unittest.TestCase):
 
     def _make_no_reduce_inputs(self):
         seq_ids = torch.tensor(
-            [10, 20, 30, 40, 50, 11, 21, 31, 12, 22, 32, 42], dtype=torch.int64,
+            [10, 20, 30, 40, 50, 11, 21, 31, 12, 22, 32, 42],
+            dtype=torch.int64,
             device="cuda",
         )
         seq_offsets = torch.tensor([0, 5, 8, 12], dtype=torch.int64, device="cuda")

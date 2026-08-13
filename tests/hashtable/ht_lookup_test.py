@@ -232,9 +232,7 @@ class GPUHashtableTest(unittest.TestCase):
         # One more insertion invokes cuco's scalar rehash. It places the
         # target in lane 1 of its correct tile; the next read-only lookup is
         # the production find_and_mask CG path under test.
-        while not safe_background_bucket(
-            _xxhash32_int64(candidate) % rehash_capacity
-        ):
+        while not safe_background_bucket(_xxhash32_int64(candidate) % rehash_capacity):
             candidate += 1
         insert([candidate])
         self.assertEqual(ht.id_info(), (before_rehash_count + 1, rehash_capacity))

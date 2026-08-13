@@ -8,12 +8,14 @@ This directory contains the bilingual documentation for RecIS, a unified deep le
 - `introduction.rst` - 项目介绍
 - `installation.rst` - 安装指南  
 - `quickstart.rst` - 快速开始
+- `monitoring.rst` - 训练性能监控
 - `faq.rst` - 常见问题
 
 ### English Documentation
 - `introduction_en.rst` - Introduction
 - `installation_en.rst` - Installation Guide
 - `quickstart_en.rst` - Quick Start
+- `monitoring_en.rst` - Training Performance Monitoring
 - `faq_en.rst` - FAQ
 
 ## 构建文档 | Building Documentation

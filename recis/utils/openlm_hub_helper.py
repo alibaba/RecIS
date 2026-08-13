@@ -52,14 +52,10 @@ class OpenlmHubHelper:
         Returns:
             tuple: (ckpt_file_manager, ckpt_path, fs)
         """
-        cfm = MosCkptFileManager(
-            f"{self.version_uri}/ckpt_id={ckpt_id}", mode="w"
-        )
+        cfm = MosCkptFileManager(f"{self.version_uri}/ckpt_id={ckpt_id}", mode="w")
         # MosCkptFileManager bug 兜底: 已注册 ckpt 即使 mode='w' 也返 READ 路径,
         # r/w 分离存储下是只读 mount, 写会 EROFS. 强制改写为 WRITE 路径.
-        cfm.path = get_ckpt_access_path(
-            cfm.ckpt_physical_path, CkptAction.WRITE
-        )
+        cfm.path = get_ckpt_access_path(cfm.ckpt_physical_path, CkptAction.WRITE)
         return cfm, cfm.path, cfm.get_fs()
 
     def resolve_load_path(self, ckpt_id: Optional[str] = None) -> Optional[str]:

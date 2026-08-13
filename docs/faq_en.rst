@@ -253,11 +253,17 @@ A: Performance tuning recommendations:
       from recis.hooks import ProfilerHook
       
       profiler_hook = ProfilerHook(
+          wait=1,
+          warmup=1,
+          active=3,
+          repeat=2,
           output_dir="./profile_logs",
-          schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=2),
-          on_trace_ready=torch.profiler.tensorboard_trace_handler('./profile_logs')
       )
+      trainer.add_hooks([profiler_hook])
 
+   ``wait/warmup/active/repeat`` form a relative schedule after the public
+   profiler is created at global step 10. See :doc:`monitoring_en` for the
+   distinction between automatic QPS/FLOPS/MFU metrics and Timeline profiling.
 
 2. **Compute Optimization**:
 

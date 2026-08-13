@@ -25,6 +25,8 @@ Quick Navigation
      - :doc:`installation_en`
    * - :doc:`quickstart`
      - :doc:`quickstart_en`
+   * - :doc:`monitoring`
+     - :doc:`monitoring_en`
    * - :doc:`best_practice/index`
      - :doc:`best_practice/index`
    * - :doc:`api/index`
@@ -62,6 +64,7 @@ Table of Contents
    introduction_en
    installation_en
    quickstart_en
+   monitoring_en
    api/index
    examples/index_en
    tools/index

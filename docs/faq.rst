@@ -254,10 +254,17 @@ A: 性能调优建议：
       from recis.hooks import ProfilerHook
       
       profiler_hook = ProfilerHook(
-          profile_steps=[100, 200, 300],
-          output_dir="./profiler_output"
+          wait=1,
+          warmup=1,
+          active=3,
+          repeat=2,
+          output_dir="./profiler_output",
       )
-      trainer.add_hook(profiler_hook)
+      trainer.add_hooks([profiler_hook])
+
+   ``wait/warmup/active/repeat`` 是从全局 step 10 创建公开 profiler 后开始的
+   相对 schedule。QPS、FLOPS、MFU 自动监控与 Timeline 的区别详见
+   :doc:`monitoring`。
 
 2. **计算优化**：
 

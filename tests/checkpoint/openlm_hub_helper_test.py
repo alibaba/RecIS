@@ -12,7 +12,9 @@ import sys
 
 # 仅在 recis.so 不存在时设置 BUILD_DOCUMENT（本地开发环境）。
 # CI 环境中 .so 必须正常加载，以保证 torch.classes 注册成功。
-_recis_so = os.path.join(os.path.dirname(__file__), "..", "..", "recis", "lib", "recis.so")
+_recis_so = os.path.join(
+    os.path.dirname(__file__), "..", "..", "recis", "lib", "recis.so"
+)
 if not os.path.exists(os.path.abspath(_recis_so)):
     os.environ["BUILD_DOCUMENT"] = "1"
 
@@ -52,12 +54,14 @@ except ImportError:
     _CkptActionMock.WRITE = "WRITE"
     openlm_hub.constants.CkptAction = _CkptActionMock
 
+
 # 仅在内部依赖不可用时 mock，避免本地/CI 环境差异报错
 def _mock_if_missing(module_name, mock_obj=None):
     try:
         __import__(module_name)
     except (ImportError, ModuleNotFoundError):
         sys.modules[module_name] = mock_obj or MagicMock()
+
 
 _mock_if_missing("recis.framework.metrics", MagicMock(get_mos_metrics=dict))
 _mock_if_missing("recis.info", MagicMock(is_internal_enabled=lambda: False))
@@ -74,6 +78,7 @@ from recis.utils.openlm_hub_helper import OpenlmHubHelper  # noqa: E402
 
 class TestOpenlmHubHelperInit(unittest.TestCase):
     """测试 OpenlmHubHelper 初始化：基本属性赋值与缓存初始状态。"""
+
     def test_basic_attrs(self):
         """初始化后 version_uri 和 user_id 正确赋值。"""
         helper = OpenlmHubHelper("model.proj.name/version=v1", "user123")
@@ -88,15 +93,14 @@ class TestOpenlmHubHelperInit(unittest.TestCase):
 
 class TestCacheWritePath(unittest.TestCase):
     """测试 ckpt 写入路径缓存（_ckpt_path_by_id）的存取逻辑。"""
+
     def setUp(self):
         self.helper = OpenlmHubHelper("model.proj.name/version=v1", "user1")
 
     def test_cache_and_pop(self):
         """缓存写入路径后可正确取出。"""
         self.helper.cache_write_path("ckpt-100", "/data/write/ckpt-100")
-        self.assertEqual(
-            self.helper.pop_write_path("ckpt-100"), "/data/write/ckpt-100"
-        )
+        self.assertEqual(self.helper.pop_write_path("ckpt-100"), "/data/write/ckpt-100")
 
     def test_pop_removes_entry(self):
         """pop 取出后条目被移除，再次 pop 返回 None。"""
@@ -120,6 +124,7 @@ class TestCacheWritePath(unittest.TestCase):
 @patch("recis.utils.openlm_hub_helper.get_ckpt_access_path")
 class TestGetSaveContext(unittest.TestCase):
     """测试 get_save_context 方法：创建写入上下文并修正 EROFS WRITE 路径。"""
+
     def setUp(self):
         self.helper = OpenlmHubHelper("model.proj.name/version=v1", "user1")
 
@@ -157,6 +162,7 @@ class TestGetSaveContext(unittest.TestCase):
 @patch("recis.utils.openlm_hub_helper.MosCkptFileManager")
 class TestResolveLoadPath(unittest.TestCase):
     """测试 resolve_load_path 方法：通过 MOS 解析 ckpt 读取路径。"""
+
     def setUp(self):
         self.helper = OpenlmHubHelper("model.proj.name/version=v1", "user1")
 
@@ -169,9 +175,7 @@ class TestResolveLoadPath(unittest.TestCase):
         result = self.helper.resolve_load_path()
 
         self.assertEqual(result, "/data/read/latest-ckpt")
-        mock_cfm_cls.assert_called_once_with(
-            "model.proj.name/version=v1", mode="r"
-        )
+        mock_cfm_cls.assert_called_once_with("model.proj.name/version=v1", mode="r")
 
     def test_specific_ckpt_id(self, mock_cfm_cls):
         """传入 ckpt_id 时解析对应 ckpt 的 READ 路径。"""
@@ -198,6 +202,7 @@ class TestResolveLoadPath(unittest.TestCase):
 @patch("recis.utils.openlm_hub_helper.MosCkptFileManager")
 class TestResolveLatestResume(unittest.TestCase):
     """测试 resolve_latest_resume 方法：查 MOS 最新 ckpt 用于断点续训。"""
+
     def setUp(self):
         self.helper = OpenlmHubHelper("model.proj.name/version=v1", "user1")
 
@@ -210,7 +215,9 @@ class TestResolveLatestResume(unittest.TestCase):
 
         result = self.helper.resolve_latest_resume()
 
-        self.assertEqual(result, ("/data/read/ckpt-latest", "xpfs://cluster/data/ckpt-latest"))
+        self.assertEqual(
+            result, ("/data/read/ckpt-latest", "xpfs://cluster/data/ckpt-latest")
+        )
 
     def test_not_found_returns_none(self, mock_cfm_cls):
         """无已注册 ckpt 时返回 None。"""
@@ -226,6 +233,7 @@ class TestResolveLatestResume(unittest.TestCase):
 @patch("recis.utils.openlm_hub_helper.get_mos_metrics")
 class TestRegisterAndReport(unittest.TestCase):
     """测试 register_and_report 方法：ckpt 注册与 MOS metrics 上报。"""
+
     def setUp(self):
         self.helper = OpenlmHubHelper("model.proj.name/version=v1", "user1")
 
@@ -239,7 +247,9 @@ class TestRegisterAndReport(unittest.TestCase):
         mock_cfm.register_ckpt.assert_called_once_with(labels=["step=10"])
         mock_update.assert_called_once()
         call_kwargs = mock_update.call_args[1]
-        self.assertEqual(call_kwargs["mos_ckpt_uri"], "model.proj.name/version=v1/ckpt_id=ckpt-10")
+        self.assertEqual(
+            call_kwargs["mos_ckpt_uri"], "model.proj.name/version=v1/ckpt_id=ckpt-10"
+        )
         self.assertEqual(call_kwargs["user_id"], "user1")
         self.assertIn("MODE.TRAIN.loss", call_kwargs["metrics"])
         self.assertIn("MODE.TRAIN.ckpt_id", call_kwargs["metrics"])
@@ -257,6 +267,7 @@ class TestRegisterAndReport(unittest.TestCase):
 @patch("recis.utils.openlm_hub_helper.delete_ckpt")
 class TestDelete(unittest.TestCase):
     """测试 delete 方法：从 MOS 注销已注册 ckpt。"""
+
     def setUp(self):
         self.helper = OpenlmHubHelper("model.proj.name/version=v1", "user1")
 
@@ -275,6 +286,7 @@ class TestFormatPhysicalPath(unittest.TestCase):
 
     def setUp(self):
         import recis.utils.mos as mos_module
+
         self._mos_module = mos_module
         self._mock_access = MagicMock()
         mos_module.get_ckpt_access_path = self._mock_access
@@ -306,7 +318,9 @@ class TestFormatPhysicalPath(unittest.TestCase):
 
     def test_dfs_path(self):
         """dfs 协议路径返回空前缀，原始路径原样返回。"""
-        prefix, local_path = self._mos_module.format_physical_path("dfs://cluster/output/ckpt")
+        prefix, local_path = self._mos_module.format_physical_path(
+            "dfs://cluster/output/ckpt"
+        )
         self.assertEqual(prefix, "")
         self.assertEqual(local_path, "dfs://cluster/output/ckpt")
         self._mock_access.assert_not_called()

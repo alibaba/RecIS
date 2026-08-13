@@ -6,6 +6,10 @@ Basic Hooks
 
 RecIS provides a rich Hook system to extend the training process:
 
+For the distinction between automatic QPS/FLOPS/MFU reporting and opt-in
+Timeline profiling, see :doc:`../monitoring` (Chinese) or
+:doc:`../monitoring_en` (English).
+
 .. currentmodule:: recis.hooks.hook
 
 Hook
@@ -27,6 +31,9 @@ LoggerHook
 
 ProfilerHook
 ~~~~~~~~~~~~
+
+Use this public hook only for opt-in Timeline traces. Its relative schedule is
+created at global step 10, after the internal startup FLOPS profiler has closed.
 
 .. autoclass:: ProfilerHook
    :members: __init__
@@ -55,6 +62,10 @@ TraceToOdpsHook
 
 MetricReportHook
 ~~~~~~~~~~~~~~~~~~~~~~~~
+
+The built-in ``Trainer`` creates this hook automatically. Configure it through
+``Trainer(..., monitor_report_args=ReportArguments(...))`` instead of adding a
+second instance manually.
 
 .. autoclass:: MetricReportHook
    :members: __init__

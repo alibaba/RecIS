@@ -39,19 +39,29 @@ DEFAULT_TUNNEL_ENDPOINT = None
 # DEFAULT_TUNNEL_ENDPOINT = "http://dt.xcluster.odps.aliyun-inc.com"
 DEFAULT_QUOTA_NAME = ""
 
-TEST_TABLE = os.environ.get(
-    "ODPS_TEST_TABLE", "gwj_trace_v2_e2e_multi_partition_test"
-)
+TEST_TABLE = os.environ.get("ODPS_TEST_TABLE", "gwj_trace_v2_e2e_multi_partition_test")
 PARTITION_COLUMNS = ("ds", "model_name")
 
 # 单一大表 schema — 所有浮点列统一用 double,避免 float 精度丢失
 FULL_FIELDS = [
-    "id", "val", "score", "label",
-    "user_id", "embedding", "attention", "feature_map",
+    "id",
+    "val",
+    "score",
+    "label",
+    "user_id",
+    "embedding",
+    "attention",
+    "feature_map",
 ]
 FULL_TYPES = [
-    "bigint", "string", "double", "bigint",
-    "bigint", "array<double>", "array<array<double>>", "array<array<array<double>>>",
+    "bigint",
+    "string",
+    "double",
+    "bigint",
+    "bigint",
+    "array<double>",
+    "array<array<double>>",
+    "array<array<array<double>>>",
 ]
 
 
@@ -79,8 +89,12 @@ def _placeholder(odps_type: str, n: int):
         while inner.startswith("array<") and inner.endswith(">"):
             depth += 1
             inner = inner[6:-1]
-        dtype_map = {"float": np.float32, "double": np.float64,
-                     "bigint": np.int64, "int": np.int32}
+        dtype_map = {
+            "float": np.float32,
+            "double": np.float64,
+            "bigint": np.int64,
+            "int": np.int32,
+        }
         dt = dtype_map.get(inner, np.float64)  # 默认 double，避免精度丢失
         shape = (n,) + (1,) * depth
         return np.zeros(shape, dtype=dt)
@@ -125,9 +139,7 @@ def _verify_multi_level_partition(hook: TraceToOdpsHook, cfg: dict):
         )
 
     expected_storage_partition = "/".join(partition_parts)
-    actual_storage_partitions = {
-        writer._storage_partition for writer in hook.writers
-    }
+    actual_storage_partitions = {writer._storage_partition for writer in hook.writers}
     if actual_storage_partitions != {expected_storage_partition}:
         hook.end()
         raise AssertionError(
@@ -201,17 +213,23 @@ def test_basic_write():
     expected = batch * n
 
     hook = TraceToOdpsHook(
-        config=cfg, fields=FULL_FIELDS, types=FULL_TYPES,
-        worker_num=1, size_threshold=4 * 1024,  # 4 KB,几乎每步都 flush
+        config=cfg,
+        fields=FULL_FIELDS,
+        types=FULL_TYPES,
+        worker_num=1,
+        size_threshold=4 * 1024,  # 4 KB,几乎每步都 flush
     )
     _verify_multi_level_partition(hook, cfg)
     for i in range(n):
-        add_with_padding({
-            "id": np.arange(batch, dtype=np.int64) + i * batch,
-            "val": [f"basic-{i}-{j}" for j in range(batch)],
-            "score": np.random.rand(batch).astype(np.float64),
-            "embedding": np.random.randn(batch, dim).astype(np.float64),
-        }, n=batch)
+        add_with_padding(
+            {
+                "id": np.arange(batch, dtype=np.int64) + i * batch,
+                "val": [f"basic-{i}-{j}" for j in range(batch)],
+                "score": np.random.rand(batch).astype(np.float64),
+                "embedding": np.random.randn(batch, dim).astype(np.float64),
+            },
+            n=batch,
+        )
         hook.after_step()
         print(f"  [step-{i}] pushed {batch} rows")
     hook.end()
@@ -231,15 +249,21 @@ def test_large_batch_auto_threshold():
     expected = batch * n
 
     hook = TraceToOdpsHook(
-        config=cfg, fields=FULL_FIELDS, types=FULL_TYPES,
-        worker_num=2, size_threshold=None,  # 自适应
+        config=cfg,
+        fields=FULL_FIELDS,
+        types=FULL_TYPES,
+        worker_num=2,
+        size_threshold=None,  # 自适应
     )
     _verify_multi_level_partition(hook, cfg)
     for i in range(n):
-        add_with_padding({
-            "user_id": np.arange(batch, dtype=np.int64) + i * batch,
-            "embedding": np.random.randn(batch, dim).astype(np.float64),
-        }, n=batch)
+        add_with_padding(
+            {
+                "user_id": np.arange(batch, dtype=np.int64) + i * batch,
+                "embedding": np.random.randn(batch, dim).astype(np.float64),
+            },
+            n=batch,
+        )
         hook.after_step()
         print(f"  [step-{i}] pushed {batch}×{dim} ({batch * dim * 8 / 1024:.0f} KB)")
     hook.end()
@@ -263,8 +287,11 @@ def test_time_based_flush():
     expected = batch * 3  # 3 步,每步 10 行
 
     hook = TraceToOdpsHook(
-        config=cfg, fields=FULL_FIELDS, types=FULL_TYPES,
-        worker_num=1, size_threshold=1024 * 1024 * 1024,  # 1 GB,永远不会按大小 flush
+        config=cfg,
+        fields=FULL_FIELDS,
+        types=FULL_TYPES,
+        worker_num=1,
+        size_threshold=1024 * 1024 * 1024,  # 1 GB,永远不会按大小 flush
     )
     _verify_multi_level_partition(hook, cfg)
     # monkey-patch:将保底间隔从 6h 缩短到 3s
@@ -272,10 +299,13 @@ def test_time_based_flush():
         w._MAX_FLUSH_INTERVAL = 3
 
     for i in range(3):
-        add_with_padding({
-            "id": np.arange(batch, dtype=np.int64) + i * batch,
-            "val": [f"time-{i}-{j}" for j in range(batch)],
-        }, n=batch)
+        add_with_padding(
+            {
+                "id": np.arange(batch, dtype=np.int64) + i * batch,
+                "val": [f"time-{i}-{j}" for j in range(batch)],
+            },
+            n=batch,
+        )
         hook.after_step()
         print(f"  [step-{i}] pushed {batch} rows, waiting 4s for time-based flush...")
         time.sleep(4)  # 等待 _MAX_FLUSH_INTERVAL(3s) 触发
@@ -296,15 +326,21 @@ def test_multi_writer():
     expected = batch * n
 
     hook = TraceToOdpsHook(
-        config=cfg, fields=FULL_FIELDS, types=FULL_TYPES,
-        worker_num=4, size_threshold=16 * 1024,
+        config=cfg,
+        fields=FULL_FIELDS,
+        types=FULL_TYPES,
+        worker_num=4,
+        size_threshold=16 * 1024,
     )
     _verify_multi_level_partition(hook, cfg)
     for i in range(n):
-        add_with_padding({
-            "id": np.arange(batch, dtype=np.int64) + i * batch,
-            "val": [f"mw-{i}-{j}" for j in range(batch)],
-        }, n=batch)
+        add_with_padding(
+            {
+                "id": np.arange(batch, dtype=np.int64) + i * batch,
+                "val": [f"mw-{i}-{j}" for j in range(batch)],
+            },
+            n=batch,
+        )
         hook.after_step()
     hook.end()
 
@@ -327,14 +363,20 @@ def test_graceful_end():
     expected = batch
 
     hook = TraceToOdpsHook(
-        config=cfg, fields=FULL_FIELDS, types=FULL_TYPES,
-        worker_num=1, size_threshold=1024 * 1024 * 1024,  # 1 GB,不触发大小 flush
+        config=cfg,
+        fields=FULL_FIELDS,
+        types=FULL_TYPES,
+        worker_num=1,
+        size_threshold=1024 * 1024 * 1024,  # 1 GB,不触发大小 flush
     )
     _verify_multi_level_partition(hook, cfg)
-    add_with_padding({
-        "id": np.arange(batch, dtype=np.int64),
-        "val": [f"end-{j}" for j in range(batch)],
-    }, n=batch)
+    add_with_padding(
+        {
+            "id": np.arange(batch, dtype=np.int64),
+            "val": [f"end-{j}" for j in range(batch)],
+        },
+        n=batch,
+    )
     hook.after_step()
     print(f"  pushed {batch} rows (all in buffer)")
 
@@ -347,9 +389,13 @@ def test_graceful_end():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="TraceToOdpsHookV2 E2E integration test")
+    parser = argparse.ArgumentParser(
+        description="TraceToOdpsHookV2 E2E integration test"
+    )
     parser.add_argument(
-        "--test", type=str, default=None,
+        "--test",
+        type=str,
+        default=None,
         help="run a specific test by number (1-5)",
     )
     args = parser.parse_args()

@@ -116,8 +116,7 @@ def _resolve_tunnel_endpoint(odps_kwargs: dict, config: dict) -> str:
     odps_pangu_access_mode = os.getenv("ODPS_PANGU_ACCESS_MODE", None)
     open_storage_backend = os.getenv("OPEN_STORAGE_BACKEND", None)
     can_use_halo = (
-        odps_pangu_access_mode != "tunnel"
-        and open_storage_backend == "halo-worker"
+        odps_pangu_access_mode != "tunnel" and open_storage_backend == "halo-worker"
     )
     if not can_use_halo:
         return odps_kwargs.get("tunnel_endpoint") or config.get("tunnel_endpoint")
@@ -137,10 +136,10 @@ class TraceWriterV2(threading.Thread):
     """
 
     # 自适应阈值常量
-    _AUTO_MIN_THRESHOLD = 128 * 1024 * 1024   # 128 MiB
-    _AUTO_FLUSH_INTERVAL = 1800               # 目标每 30 分钟 flush 一次
-    _AUTO_WARMUP_FLUSHES = 3                 # 前 3 次 flush 后自适应(采样更稳定)
-    _MAX_FLUSH_INTERVAL = 6 * 3600            # 最长 6 小时必须 flush 一次(保底)
+    _AUTO_MIN_THRESHOLD = 128 * 1024 * 1024  # 128 MiB
+    _AUTO_FLUSH_INTERVAL = 1800  # 目标每 30 分钟 flush 一次
+    _AUTO_WARMUP_FLUSHES = 3  # 前 3 次 flush 后自适应(采样更稳定)
+    _MAX_FLUSH_INTERVAL = 6 * 3600  # 最长 6 小时必须 flush 一次(保底)
 
     def __init__(
         self,
@@ -200,7 +199,9 @@ class TraceWriterV2(threading.Thread):
         self.columns: Dict[str, List[pa.Array]] = {}
         self.buffered_size = 0
         self.write_count = 0
-        self._block_number = 0   # 同一 session 内的 block 编号,commit 后随新 session 重置
+        self._block_number = (
+            0  # 同一 session 内的 block 编号,commit 后随新 session 重置
+        )
         self._commit_messages: List[str] = []
         self._last_flush_time = time.time()  # 上次 flush 时间(用于时间保底)
 
@@ -238,9 +239,7 @@ class TraceWriterV2(threading.Thread):
                 table_properties={"columnar.nested.type": "true"},
             )
         else:
-            logger.info(
-                f"Skip create table: {self.table_name}, {self.partition}"
-            )
+            logger.info(f"Skip create table: {self.table_name}, {self.partition}")
 
         # storage API client + 首个 write session
         self._table = self._odps.get_table(self.table_name)
@@ -273,8 +272,12 @@ class TraceWriterV2(threading.Thread):
         if col.type.tz is not None:
             return col
         if tz is None:
-            if odps_options.local_timezone is True or odps_options.local_timezone is None:
+            if (
+                odps_options.local_timezone is True
+                or odps_options.local_timezone is None
+            ):
                 from odps.lib import tzlocal
+
                 tz = str(tzlocal.get_localzone())
             elif odps_options.local_timezone is False:
                 tz = "UTC"
@@ -308,9 +311,7 @@ class TraceWriterV2(threading.Thread):
 
             arrow_schema = self._get_arrow_schema(write_resp)
             empty_arrays = [pa.array([], type=field.type) for field in arrow_schema]
-            empty_batch = pa.RecordBatch.from_arrays(
-                empty_arrays, schema=arrow_schema
-            )
+            empty_batch = pa.RecordBatch.from_arrays(empty_arrays, schema=arrow_schema)
 
             write_rows_req = WriteRowsRequest(
                 session_id=write_resp.session_id,
@@ -401,8 +402,7 @@ class TraceWriterV2(threading.Thread):
             col = lower_to_col.get(lower_name)
             if col is None:
                 raise ValueError(
-                    f"Column '{name}' not found in trace data "
-                    f"(writer-{self.write_id})"
+                    f"Column '{name}' not found in trace data (writer-{self.write_id})"
                 )
 
             # timestamp: 先统一转 timestamp,再做时区本地化
@@ -509,7 +509,9 @@ class TraceWriterV2(threading.Thread):
             return
         rate = self._total_flushed_nbytes / elapsed  # bytes/s
         target = int(rate * self._AUTO_FLUSH_INTERVAL)
-        new_threshold = max(self._AUTO_MIN_THRESHOLD, min(self._max_size_threshold, target))
+        new_threshold = max(
+            self._AUTO_MIN_THRESHOLD, min(self._max_size_threshold, target)
+        )
         if new_threshold != self.size_threshold:
             logger.info(
                 f"[writer-{self.write_id}] auto-adjust size_threshold: "
@@ -645,9 +647,11 @@ class TraceToOdpsHookV2(Hook):
         self._start_time = time.time()
         atexit.register(self._safe_shutdown)
         MonitorReporter.report(
-            "trace_hook_init", 1,
+            "trace_hook_init",
+            1,
             {"trace_hook_version": "v2"},
-            force=True, type="counter",
+            force=True,
+            type="counter",
         )
 
     def _safe_shutdown(self):
@@ -657,9 +661,7 @@ class TraceToOdpsHookV2(Hook):
         try:
             self.end()
         except Exception as e:
-            logger.warning(
-                f"atexit shutdown of TraceToOdpsHookV2 failed: {e!r}"
-            )
+            logger.warning(f"atexit shutdown of TraceToOdpsHookV2 failed: {e!r}")
 
     def _check_errors(self):
         """主线程立即检查 error_queue,有错误就抛出带完整上下文的异常。"""
@@ -719,15 +721,11 @@ class TraceToOdpsHookV2(Hook):
         while n_sent < target:
             put_ok = False
             while time.time() < deadline:
-                dead_count = sum(
-                    1 for w in self.writers if not w.is_alive()
-                )
+                dead_count = sum(1 for w in self.writers if not w.is_alive())
                 if dead_count > n_sent:
                     # 死亡数超过已发 None 数 → 有 writer 因 error 死,raise
                     self._check_errors()
-                    dead_ids = [
-                        w.write_id for w in self.writers if not w.is_alive()
-                    ]
+                    dead_ids = [w.write_id for w in self.writers if not w.is_alive()]
                     raise RuntimeError(
                         f"writer(s) {dead_ids} died during shutdown "
                         f"(unexpected: only sent {n_sent} sentinels)"
@@ -763,12 +761,20 @@ class TraceToOdpsHookV2(Hook):
         total_flushed_nbytes = sum(w._total_flushed_nbytes for w in self.writers)
         total_flush_count = sum(w._flush_count for w in self.writers)
         elapsed = time.time() - self._start_time
-        logger.info(f"[rank-{rank}] TraceToOdpsHookV2 total write_count = {total_write_count}")
+        logger.info(
+            f"[rank-{rank}] TraceToOdpsHookV2 total write_count = {total_write_count}"
+        )
 
         tag = {"trace_hook_version": "v2"}
-        MonitorReporter.report("trace_hook_write_count", total_write_count, tag, force=True)
-        MonitorReporter.report("trace_hook_flush_count", total_flush_count, tag, force=True)
+        MonitorReporter.report(
+            "trace_hook_write_count", total_write_count, tag, force=True
+        )
+        MonitorReporter.report(
+            "trace_hook_flush_count", total_flush_count, tag, force=True
+        )
         MonitorReporter.report("trace_hook_elapsed_s", elapsed, tag, force=True)
         if elapsed > 0:
             throughput = total_flushed_nbytes / elapsed / 1024 / 1024
-            MonitorReporter.report("trace_hook_throughput_mbytes_s", throughput, tag, force=True)
+            MonitorReporter.report(
+                "trace_hook_throughput_mbytes_s", throughput, tag, force=True
+            )

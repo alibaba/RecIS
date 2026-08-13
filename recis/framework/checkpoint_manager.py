@@ -734,19 +734,32 @@ class Saver:
 
     def _evict_old_ckpt(self, ckpt_id_to_remove: str, ckpt_path: str, fs):
         """淘汰旧 ckpt: 删文件 + 注销 MOS 记录."""
+
+        def _safe_remove_path(path):
+            try:
+                fs.rm(path, recursive=True)
+            except FileNotFoundError:
+                logger.warning(f"Checkpoint path already removed: {path}")
+            except Exception as e:
+                if (
+                    PanguException is not None
+                    and isinstance(e, PanguException)
+                    and e.pangu_err_no == 2
+                ):
+                    logger.warning(f"Checkpoint path already removed: {path}")
+                else:
+                    raise
+
         if self._is_openlm_hub_ckpt:
             old_ckpt_path = self.openlm_hub_helper.pop_write_path(ckpt_id_to_remove)
             logger.info(f"Remove checkpoint {ckpt_id_to_remove}: {old_ckpt_path}")
             if old_ckpt_path is not None:
-                fs.rm(old_ckpt_path + "/", recursive=True)
+                _safe_remove_path(old_ckpt_path + "/")
         else:
             logger.info(
                 f"Remove checkpoint {os.path.join(self._output_dir, ckpt_id_to_remove)}"
             )
-            fs.rm(
-                os.path.join(self._output_dir, ckpt_id_to_remove + "/"),
-                recursive=True,
-            )
+            _safe_remove_path(os.path.join(self._output_dir, ckpt_id_to_remove + "/"))
             remains = []
             with fs.open(
                 os.path.join(self._output_dir, self._checkpoint_file), "r"

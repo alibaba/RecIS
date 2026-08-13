@@ -1,13 +1,14 @@
 import os
 from pathlib import Path
 
-import torch
-from packaging.version import Version
 from torch.profiler import ProfilerActivity, profile, schedule
 
 from recis.framework.filesystem import get_file_system
 from recis.hooks.hook import Hook
-from recis.hooks.initial_profiler_hook import _InitialProfilerHook
+from recis.hooks.initial_profiler_hook import (
+    _InitialProfilerHook as _InitialProfilerHook,  # Compatibility re-export.
+)
+from recis.hooks.initial_profiler_hook import USER_PROFILER_CREATE_STEP
 from recis.info import is_internal_enabled
 from recis.utils.logger import Logger
 
@@ -27,11 +28,19 @@ class ProfilerHook(Hook):
     visualization in Chrome's tracing tool.
 
     Args:
-        wait (int): Number of steps to wait before starting profiling. Defaults to 1.
+        wait (int): Number of steps to wait before starting profiling. Must be
+            greater than 0 for the step-driven profiler lifecycle. The public
+            profiler is created at global step 10; wait/warmup/active are local
+            to that point (for example wait=1, warmup=1 starts recording global
+            step 12). Defaults to 1.
         warmup (int): Number of warmup steps before active profiling. Defaults to 48.
         active (int): Number of active profiling steps. Defaults to 1.
         repeat (int): Number of profiling cycles to repeat. Defaults to 4.
         output_dir (str): Directory to save profiling results. Defaults to "./".
+
+    Raises:
+        ValueError: If wait is not greater than zero. Older releases used an
+            AssertionError for this invalid public argument.
 
     Attributes:
         prof (torch.profiler.profile): PyTorch profiler instance.
@@ -55,13 +64,13 @@ class ProfilerHook(Hook):
 
     def __init__(self, wait=1, warmup=48, active=1, repeat=4, output_dir="./"):
         self.logger = Logger("ProfilerHook")
-        assert wait > 0, "ProfilerHook wait must be greater than 0"
+        if wait <= 0:
+            raise ValueError("ProfilerHook wait must be greater than 0")
         if output_dir.startswith("model"):
             assert Mos is not None, "Cannot import mos, check interneal version."
             output_dir = Mos(output_dir).real_physical_path
         self.output_dir = output_dir
 
-        # leave the previous wait step for _InitialProfilerHook
         self.wait = wait
         self.warmup = warmup
         self.active = active
@@ -107,28 +116,12 @@ class ProfilerHook(Hook):
         return default_trace_handler
 
     def get_prof_schedule(self):
-        version_current = Version(torch.__version__.split("+", 1)[0])
-        # torch 2.6.0 has skip_first_wait, could align skipped step with real step
-        version_with_smart_skip = Version("2.6.0")
-        if version_current >= version_with_smart_skip:
-            skip_first = self.wait + _InitialProfilerHook.StepDuration
-            scheduler = schedule(
-                wait=self.wait,
-                warmup=self.warmup,
-                active=self.active,
-                repeat=self.repeat,
-                skip_first=skip_first,
-                skip_first_wait=1,
-            )
-        else:
-            skip_first = _InitialProfilerHook.StepDuration
-            scheduler = schedule(
-                wait=self.wait,
-                warmup=self.warmup,
-                active=self.active,
-                repeat=self.repeat,
-                skip_first=skip_first,
-            )
+        scheduler = schedule(
+            wait=self.wait,
+            warmup=self.warmup,
+            active=self.active,
+            repeat=self.repeat,
+        )
         prof = profile(
             activities=[
                 ProfilerActivity.CPU,
@@ -145,14 +138,16 @@ class ProfilerHook(Hook):
 
     def before_step(self, is_train=True, *args, **kwargs):
         before_step_count = self.prof_step_count + 1
-        effective_step_count_begin = _InitialProfilerHook.StepDuration + 1
 
-        if before_step_count < effective_step_count_begin:
-            pass
-        elif before_step_count > effective_step_count_begin:
-            pass
-        else:
-            # before_step_count == general_step_count, initiallize profiler
+        # Constructing a profile object never acquires Kineto. Start the public
+        # profiler's local schedule at step 10, after the internal profiler has
+        # fully exited at step 9. wait > 0 keeps schedule(0) at NONE, so the
+        # first prof.step() begins from a valid inactive state.
+        if before_step_count == USER_PROFILER_CREATE_STEP:
+            # This hook intentionally keeps the existing step-driven lifecycle:
+            # schedule transitions prepare/start Kineto when prof.step() moves
+            # out of NONE. Adding start() without a paired stop/error lifecycle
+            # would change the behavior of this public hook.
             self.prof = self.get_prof_schedule()
 
     def after_step(self, is_train=True, *args, **kwargs):
@@ -172,9 +167,8 @@ class ProfilerHook(Hook):
             initialization.
         """
         self.prof_step_count += 1
-        effective_step_count_begin = _InitialProfilerHook.StepDuration + 1
 
-        if self.prof_step_count < effective_step_count_begin:
+        if self.prof_step_count < USER_PROFILER_CREATE_STEP:
             return  # not my stage of after_steps
         if self.prof is None:
             return  # my stage, but not initialized yet
