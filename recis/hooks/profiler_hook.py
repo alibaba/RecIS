@@ -1,9 +1,9 @@
 import os
-from pathlib import Path
+import threading
+import traceback
 
 from torch.profiler import ProfilerActivity, profile, schedule
 
-from recis.framework.filesystem import get_file_system
 from recis.hooks.hook import Hook
 from recis.hooks.initial_profiler_hook import (
     _InitialProfilerHook as _InitialProfilerHook,  # Compatibility re-export.
@@ -13,10 +13,35 @@ from recis.info import is_internal_enabled
 from recis.utils.logger import Logger
 
 
-if is_internal_enabled():
-    from recis.utils.mos import Mos
-else:
-    Mos = None
+# Seconds a trace save (export/upload/MOS RPCs) may block before the trace
+# is abandoned, so a stuck filesystem or RPC cannot stall the training step.
+_TRACE_SAVE_TIMEOUT = 600
+
+
+def run_with_timeout(action, timeout, what, logger):
+    """Run action() with a bounded wait; abandon it after ``timeout`` seconds.
+    """
+    outcome = {}
+
+    def _run():
+        try:
+            action()
+        except BaseException:  # noqa: BLE001 - reported back for logging
+            outcome["error"] = traceback.format_exc()
+
+    worker = threading.Thread(target=_run, name="recis-trace-save", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        logger.error(
+            f"{what} timed out after {timeout}s; abandoning this trace "
+            "(the blocked worker thread is left running)"
+        )
+        return False
+    if "error" in outcome:
+        logger.error(f"{what} failed:\n{outcome['error']}")
+        return False
+    return True
 
 
 class ProfilerHook(Hook):
@@ -67,7 +92,11 @@ class ProfilerHook(Hook):
         if wait <= 0:
             raise ValueError("ProfilerHook wait must be greater than 0")
         if output_dir.startswith("model"):
-            assert Mos is not None, "Cannot import mos, check interneal version."
+            assert is_internal_enabled(), "Cannot import mos, check internal version."
+            # Lazy import: avoids the recis.hooks -> recis.framework import
+            # cycle.
+            from recis.utils.mos import Mos
+
             output_dir = Mos(output_dir).real_physical_path
         self.output_dir = output_dir
 
@@ -95,23 +124,28 @@ class ProfilerHook(Hook):
         """
 
         def default_trace_handler(prof):
+            # Lazy import: avoids the recis.hooks -> recis.framework import
+            # cycle.
+            from recis.framework.filesystem import get_file_system
+
             rank = os.environ.get("RANK", "0")
             local_save_file = f"{os.environ.get('APP_ID', 'local')}-{rank}-timeline-{prof.step_num}.json"
 
-            try:
-                output_dir_path = Path(self.output_dir)
-                output_dir_path.mkdir(parents=True, exist_ok=True)
-            except Exception as e:
-                self.logger.error(
-                    f"Failed to create output directory {self.output_dir}: {e}"
-                )
-                return
+            def _save():
+                # the output dir may be a remote uri, so let fsspec create it
+                fs = get_file_system(self.output_dir)
+                fs.makedirs(self.output_dir, exist_ok=True)
+                remote_save_file = os.path.join(self.output_dir, local_save_file)
+                prof.export_chrome_trace(local_save_file)
+                fs.put_file(local_save_file, remote_save_file)
+                self.logger.info(f"Save profiler result : {remote_save_file}")
 
-            fs = get_file_system(self.output_dir)
-            remote_save_file = os.path.join(self.output_dir, local_save_file)
-            prof.export_chrome_trace(local_save_file)
-            fs.put_file(local_save_file, remote_save_file)
-            self.logger.info(f"Save profiler result : {remote_save_file}")
+            run_with_timeout(
+                _save,
+                _TRACE_SAVE_TIMEOUT,
+                f"Save profiler result {local_save_file}",
+                self.logger,
+            )
 
         return default_trace_handler
 
@@ -148,7 +182,12 @@ class ProfilerHook(Hook):
             # schedule transitions prepare/start Kineto when prof.step() moves
             # out of NONE. Adding start() without a paired stop/error lifecycle
             # would change the behavior of this public hook.
-            self.prof = self.get_prof_schedule()
+            try:
+                self.prof = self.get_prof_schedule()
+            except Exception:
+                self.logger.error(
+                    f"Failed to create profiler:\n{traceback.format_exc()}"
+                )
 
     def after_step(self, is_train=True, *args, **kwargs):
         """Called after each training step to advance the profiler.
@@ -172,4 +211,10 @@ class ProfilerHook(Hook):
             return  # not my stage of after_steps
         if self.prof is None:
             return  # my stage, but not initialized yet
-        self.prof.step()
+        try:
+            self.prof.step()
+        except Exception:
+            # another profiler may hold the kineto session; dropping this
+            # timeline keeps the training loop alive
+            self.prof = None
+            self.logger.error(f"Profiler step failed:\n{traceback.format_exc()}")

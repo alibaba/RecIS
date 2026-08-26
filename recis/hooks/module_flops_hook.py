@@ -38,7 +38,10 @@ import os
 import traceback
 
 from recis.hooks import Hook
-from recis.hooks.initial_profiler_hook import _InitialProfilerHook
+from recis.hooks.initial_profiler_hook import (
+    INITIAL_PROFILE_LAST_STEP,
+    USER_PROFILER_CREATE_STEP,
+)
 from recis.utils.logger import Logger
 from recis.utils.profiler.combined_profiler import CombinedProfiler
 
@@ -82,12 +85,12 @@ class ModuleFlopsHook(Hook):
         self.model = model
         self.dense = dense
         self.sparse = sparse
-        min_start = _InitialProfilerHook.StepDuration + 1
+        min_start = USER_PROFILER_CREATE_STEP
         self.start_step = max(int(start_step), 1)
         if self.start_step < min_start:
             self.logger.warning(
                 f"start_step={self.start_step} overlaps with _InitialProfilerHook "
-                f"(exits at step {_InitialProfilerHook.StepDuration}), "
+                f"(exits at step {INITIAL_PROFILE_LAST_STEP}), "
                 f"clamping to {min_start} to avoid torch.profiler singleton conflict"
             )
             self.start_step = min_start

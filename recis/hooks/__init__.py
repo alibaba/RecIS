@@ -1,5 +1,6 @@
 from recis.info import is_internal_enabled
 
+from .auto_profiler_hook import AutoProfilerArguments
 from .clip_grad_norm_hook import ClipGradNormHook
 from .filter_hook import HashTableFilterHook
 from .hook import Hook
@@ -17,6 +18,7 @@ __all__ = [
     "LoggerHook",
     "_InitialProfilerHook",
     "ProfilerHook",
+    "AutoProfilerArguments",
     "ModuleFlopsHook",
     "HashTableFilterHook",
     "MetricReportHook",

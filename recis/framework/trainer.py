@@ -1,3 +1,4 @@
+import traceback
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Callable, List, Optional, Tuple
@@ -16,7 +17,8 @@ from recis.framework.checkpoint_manager import ExtraFields, Saver, SaverOptions
 from recis.framework.metrics import add_metric, get_log_metrics
 from recis.framework.request_adapter import RequestAdapter
 from recis.framework.server import server
-from recis.hooks import Hook, LoggerHook
+from recis.hooks import Hook, LoggerHook, ProfilerHook
+from recis.hooks.auto_profiler_hook import AutoProfilerArguments, _build_auto_profiler
 from recis.hooks.checkpoint_hooks import (
     CheckpointLoadArguments,
     CheckpointLoadHook,
@@ -194,6 +196,7 @@ class Trainer:
             data_to_cuda (bool): Whether to automatically move data to CUDA. Defaults to False.
             **kwargs: Additional arguments passed to Accelerator.
                 - monitor_report_args (recis.hooks.monitor_report_hook.ReportArguments)
+                - auto_profiler_args (recis.hooks.auto_profiler_hook.AutoProfilerArguments)
         """
         if hooks is None:
             hooks = []
@@ -201,6 +204,7 @@ class Trainer:
             args = TrainingArguments()
         self.args = args
         self.hooks = hooks
+        self._auto_profiler_hook = None
         self.train_dataset = train_dataset
         self.eval_dataset = eval_dataset
         self.model = model
@@ -215,6 +219,9 @@ class Trainer:
             )
         self._monitor_report_args: Optional[ReportArguments] = kwargs.pop(
             "monitor_report_args", None
+        )
+        self._auto_profiler_args: Optional[AutoProfilerArguments] = kwargs.pop(
+            "auto_profiler_args", None
         )
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
         init_kwargs = InitProcessGroupKwargs(timeout=timedelta(seconds=1800))
@@ -333,6 +340,25 @@ class Trainer:
                 min_peak_coverage=metric_report_hook.args.min_peak_coverage,
             )
         )
+        # Prevent profiler conflicts; user-configured profiler takes precedence.
+        has_manual_profiler = any(isinstance(hook, ProfilerHook) for hook in self.hooks)
+        if not has_manual_profiler:
+            auto_profiler_arg = self._auto_profiler_args
+            if auto_profiler_arg is None:
+                auto_profiler_arg = AutoProfilerArguments()
+            try:
+                self._auto_profiler_hook = _build_auto_profiler(
+                    args=auto_profiler_arg,
+                    rank=self.accelerator.process_index,
+                    world_size=self.accelerator.num_processes,
+                )
+            except Exception:
+                # Auto profiler must never break trainer init.
+                self._auto_profiler_hook = None
+                logger.error(f"Skip auto profiler:\n{traceback.format_exc()}")
+            if self._auto_profiler_hook is not None:
+                self.hooks.append(self._auto_profiler_hook)
+
         self.hooks.append(metric_report_hook)
         if self.args.eval_mos_report_uri:
             self.hooks.append(MosReporterEvalHook(self.args.eval_mos_report_uri))
@@ -352,6 +378,14 @@ class Trainer:
         Args:
             hook (Hook): The hook to add.
         """
+
+        # Prevent profiler conflicts; user-configured profiler takes precedence.
+        if isinstance(hook, ProfilerHook) and self._auto_profiler_hook is not None:
+            for index, registered_hook in enumerate(self.hooks):
+                if registered_hook is self._auto_profiler_hook:
+                    self.hooks.pop(index)
+                    break
+            self._auto_profiler_hook = None
         self.hooks.append(hook)
 
     def train(self, train_steps=None):
