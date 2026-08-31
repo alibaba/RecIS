@@ -100,7 +100,10 @@ class MonitorReporter:
             try:
                 yield
             finally:
-                torch.cuda.synchronize()
+                # Sync only the current stream: a device-wide synchronize would
+                # also wait for the pipeline-prefetch side stream, inflating
+                # every measured phase and serializing the two streams.
+                torch.cuda.current_stream().synchronize()
                 end = time.time()
                 elapsed = (end - start) * 1000  # ms
                 cls.report(metric_name, elapsed, tag=tag, force=force, type=type)

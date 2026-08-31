@@ -297,12 +297,41 @@ class RecISModel(nn.Module):
             use_pinned_memory=use_pinned_memory,
         )
 
+    def prefetch_step(self, samples: dict):
+        """Run feature_engine + embedding group/coalesce for pipeline prefetch.
+
+        Stores the result under ``_precomputed_group_features`` so that the
+        subsequent ``forward()`` can skip feature_engine and grouping.
+        """
+        saved = {}
+        for label in self.labels:
+            if label in samples:
+                saved[label] = samples.pop(label)
+        for sid in self.sample_ids:
+            if sid in samples:
+                saved[sid] = samples.pop(sid)
+
+        samples = self.feature_engine(samples)
+        group_features, direct_outs = self.embedding_engine.prefetch_group_features(
+            samples
+        )
+
+        samples.update(saved)
+        samples["_precomputed_group_features"] = (
+            dict(group_features),
+            direct_outs,
+        )
+        return samples
+
     def forward(self, samples: dict):
         """Process input samples through the complete RecIS pipeline.
 
         This method orchestrates the complete model forward pass: extracting
         labels and sample IDs, processing features through the feature engine,
         looking up embeddings, and organizing features into blocks.
+
+        When pipeline prefetch is enabled, ``samples`` may already contain
+        ``_precomputed_group_features`` produced by :meth:`prefetch_step`.
 
         Args:
             samples (dict): Dictionary containing raw input samples with
@@ -314,18 +343,6 @@ class RecISModel(nn.Module):
                   model components
                 - sample_ids (dict): Extracted sample ID values
                 - labels (dict): Extracted label values
-
-        Example:
-            .. code-block:: python
-
-                input_samples = {
-                    "user_id": user_tensor,
-                    "item_id": item_tensor,
-                    "click": label_tensor,
-                    "sample_id": id_tensor,
-                }
-
-                block_features, sample_ids, labels = model(input_samples)
         """
         sample_ids = {}
         labels = {}
@@ -333,7 +350,15 @@ class RecISModel(nn.Module):
             labels[label] = samples.pop(label)
         for sample_id in self.sample_ids:
             sample_ids[sample_id] = samples.pop(sample_id)
-        samples = self.feature_engine(samples)
-        samples = self.embedding_engine(samples)
+
+        precomputed = samples.pop("_precomputed_group_features", None)
+        if precomputed is not None:
+            samples = self.embedding_engine(
+                samples, precomputed_group_features=precomputed
+            )
+        else:
+            samples = self.feature_engine(samples)
+            samples = self.embedding_engine(samples)
+
         block_features = self.block_builder(samples)
         return block_features, sample_ids, labels

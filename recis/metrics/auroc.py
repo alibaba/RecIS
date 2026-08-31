@@ -100,6 +100,9 @@ class AUROC(nn.Module):
             torch.zeros(num_thresholds, dtype=torch.long), requires_grad=False
         )
 
+        self._pending_work = None
+        self._pending_state = None
+
     def _confusion_matrix_at_thresholds(self, predictions, labels):
         """Compute confusion matrix components at all thresholds.
 
@@ -233,50 +236,39 @@ class AUROC(nn.Module):
     def update(self, predictions, labels):
         """Update metric state with new predictions and labels.
 
-        This method accumulates confusion matrix statistics from the current batch
-        with previously seen data. It's designed for incremental updates during
-        training where you want to compute metrics across multiple batches.
-
-        Args:
-            predictions (torch.Tensor): Predicted probabilities in range [0, 1].
-                Shape: (N,) where N is the number of samples.
-            labels (torch.Tensor): Ground truth binary labels (0 or 1).
-                Shape: (N,) where N is the number of samples.
-
-        Example:
-
-        .. code-block:: python
-
-            auc_metric = AUROC(num_thresholds=200, dist_sync_on_step=True)
-
-            # Process multiple batches
-            for batch in dataloader:
-                preds = model(batch)
-                labels = batch["labels"]
-
-                # Accumulate statistics
-                auc_metric.update(preds, labels)
-
-            # Get final result
-            final_auc = auc_metric.compute()
-
-
-        Note:
-            If dist_sync_on_step is True, this method will synchronize statistics
-            across all distributed processes, which may impact performance but
-            ensures consistency in distributed training.
+        When dist_sync_on_step is True, the all_reduce is issued asynchronously
+        so the Python thread can continue while the operation is in flight.
+        The pending result is collected before the next update or compute.
         """
+        self._flush_pending()
+
         tp, fp, tn, fn = self._confusion_matrix_at_thresholds(predictions, labels)
 
-        # Synchronize across distributed processes if required
         if self.dist_sync_on_step:
-            tp, fp, tn, fn = self.sync(tp, fp, tn, fn)
+            state = torch.cat([tp, fp, tn, fn], dim=0)
+            self._pending_work = dist.all_reduce(
+                state, op=dist.ReduceOp.SUM, async_op=True
+            )
+            self._pending_state = state
+        else:
+            self.tp += tp
+            self.fp += fp
+            self.tn += tn
+            self.fn += fn
 
-        # Accumulate statistics
+    def _flush_pending(self):
+        if self._pending_work is None:
+            return
+        self._pending_work.wait()
+        tp, fp, tn, fn = self._pending_state.split(
+            [self.tp.numel(), self.fp.numel(), self.tn.numel(), self.fn.numel()], dim=0
+        )
         self.tp += tp
         self.fp += fp
         self.tn += tn
         self.fn += fn
+        self._pending_work = None
+        self._pending_state = None
 
     def sync(self, tp, fp, tn, fn):
         """Synchronize confusion matrix statistics across distributed processes.
@@ -316,67 +308,13 @@ class AUROC(nn.Module):
         return tp, fp, tn, fn
 
     def compute(self):
-        """Compute final AUROC score from accumulated statistics.
-
-        This method calculates the AUROC using all statistics accumulated through
-        previous update() calls. It's typically called at the end of an epoch or
-        evaluation period to get the final metric value.
-
-        Returns:
-            torch.Tensor: AUROC score as a scalar tensor.
-
-        Example:
-
-        .. code-block:: python
-
-            auc_metric = AUROC()
-
-            # Accumulate data from multiple batches
-            for batch in dataloader:
-                auc_metric.update(model(batch), batch["labels"])
-
-            # Get final AUC score
-            final_auc = auc_metric.compute()
-            print(f"Epoch AUC: {final_auc:.4f}")
-
-
-        Note:
-            This method uses the current accumulated state (tp, fp, tn, fn) to
-            compute the final AUROC. Make sure to call reset() before starting
-            a new evaluation period.
-        """
+        """Compute AUROC from all statistics accumulated so far."""
+        self._flush_pending()
         return self._compute_auroc(self.tp, self.fp, self.tn, self.fn)
 
     def reset(self):
-        """Reset all accumulated statistics to zero.
-
-        This method clears all internal state, setting all confusion matrix
-        components back to zero. It should be called at the beginning of each
-        new evaluation period (e.g., new epoch) to ensure clean statistics.
-
-        Example:
-
-        .. code-block:: python
-
-            auc_metric = AUROC()
-
-            for epoch in range(num_epochs):
-                # Reset at the beginning of each epoch
-                auc_metric.reset()
-
-                # Accumulate statistics for the epoch
-                for batch in dataloader:
-                    auc_metric.update(model(batch), batch["labels"])
-
-                # Get epoch result
-                epoch_auc = auc_metric.compute()
-                print(f"Epoch {epoch} AUC: {epoch_auc:.4f}")
-
-
-        Note:
-            This method modifies the internal parameter tensors in-place using
-            zero_() for efficiency.
-        """
+        """Reset all accumulated statistics to zero."""
+        self._flush_pending()
         self.tp.zero_()
         self.fp.zero_()
         self.tn.zero_()

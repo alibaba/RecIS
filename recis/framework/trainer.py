@@ -1,5 +1,5 @@
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Callable, List, Optional, Tuple
 
@@ -15,6 +15,17 @@ from torch.utils.data import Dataset
 
 from recis.framework.checkpoint_manager import ExtraFields, Saver, SaverOptions
 from recis.framework.metrics import add_metric, get_log_metrics
+from recis.framework.pipeline_utils import (
+    PREFETCH_AFTER_SPARSE_FORWARD,
+    PREFETCH_BEFORE_BACKWARD,
+    PREFETCH_BEFORE_FORWARD,
+    PREFETCH_BEFORE_OPTIM_STEP,
+    PrefetchArguments,
+    notify_prefetch,
+    resolve_prefetch_model,
+    setup_pipeline_prefetch,
+    wrap_with_prefetch,
+)
 from recis.framework.request_adapter import RequestAdapter
 from recis.framework.server import server
 from recis.hooks import Hook, LoggerHook, ProfilerHook
@@ -76,6 +87,9 @@ class TrainingArguments:
         mixed_precision (Optional[str]): Mixed precision training mode. Defaults to None. Only support "bf16" and "fp16".
         window_iter (Optional[int]): Number of windows to iter. Defaults to None.
         eval_mos_report_uri (Optional[str]): URI for MOS report when eval. Defaults to None.
+        prefetch (PrefetchArguments): Pipeline prefetch configuration (enable
+            switch / buffer size, custom transform fn, side-stream priority,
+            notify position). Defaults to a disabled ``PrefetchArguments()``.
     """
 
     gradient_accumulation_steps: int = 1
@@ -102,6 +116,7 @@ class TrainingArguments:
     mixed_precision: Optional[str] = None
     window_iter: Optional[int] = None
     eval_mos_report_uri: Optional[str] = None
+    prefetch: PrefetchArguments = field(default_factory=PrefetchArguments)
 
 
 class Trainer:
@@ -163,6 +178,11 @@ class Trainer:
             sparse_optimizer=sparse_optimizer,
             data_to_cuda=True,
         )
+        # pipeline prefetch is configured via TrainingArguments, e.g.:
+        # training_args.prefetch = PrefetchArguments(
+        #     enable_pipeline_prefetch=1,
+        #     notify_position="before_backward",
+        # )
 
         # train the model
         trainer.train()
@@ -180,6 +200,8 @@ class Trainer:
         ] = (None, None),
         sparse_optimizer: Optional[sparse_optim.SparseOptimizer] = None,
         data_to_cuda: bool = False,
+        ddp_find_unused_parameters: bool = True,
+        ddp_broadcast_buffers: bool = True,
         saver: Optional[Saver] = None,
         **kwargs,
     ) -> None:
@@ -194,6 +216,18 @@ class Trainer:
             dense_optimizers (Tuple): Tuple of (optimizer, lr_scheduler) for dense parameters.
             sparse_optimizer (Optional[sparse_optim.SparseOptimizer]): Optimizer for sparse parameters.
             data_to_cuda (bool): Whether to automatically move data to CUDA. Defaults to False.
+            ddp_find_unused_parameters (bool): Passed to DDP. When True, DDP
+                traverses the whole autograd graph after every forward to
+                detect unused parameters, which is expensive for large sparse
+                graphs. Enable only if the dense model has parameters that
+                may not receive gradients in some steps. Defaults to True to
+                preserve the existing Trainer behavior.
+            ddp_broadcast_buffers (bool): Passed to DDP. When True, DDP
+                broadcasts all module buffers from rank 0 at every forward,
+                which adds one collective per step (sparse-side buffers such
+                as hashtable filter steps do not need it). Enable only if the
+                dense model relies on synced buffers (e.g. BatchNorm running
+                stats). Defaults to True, matching DDP's default behavior.
             **kwargs: Additional arguments passed to Accelerator.
                 - monitor_report_args (recis.hooks.monitor_report_hook.ReportArguments)
                 - auto_profiler_args (recis.hooks.auto_profiler_hook.AutoProfilerArguments)
@@ -212,6 +246,24 @@ class Trainer:
         self.dense_lr_scheduler = dense_optimizers[1]
         self.sparse_optimizer = sparse_optimizer
         self.data_to_cuda = data_to_cuda
+        self._active_prefetch_iter = None
+        prefetch_args = (
+            args.prefetch if args.prefetch is not None else PrefetchArguments()
+        )
+        self._prefetch_stream_priority = prefetch_args.stream_priority
+        self._prefetch_notify_position = prefetch_args.notify_position
+        self._prefetch_enable_thread = prefetch_args.enable_thread_prefetch
+        self._prefetch_fetch_in_thread = prefetch_args.fetch_data_in_thread
+        (
+            self._pipeline_prefetch_transform,
+            self._prefetch_buffer_size,
+        ) = setup_pipeline_prefetch(
+            model=model,
+            data_to_cuda=data_to_cuda,
+            enable_pipeline_prefetch=prefetch_args.enable_pipeline_prefetch,
+            pipeline_prefetch_fn=prefetch_args.pipeline_prefetch_fn,
+        )
+        self._setup_sparse_forward_notify(model)
         self.mixed_precision = args.mixed_precision
         if self.mixed_precision is not None:
             assert self.mixed_precision in ["bf16", "fp16"], (
@@ -220,10 +272,13 @@ class Trainer:
         self._monitor_report_args: Optional[ReportArguments] = kwargs.pop(
             "monitor_report_args", None
         )
+        ddp_kwargs = DistributedDataParallelKwargs(
+            find_unused_parameters=ddp_find_unused_parameters,
+            broadcast_buffers=ddp_broadcast_buffers,
+        )
         self._auto_profiler_args: Optional[AutoProfilerArguments] = kwargs.pop(
             "auto_profiler_args", None
         )
-        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
         init_kwargs = InitProcessGroupKwargs(timeout=timedelta(seconds=1800))
         self.accelerator = Accelerator(
             kwargs_handlers=[ddp_kwargs, init_kwargs],
@@ -252,6 +307,40 @@ class Trainer:
         self.saver = self.init_saver(model, args, saver)
         self.stop_state = torch.scalar_tensor(0, dtype=torch.int64).cuda()
         self.init_hooks()
+
+    def _setup_sparse_forward_notify(self, model):
+        """Register a forward hook for the ``after_sparse_forward`` position.
+
+        Finds the sparse submodule (e.g. RecISModel, the same module that
+        provides ``prefetch_step``) and notifies the prefetch iterator right
+        after its forward completes, so the next-batch transform overlaps
+        with the dense forward as well. Registered on the unwrapped module,
+        which DDP shares by reference, so the hook survives ``prepare()``.
+        """
+        if (
+            self._pipeline_prefetch_transform is None
+            or self._prefetch_notify_position != PREFETCH_AFTER_SPARSE_FORWARD
+        ):
+            return
+        sparse_module = resolve_prefetch_model(model)
+        if sparse_module is None:
+            raise TypeError(
+                "notify_position='after_sparse_forward' requires a submodule "
+                "implementing prefetch_step() (e.g. RecISModel) to hook; "
+                f"none found under {type(model).__name__}."
+            )
+
+        def _notify_hook(module, args, output):
+            # Train-only: eval iterators are not lazy_start and the train
+            # iterator must not be released by eval-time forwards.
+            if module.training:
+                notify_prefetch(self._active_prefetch_iter)
+
+        sparse_module.register_forward_hook(_notify_hook)
+        logger.info(
+            "Prefetch notify hooked after forward of "
+            f"{type(sparse_module).__name__} (after_sparse_forward)"
+        )
 
     def init_saver(self, model, args, saver):
         saver = self.build_saver(model, args, saver)
@@ -532,6 +621,15 @@ class Trainer:
             need_break = self.sync_exit_flag(need_break)
             if need_break:
                 break
+            iterator = wrap_with_prefetch(
+                iterator,
+                self._pipeline_prefetch_transform,
+                buffer_size=self._prefetch_buffer_size,
+                lazy_start=True,
+                stream_priority=self._prefetch_stream_priority,
+                enable_thread=self._prefetch_enable_thread,
+                fetch_in_thread=self._prefetch_fetch_in_thread,
+            )
             for hook in self.hooks:
                 hook.before_window(is_train=True)
             self._train_loop_internal(iterator, max_steps, epoch)
@@ -553,6 +651,14 @@ class Trainer:
             need_break = self.sync_exit_flag(need_break)
             if need_break:
                 break
+            iterator = wrap_with_prefetch(
+                iterator,
+                self._pipeline_prefetch_transform,
+                buffer_size=self._prefetch_buffer_size,
+                stream_priority=self._prefetch_stream_priority,
+                enable_thread=self._prefetch_enable_thread,
+                fetch_in_thread=self._prefetch_fetch_in_thread,
+            )
             for hook in self.hooks:
                 hook.before_window(is_train=False)
             self._eval_loop_internal(iterator, max_steps)
@@ -576,6 +682,19 @@ class Trainer:
                     "train_and_eval window will stop, because train dataset has no window to read."
                 )
                 break
+            train_iterator = wrap_with_prefetch(
+                train_iterator,
+                self._pipeline_prefetch_transform,
+                buffer_size=self._prefetch_buffer_size,
+                lazy_start=True,
+                stream_priority=self._prefetch_stream_priority,
+                enable_thread=self._prefetch_enable_thread,
+                fetch_in_thread=self._prefetch_fetch_in_thread,
+            )
+            for hook in self.hooks:
+                hook.before_window(is_train=True)
+            self.model.train()
+            self._train_loop_internal(train_iterator, train_steps, epoch)
             eval_iterator = self.get_new_window_iter(self.eval_dataset)
             eval_need_break = eval_iterator is None
             eval_need_break = self.sync_exit_flag(eval_need_break)
@@ -584,24 +703,45 @@ class Trainer:
                     "train_and_eval window will stop, because eval dataset has no window to read."
                 )
                 break
+            eval_iterator = wrap_with_prefetch(
+                eval_iterator,
+                self._pipeline_prefetch_transform,
+                buffer_size=self._prefetch_buffer_size,
+                stream_priority=self._prefetch_stream_priority,
+                enable_thread=self._prefetch_enable_thread,
+                fetch_in_thread=self._prefetch_fetch_in_thread,
+            )
             for hook in self.hooks:
-                hook.before_window(is_train=True)
-            self.model.train()
-            self._train_loop_internal(train_iterator, train_steps, epoch)
+                hook.after_window(is_train=True)
             self.model.eval()
             self._eval_loop_internal(eval_iterator, eval_steps)
             for hook in self.hooks:
-                hook.after_window(is_train=True)
+                hook.after_window(is_train=False)
             window_iter += 1
 
     def _train_loop(self, max_steps=None, epoch=1):
         self.model.train()
-        iterator = iter(self.train_dataset)
+        iterator = wrap_with_prefetch(
+            iter(self.train_dataset),
+            self._pipeline_prefetch_transform,
+            buffer_size=self._prefetch_buffer_size,
+            lazy_start=True,
+            stream_priority=self._prefetch_stream_priority,
+            enable_thread=self._prefetch_enable_thread,
+            fetch_in_thread=self._prefetch_fetch_in_thread,
+        )
         self._train_loop_internal(iterator, max_steps, epoch)
 
     def _eval_loop(self, max_steps=None):
         self.model.eval()
-        iterator = iter(self.eval_dataset)
+        iterator = wrap_with_prefetch(
+            iter(self.eval_dataset),
+            self._pipeline_prefetch_transform,
+            buffer_size=self._prefetch_buffer_size,
+            stream_priority=self._prefetch_stream_priority,
+            enable_thread=self._prefetch_enable_thread,
+            fetch_in_thread=self._prefetch_fetch_in_thread,
+        )
         self._eval_loop_internal(iterator, max_steps)
 
     def _train_eval_loop(self, train_steps=None, eval_steps=None, epoch=1):
@@ -621,8 +761,8 @@ class Trainer:
                 for hook in self.hooks:
                     hook.out_off_data()
                 break
-            if self.data_to_cuda:
-                data = copy_data_to_device(data, "cuda")
+            if self._pipeline_prefetch_transform is None and self.data_to_cuda:
+                data = copy_data_to_device(data, "cuda", non_blocking=True)
             for hook in self.hooks:
                 hook.after_data(is_train=False, data=data)
             with torch.no_grad():
@@ -639,6 +779,8 @@ class Trainer:
             hook.after_eval()
 
     def _train_loop_internal(self, data_iter, max_steps=None, epoch=1):
+        if self._pipeline_prefetch_transform is not None:
+            self._active_prefetch_iter = data_iter
         lstep = 0
         while True:
             if max_steps is not None and lstep >= max_steps:
@@ -651,8 +793,8 @@ class Trainer:
                 for hook in self.hooks:
                     hook.out_off_data()
                 break
-            if self.data_to_cuda:
-                data = copy_data_to_device(data, "cuda")
+            if self._pipeline_prefetch_transform is None and self.data_to_cuda:
+                data = copy_data_to_device(data, "cuda", non_blocking=True)
             for hook in self.hooks:
                 hook.after_data(is_train=True, data=data)
             with self.accelerator.accumulate(self.model):
@@ -665,6 +807,11 @@ class Trainer:
                 )
             lstep += 1
 
+        # Drop the reference so the after_sparse_forward hook cannot notify
+        # a finished iterator (e.g. during eval-time forwards), and the old
+        # iterator can be reclaimed promptly on window switches.
+        self._active_prefetch_iter = None
+
         for hook in self.hooks:
             hook.after_train()
 
@@ -676,13 +823,26 @@ class Trainer:
         return None
 
     def _train_step(self, data, epoch):
+        # Release next-step prefetch at the configured position so its
+        # transform overlaps with the remaining phases of this step.
+        if self._prefetch_notify_position == PREFETCH_BEFORE_FORWARD:
+            notify_prefetch(self._active_prefetch_iter)
         with self.accelerator.autocast():
             loss = self.model(data)
+
+        # Release prefetch before backward. Loss materialization is deferred
+        # until after optimizer work so it does not delay DDP communication.
+        if self._prefetch_notify_position == PREFETCH_BEFORE_BACKWARD:
+            notify_prefetch(self._active_prefetch_iter)
+
         add_metric("epoch", epoch, report_to_mos=True)
-        add_metric("loss", loss.item(), report_to_mos=True)
+
         self.accelerator.backward(loss)
         for hook in self.hooks:
             hook.after_backward(is_train=True)
+
+        if self._prefetch_notify_position == PREFETCH_BEFORE_OPTIM_STEP:
+            notify_prefetch(self._active_prefetch_iter)
         # order must be step before zero grad
         self.dense_optimizer.step()
         if self.sparse_optimizer is not None:
@@ -692,3 +852,5 @@ class Trainer:
         self.dense_optimizer.zero_grad()
         if self.sparse_optimizer is not None:
             self.sparse_optimizer.zero_grad()
+
+        add_metric("loss", loss.item(), report_to_mos=True)

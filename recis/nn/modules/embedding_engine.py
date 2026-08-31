@@ -367,6 +367,25 @@ class RuntimeGroupFeature:
         self._coalesced_ids = None
         self._coalesced_offsets = None
 
+    def holdable_tensors(self):
+        """Return the tensors owned by this runtime group.
+
+        Used by the prefetch iterator to keep cross-stream tensors alive
+        until the consumer stream is done with them: ``forward`` drops these
+        references mid-step (via ``clear_ids`` and by popping the precomputed
+        features), so holding the group object alone is not enough. This is a
+        plain accessor — it issues no CUDA calls.
+        """
+        tensors = [
+            self._coalesced_ids,
+            self._coalesced_weights,
+            self._coalesced_offsets,
+        ]
+        tensors.extend(self._ids)
+        tensors.extend(self._weights)
+        tensors.extend(self._offsets)
+        return tensors
+
     def _format_tensor(self, input_tensor, combiner, dim, use_weight, combiner_kwargs):
         """Format input tensor for processing.
 
@@ -507,7 +526,12 @@ class RuntimeGroupFeature:
 
         This method combines all individual feature tensors into coalesced
         representations that can be processed efficiently in a single operation.
+        It is idempotent so prefetch can run coalesce before forward.
         """
+        if self._coalesced_ids is not None:
+            return
+        if not self._ids:
+            raise RuntimeError("RuntimeGroupFeature has no ids to coalesce")
         merge_id = torch.ops.recis.ids_encode(
             self._ids,
             torch.tensor(
@@ -673,43 +697,22 @@ class EmbeddingEngine(nn.Module):
     @MonitorReporter.report_time_wrapper(
         SPARSE_FWD_NAME, {"recis_emb_phase": EMB_ENGINE_NAME}
     )
-    def forward(self, input_features: dict[str, torch.Tensor]):
+    def forward(
+        self, input_features: dict[str, torch.Tensor], precomputed_group_features=None
+    ):
         """Forward pass for batch embedding processing.
-
-        This method processes multiple features efficiently by:
-        1. Grouping features by their runtime characteristics
-        2. Performing coalesced ID exchange across workers
-        3. Looking up embeddings in batches
-        4. Reducing embeddings using specified combiners
-        5. Splitting results back to individual features
 
         Args:
             input_features (dict[str, torch.Tensor]): Dictionary mapping feature
-                names to their input tensors. Features not in embedding options
-                will be passed through unchanged.
-
-        Returns:
-            dict[str, torch.Tensor]: Dictionary mapping feature names to their
-                processed outputs. Embedding features return embedding tensors,
-                while non-embedding features are passed through.
-
-        Example:
-
-        .. code-block:: python
-
-            features = {
-                "user_id": torch.tensor([[1, 2], [3, 4]]),
-                "item_id": torch.tensor([[10], [20]]),
-                "raw_feature": torch.randn(2, 5),  # Pass-through
-            }
-
-            outputs = engine(features)
-            # outputs["user_id"]: embedding tensor [2, embedding_dim]
-            # outputs["item_id"]: embedding tensor [2, embedding_dim]
-            # outputs["raw_feature"]: original tensor [2, 5]
-
+                names to their input tensors.
+            precomputed_group_features (tuple, optional): Pre-computed result of
+                ``group_features()`` from prefetch thread. If provided, skips
+                the grouping step.
         """
-        group_features, direct_outs = self.group_features(input_features)
+        if precomputed_group_features is not None:
+            group_features, direct_outs = precomputed_group_features
+        else:
+            group_features, direct_outs = self.group_features(input_features)
         group_exchange_ids = self.group_exchange_ids(group_features)
         group_exchange_embs = self.group_exchange_embs(
             group_exchange_ids, group_features
@@ -783,6 +786,19 @@ class EmbeddingEngine(nn.Module):
                         "combiner_kwargs"
                     ],
                 )
+        return group_features, direct_out
+
+    def prefetch_group_features(self, input_dict: dict[str, torch.Tensor]):
+        """Group and coalesce embedding features on the prefetch stream.
+
+        This intentionally stops before all_to_all, hashtable lookup, embedding
+        exchange, and reduce. Those operations stay in forward on the training
+        stream/process group.
+        """
+        group_features, direct_out = self.group_features(input_dict)
+        for group_fea in group_features.values():
+            for run_fea in group_fea.values():
+                run_fea.coalesce()
         return group_features, direct_out
 
     def group_exchange_ids(self, group_features):
