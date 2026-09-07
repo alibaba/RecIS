@@ -145,6 +145,7 @@ class ExchangeIDsResults:
     parts_reverse: List[int]
     reverse_index: torch.Tensor
     offsets: torch.Tensor
+    source_group: Optional[torch.Tensor] = None
     ids_await: Optional[object] = None
 
 
@@ -258,6 +259,8 @@ class EmbeddingOption:
     combiner: Optional[str] = "sum"
     combiner_kwargs: Optional[dict] = None
     grad_reduce_by: Optional[str] = "worker"
+    hdmp_group_size: Optional[int] = None
+    hdmp_group_reduce_by: Optional[str] = None
     filter_hook: Optional[FilterHook] = None
     admit_hook: Optional[AdmitHook] = None
     # Convert embeddings of int8 type to fp16; otherwise, convert them to fp32
@@ -305,6 +308,8 @@ class EmbeddingOption:
             "device": str(self.device.type),
             "initializer": str(self.initializer),
             "grad_reduce_by": self.grad_reduce_by,
+            "hdmp_group_size": self.hdmp_group_size,
+            "hdmp_group_reduce_by": self.hdmp_group_reduce_by,
             "filter_hook": str(self.filter_hook),
         }
         return json.dumps(info)
@@ -404,6 +409,8 @@ class DynamicEmbedding(torch.nn.Module):
         self._rank = int(os.environ.get("RANK", 0))
         if pg is None:
             self._pg = dist.distributed_c10d._get_default_group()
+        else:
+            self._pg = pg
         self._cpu_device = torch.device("cpu")
         self._gpu_device = torch.device(int(os.environ.get("LOCAL_RANK", 0)))
         self._hashtable = HashTable(
@@ -417,6 +424,8 @@ class DynamicEmbedding(torch.nn.Module):
             coalesced=self._emb_opt.coalesced,
             slice=gen_slice(shard_index=self._rank, shard_num=self._world_size),
             grad_reduce_by=self._emb_opt.grad_reduce_by,
+            hdmp_group_size=self._emb_opt.hdmp_group_size,
+            hdmp_group_reduce_by=self._emb_opt.hdmp_group_reduce_by,
             filter_hook=self._emb_opt.filter_hook,
             use_pinned_memory=use_pinned_memory,
         )
@@ -613,8 +622,19 @@ class DynamicEmbedding(torch.nn.Module):
             ids,
             output_split_sizes=ids_parts_reverse,
             input_split_sizes=ids_parts,
+            group=self._pg,
             async_op=True,
         )
+        source_group = None
+        if self._emb_opt.grad_reduce_by == "hdmp_group_sum":
+            group_size = self._emb_opt.hdmp_group_size
+            if group_size is None or group_size <= 0:
+                raise ValueError(f"hdmp_group_size must be positive, got {group_size}")
+            source_worker = torch.repeat_interleave(
+                torch.arange(self._world_size, dtype=torch.long, device=ids.device),
+                torch.tensor(ids_parts_reverse, dtype=torch.long, device=ids.device),
+            )
+            source_group = source_worker // group_size
 
         return ExchangeIDsResults(
             ids=output_ids,
@@ -623,6 +643,7 @@ class DynamicEmbedding(torch.nn.Module):
             parts_reverse=ids_parts_reverse,
             reverse_index=ids_reverse_index,
             offsets=offsets,
+            source_group=source_group,
         )
 
     def lookup_exchange_emb(
@@ -645,7 +666,11 @@ class DynamicEmbedding(torch.nn.Module):
                 metadata needed for aggregation.
         """
         ids_exchange_result.ids_await.wait()
-        embedding = self._hashtable(ids_exchange_result.ids, admit_hook)
+        embedding = self._hashtable(
+            ids_exchange_result.ids,
+            admit_hook,
+            source_group=ids_exchange_result.source_group,
+        )
         embedding_async, emb_await, emb_shape = EmbeddingExchange.apply(
             embedding,
             ids_exchange_result.parts_reverse,

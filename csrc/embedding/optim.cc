@@ -104,6 +104,14 @@ void SparseOptimizer::zero_grad(bool set_to_none) {
   }
 }
 
+void SparseOptimizer::zero_grad_sq() {
+  for (auto &group : param_groups_) {
+    for (auto &p : group.params()) {
+      p.second->ClearGradSq();
+    }
+  }
+}
+
 const std::unordered_map<std::string, HashTablePtr> &
 SparseOptimizer::parameters() const noexcept {
   return param_groups_.at(0).params();

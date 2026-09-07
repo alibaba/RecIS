@@ -81,6 +81,9 @@ class TestFG(unittest.TestCase):
             emb_conf.pop("initializer")
             emb_conf["device"] = str(emb_conf["device"].type)
             emb_conf["dtype"] = str(emb_conf["dtype"])
+            for optional_key in ("hdmp_group_size", "hdmp_group_reduce_by"):
+                if emb_conf.get(optional_key) is None:
+                    emb_conf.pop(optional_key)
             self.assertTrue(emb_conf == expect_emb_conf[emb_name])
             if not emb_conf == expect_emb_conf[emb_name]:
                 print(emb_conf)

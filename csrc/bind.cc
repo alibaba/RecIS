@@ -102,6 +102,10 @@ TORCH_LIBRARY(recis, m) {
       .def("accept_grad", &Hashtable::AcceptGrad)
       .def("grad", &Hashtable::Grad)
       .def("clear_grad", &Hashtable::ClearGrad)
+      .def("accept_grad_sq", &Hashtable::AcceptGradSq)
+      .def("grad_sq", &Hashtable::GradSq)
+      .def("clear_grad_sq", &Hashtable::ClearGradSq)
+      .def("has_grad_sq", &Hashtable::HasGradSq)
       .def("embedding_lookup", &Hashtable::EmbeddingLookup)
       .def("insert", &Hashtable::Insert)
       .def("reset", &Hashtable::Reset)
@@ -157,24 +161,124 @@ TORCH_LIBRARY(recis, m) {
   m.class_<recis::optim::SparseOptimizer>("SparseOptimizer");
 
   m.class_<recis::optim::SparseAdagrad>("SparseAdagrad")
+
       .def("step", &recis::optim::SparseAdagrad::step)
+
       .def("add_parameters", &recis::optim::SparseAdagrad::add_parameters)
+
       .def("state_dict", &recis::optim::SparseAdagrad::state_dict)
+
       .def("load_state_dict", &recis::optim::SparseAdagrad::load_state_dict)
+
       .def("reset_state_dict", &recis::optim::SparseAdagrad::reset_state_dict)
+
       .def("zero_grad",
+
            [](const c10::intrusive_ptr<recis::optim::SparseAdagrad>& self,
+
               c10::optional<bool> set_to_none) {
              self->zero_grad(set_to_none.value_or(true));
            })
+
       .def("set_grad_accum_steps",
+
            [](const c10::intrusive_ptr<recis::optim::SparseAdagrad>& self,
+
               const int64_t step) { self->set_grad_accum_steps(step); })
+
       .def("set_lr",
+
            [](const c10::intrusive_ptr<recis::optim::SparseAdagrad>& self,
+
               double lr) { self->set_lr(lr); })
+
+      .def("set_save_update_info_interval",
+
+           [](const c10::intrusive_ptr<recis::optim::SparseAdagrad>& self,
+
+              int64_t interval) {
+             self->set_save_update_info_interval(interval);
+           })
+
+      .def("save_update_info_interval",
+
+           [](const c10::intrusive_ptr<recis::optim::SparseAdagrad>& self) {
+             return self->save_update_info_interval();
+           })
+
+      .def("get_step_update_info",
+
+           &recis::optim::SparseAdagrad::get_step_update_info)
+
+      .def("clear_step_update_info",
+
+           &recis::optim::SparseAdagrad::clear_step_update_info)
+
       .def_static("make", recis::optim::SparseAdagrad::Make);
 
+  // SparseAdagradSum binding
+  m.class_<recis::optim::SparseAdagradSum>("SparseAdagradSum")
+
+      .def("step", &recis::optim::SparseAdagradSum::step)
+
+      .def("add_parameters", &recis::optim::SparseAdagradSum::add_parameters)
+
+      .def("state_dict", &recis::optim::SparseAdagradSum::state_dict)
+
+      .def("load_state_dict", &recis::optim::SparseAdagradSum::load_state_dict)
+
+      .def("reset_state_dict",
+           &recis::optim::SparseAdagradSum::reset_state_dict)
+
+      .def("zero_grad",
+
+           [](const c10::intrusive_ptr<recis::optim::SparseAdagradSum>& self,
+
+              c10::optional<bool> set_to_none) {
+             self->zero_grad(set_to_none.value_or(true));
+           })
+
+      .def("zero_grad_sq",
+
+           [](const c10::intrusive_ptr<recis::optim::SparseAdagradSum>& self) {
+             self->zero_grad_sq();
+           })
+
+      .def("set_grad_accum_steps",
+
+           [](const c10::intrusive_ptr<recis::optim::SparseAdagradSum>& self,
+
+              const int64_t step) { self->set_grad_accum_steps(step); })
+
+      .def("set_lr",
+
+           [](const c10::intrusive_ptr<recis::optim::SparseAdagradSum>& self,
+
+              double lr) { self->set_lr(lr); })
+
+      .def("set_save_update_info_interval",
+
+           [](const c10::intrusive_ptr<recis::optim::SparseAdagradSum>& self,
+
+              int64_t interval) {
+             self->set_save_update_info_interval(interval);
+           })
+
+      .def("save_update_info_interval",
+
+           [](const c10::intrusive_ptr<recis::optim::SparseAdagradSum>& self) {
+             return self->save_update_info_interval();
+           })
+
+      .def("get_step_update_info",
+
+           &recis::optim::SparseAdagradSum::get_step_update_info)
+
+      .def("clear_step_update_info",
+
+           &recis::optim::SparseAdagradSum::clear_step_update_info)
+
+      .def_static("make", recis::optim::SparseAdagradSum::Make);
   m.class_<recis::optim::SparseAdamW>("SparseAdamW")
       .def("step", &recis::optim::SparseAdamW::step)
       .def("add_parameters", &recis::optim::SparseAdamW::add_parameters)

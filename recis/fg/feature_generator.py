@@ -88,6 +88,8 @@ class FG:
         shape_manager: ShapeManager,
         use_coalesce=True,
         grad_reduce_by="worker",
+        hdmp_group_size=None,
+        hdmp_group_reduce_by=None,
         initializer="uniform",
         init_kwargs=None,
         emb_default_class="hash_table",
@@ -125,6 +127,8 @@ class FG:
         self.shape_manager = shape_manager
         self.use_coalesce = use_coalesce
         self.grad_reduce_by = grad_reduce_by
+        self.hdmp_group_size = hdmp_group_size
+        self.hdmp_group_reduce_by = hdmp_group_reduce_by
         self.embedding_initializer = INITIALIZER_MAPPING[initializer]
         if emb_default_class not in ["hash_table", "bucket_emb"]:
             raise ValueError(
@@ -409,6 +413,8 @@ class FG:
                     combiner=conf.combiner,
                     initializer=self.embedding_initializer(**self.init_kwargs),
                     grad_reduce_by=self.grad_reduce_by,
+                    hdmp_group_size=self.hdmp_group_size,
+                    hdmp_group_reduce_by=self.hdmp_group_reduce_by,
                     use_weight=False,
                     device=device,
                     dtype=dtype,
@@ -443,6 +449,8 @@ class FG:
                         combiner=conf.combiner,
                         initializer=self.embedding_initializer(**self.init_kwargs),
                         grad_reduce_by=self.grad_reduce_by,
+                        hdmp_group_size=self.hdmp_group_size,
+                        hdmp_group_reduce_by=self.hdmp_group_reduce_by,
                         use_weight=False,
                         device=device,
                         dtype=dtype,

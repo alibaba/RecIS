@@ -24,6 +24,20 @@ import os
 import time
 
 import numpy as np
+import pytest
+
+
+try:
+    from recis.info import is_internal_enabled
+except (ImportError, ValueError):
+    _internal_enabled = False
+else:
+    _internal_enabled = bool(is_internal_enabled())
+
+if not _internal_enabled:
+    pytest.skip(
+        "TraceToOdpsHookV2 e2e requires internal build", allow_module_level=True
+    )
 
 from recis.hooks import TraceToOdpsHook, add_to_trace
 

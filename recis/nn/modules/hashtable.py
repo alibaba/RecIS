@@ -1,4 +1,5 @@
 import json
+import math
 import os
 from typing import List, Optional, Tuple
 
@@ -147,6 +148,13 @@ class HashTable(torch.nn.Module):
             grad_reduce_by="id",
         )
 
+        # Create hash table for distributed training with gradient sum
+        hashtable_sum = HashTable(
+            embedding_shape=[128],
+            block_size=2048,
+            grad_reduce_by="worker_sum",  # Use gradient sum instead of average
+        )
+
     """
 
     def __init__(
@@ -161,6 +169,8 @@ class HashTable(torch.nn.Module):
         initializer=None,
         name: str = "hashtable",
         grad_reduce_by: str = "worker",
+        hdmp_group_size: Optional[int] = None,
+        hdmp_group_reduce_by: Optional[str] = None,
         filter_hook: Optional[FilterHook] = None,
         use_pinned_memory: bool = False,
     ):
@@ -176,14 +186,24 @@ class HashTable(torch.nn.Module):
             slice (Slice, optional): Partitioning config. Defaults to _default_slice.
             initializer (Initializer, optional): Initializer. Defaults to None.
             name (str, optional): Table name. Defaults to "hashtable".
-            grad_reduce_by (str, optional): Gradient reduction. Defaults to "worker".
+            grad_reduce_by (str, optional): Gradient reduction method. Defaults to "worker".
+                Options:
+                - "worker": Average gradients across workers
+                - "worker_sum": Sum gradients across workers (for SparseAdagradSum)
+                - "hdmp_group_sum": Sum HDMP group-reduced gradients and store
+                  group-reduced gradient squares (for SparseAdagradSum)
+                - "id": Average gradients by feature ID
+            hdmp_group_size (int, optional): Worker count in each HDMP source group.
+            hdmp_group_reduce_by (str, optional): Reduction method inside each HDMP
+                source group. Options: "id", "worker", "worker_sum".
             filter_hook (Optional[FilterHook], optional): Filter hook. Defaults to None.
             use_pinned_memory (bool, optional): Whether to use pinned memory for
                 CPU intermediate tensors to accelerate H2D/D2H transfers.
                 Defaults to False. Set to True to enable pinned memory.
 
         Raises:
-            AssertionError: If grad_reduce_by is not "id" or "worker".
+            AssertionError: If grad_reduce_by is not "id", "worker", "worker_sum",
+                or "hdmp_group_sum".
         """
         super().__init__()
         if initializer is None:
@@ -194,8 +214,13 @@ class HashTable(torch.nn.Module):
         if children is None:
             children = [name]
         self._device = device
-        assert grad_reduce_by in ["id", "worker"]
+        assert grad_reduce_by in ["id", "worker", "worker_sum", "hdmp_group_sum"]
+        if grad_reduce_by == "hdmp_group_sum":
+            assert hdmp_group_size is not None and hdmp_group_size > 0
+            assert hdmp_group_reduce_by in ["id", "worker", "worker_sum"]
         self._grad_reduce_by = grad_reduce_by
+        self._hdmp_group_size = hdmp_group_size
+        self._hdmp_group_reduce_by = hdmp_group_reduce_by
         self._initializer.set_shape([block_size] + embedding_shape)
         self._initializer.set_dtype(dtype)
         self._initializer.build()
@@ -248,7 +273,12 @@ class HashTable(torch.nn.Module):
         """Clear child hashtable."""
         HashtableRegister().get_ht_by_child_name(child)._hashtable_impl.clear(child)
 
-    def forward(self, ids: torch.Tensor, admit_hook: AdmitHook = None) -> torch.Tensor:
+    def forward(
+        self,
+        ids: torch.Tensor,
+        admit_hook: AdmitHook = None,
+        source_group: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """Perform embedding lookup for given feature IDs.
 
         This method looks up embeddings for the provided feature IDs,
@@ -293,6 +323,23 @@ class HashTable(torch.nn.Module):
             )
             if self._grad_reduce_by == "id":
                 embedding = GradIDMeanFunction.apply(embedding, index)
+            elif self._grad_reduce_by == "worker_sum":
+                embedding = GradWorkerSumFunction.apply(embedding, index, self, emb_idx)
+            elif self._grad_reduce_by == "hdmp_group_sum":
+                if source_group is None:
+                    raise RuntimeError(
+                        "source_group is required when grad_reduce_by='hdmp_group_sum'"
+                    )
+                embedding = GradHDMPGroupSumFunction.apply(
+                    embedding,
+                    index,
+                    source_group,
+                    self,
+                    emb_idx,
+                    self._hdmp_group_size,
+                    math.ceil(self._worker_num / self._hdmp_group_size),
+                    self._hdmp_group_reduce_by,
+                )
             else:
                 slice_num = torch.scalar_tensor(self._worker_num)
                 embedding = GradWorkerMeanFunction.apply(embedding, index, slice_num)
@@ -602,6 +649,10 @@ class HashTableLookupHelpFunction(torch.autograd.Function):
     def backward(ctx, grad_output_index, grad_output_emb) -> torch.Tensor:
         """Backward pass for embedding lookup.
 
+        This function handles the gradient computation for the hash table
+        lookup operation. It aggregates gradients across duplicate IDs and
+        passes them to the hash table for storage.
+
         Args:
             ctx: Autograd context containing forward pass information.
             grad_output_index: Gradient for indices (unused).
@@ -611,11 +662,19 @@ class HashTableLookupHelpFunction(torch.autograd.Function):
             Tuple: Gradients for all inputs (most are None).
         """
         (index,) = ctx.saved_tensors
-        ctx.hashtable.accept_grad(
+        hashtable = ctx.hashtable
+
+        if (
+            hasattr(grad_output_emb, "_grad_already_handled")
+            and grad_output_emb._grad_already_handled
+        ):
+            return (None, None, None, None)
+
+        hashtable.accept_grad(
             index.to(device="cuda", non_blocking=True),
             grad_output_emb.to(device="cuda", non_blocking=True),
         )
-        return (None, None, None, None, None)
+        return (None, None, None, None)
 
 
 class GradIDMeanFunction(torch.autograd.Function):
@@ -720,6 +779,213 @@ class GradWorkerMeanFunction(torch.autograd.Function):
         )
         reduce_grad.index_add_(0, index, grad_outputs)
         return reduce_grad, None, None
+
+
+class GradWorkerSumFunction(torch.autograd.Function):
+    """Autograd function for gradient sum aggregation by worker.
+
+    This function handles gradient computation when using worker-based
+    gradient sum reduction, accumulating gradients across multiple workers
+    without averaging. It also computes gradient squared sums for optimizer
+    state updates.
+
+    Note:
+        This function returns a special tensor with a flag attribute that
+        tells HashTableLookupHelpFunction.backward to skip gradient storage,
+        as GradWorkerSumFunction.backward handles it directly.
+    """
+
+    @staticmethod
+    def forward(ctx, embedding, index, hashtable, embedding_index):
+        """Forward pass for worker-based gradient sum aggregation.
+
+        Args:
+            ctx: Autograd context.
+            embedding (torch.Tensor): Input embeddings.
+            index (torch.Tensor): Index mapping for gathering.
+            hashtable: The HashTable instance to store gradients.
+
+        Returns:
+            torch.Tensor: Gathered embeddings.
+        """
+        ctx.save_for_backward(index, embedding_index)
+        ctx.hashtable = hashtable
+        return torch.ops.recis.gather(index, embedding)
+
+    @staticmethod
+    def backward(ctx, grad_outputs):
+        """Backward pass for worker-based gradient sum aggregation.
+
+        Computes both gradient sum and gradient squared sum, storing them
+        directly to the hashtable. Returns grad_sum tensor with a flag
+        to indicate that gradient has been handled.
+
+        Args:
+            ctx: Autograd context.
+            grad_outputs (torch.Tensor): Output gradients.
+
+        Returns:
+            Tuple[torch.Tensor, None, None]: (grad_sum, None, None)
+        """
+        grad_outputs = grad_outputs.cuda()
+        (index, embedding_index) = ctx.saved_tensors
+        hashtable = ctx.hashtable
+
+        if index.numel() == 0:
+            grad_sum = torch.zeros(
+                [0] + list(grad_outputs.shape)[1:], device=grad_outputs.device
+            )
+            grad_sq_sum = torch.zeros(
+                [0] + list(grad_outputs.shape)[1:], device=grad_outputs.device
+            )
+            # Store empty gradients to hashtable
+            empty_index = torch.zeros([0], dtype=torch.long, device=grad_outputs.device)
+            hashtable._hashtable_impl.accept_grad(empty_index, grad_sum)
+            hashtable._hashtable_impl.accept_grad_sq(empty_index, grad_sq_sum)
+            # Mark gradient as handled
+            grad_sum._grad_already_handled = True
+            return grad_sum, None, None, None
+
+        # Get unique indices for aggregation
+        index_unique, index_reverse = torch.unique(
+            index.view((-1,)), return_inverse=True, sorted=False
+        )
+
+        # Compute gradient sum
+        grad_sum = torch.zeros(
+            [index_unique.numel()] + list(grad_outputs.shape)[1:],
+            dtype=grad_outputs.dtype,
+            device=grad_outputs.device,
+        )
+        grad_sum.index_add_(0, index_reverse, grad_outputs)
+
+        # Compute gradient squared sum
+        grad_sq_outputs = grad_outputs * grad_outputs
+        grad_sq_sum = torch.zeros(
+            [index_unique.numel()] + list(grad_outputs.shape)[1:],
+            dtype=grad_outputs.dtype,
+            device=grad_outputs.device,
+        )
+        grad_sq_sum.index_add_(0, index_reverse, grad_sq_outputs)
+
+        # Store gradients to hashtable
+        index_cuda = embedding_index.to(device="cuda")
+        hashtable._hashtable_impl.accept_grad(index_cuda, grad_sum)
+        hashtable._hashtable_impl.accept_grad_sq(index_cuda, grad_sq_sum)
+
+        # Mark gradient as handled so HashTableLookupHelpFunction.backward skips it
+        grad_sum._grad_already_handled = True
+        return grad_sum, None, None, None
+
+
+class GradHDMPGroupSumFunction(torch.autograd.Function):
+    """Aggregate sparse grads by HDMP source group for SparseAdagradSum.
+
+    The incoming gradients are aligned with the pre-unique request sequence.
+    ``index`` maps each request row to the unique embedding row, while
+    ``source_group`` maps each request row to its 32-worker HDMP group.
+    """
+
+    @staticmethod
+    def forward(
+        ctx,
+        embedding,
+        index,
+        source_group,
+        hashtable,
+        embedding_index,
+        group_size,
+        num_groups,
+        group_reduce_by,
+    ):
+        ctx.save_for_backward(index, source_group, embedding_index)
+        ctx.hashtable = hashtable
+        ctx.group_size = group_size
+        ctx.num_groups = num_groups
+        ctx.group_reduce_by = group_reduce_by
+        return torch.ops.recis.gather(index, embedding)
+
+    @staticmethod
+    def backward(ctx, grad_outputs):
+        grad_outputs = grad_outputs.cuda()
+        index, source_group, embedding_index = ctx.saved_tensors
+        hashtable = ctx.hashtable
+
+        if index.numel() == 0:
+            grad_sum = torch.zeros(
+                [0] + list(grad_outputs.shape)[1:], device=grad_outputs.device
+            )
+            grad_sq_sum = torch.zeros(
+                [0] + list(grad_outputs.shape)[1:], device=grad_outputs.device
+            )
+            empty_index = torch.zeros([0], dtype=torch.long, device=grad_outputs.device)
+            hashtable._hashtable_impl.accept_grad(empty_index, grad_sum)
+            hashtable._hashtable_impl.accept_grad_sq(empty_index, grad_sq_sum)
+            grad_sum._grad_already_handled = True
+            return grad_sum, None, None, None, None, None, None, None
+
+        index = index.to(device=grad_outputs.device, dtype=torch.long)
+        source_group = source_group.to(device=grad_outputs.device, dtype=torch.long)
+        source_group = source_group.view(-1)
+        index = index.view(-1)
+
+        if source_group.numel() != index.numel():
+            raise RuntimeError(
+                "source_group must align with the original request sequence: "
+                f"source_group={source_group.numel()}, index={index.numel()}"
+            )
+
+        num_unique = int(embedding_index.numel())
+        num_groups = int(ctx.num_groups)
+        group_size = int(ctx.group_size)
+        group_reduce_by = ctx.group_reduce_by
+
+        if source_group.numel() > 0:
+            max_group = int(source_group.max().item())
+            if max_group >= num_groups:
+                raise RuntimeError(
+                    f"source_group contains group {max_group}, "
+                    f"but num_groups={num_groups}"
+                )
+
+        flat_group_index = source_group * num_unique + index
+        grouped_shape = [num_groups * num_unique] + list(grad_outputs.shape)[1:]
+        group_grad = torch.zeros(
+            grouped_shape, dtype=grad_outputs.dtype, device=grad_outputs.device
+        )
+        group_grad.index_add_(0, flat_group_index, grad_outputs)
+
+        if group_reduce_by == "id":
+            counts = torch.zeros(
+                [num_groups * num_unique],
+                dtype=grad_outputs.dtype,
+                device=grad_outputs.device,
+            )
+            ones = torch.ones(
+                [flat_group_index.numel()],
+                dtype=grad_outputs.dtype,
+                device=grad_outputs.device,
+            )
+            counts.index_add_(0, flat_group_index, ones)
+            counts = counts.clamp_min_(1).view(
+                [num_groups * num_unique] + [1] * (grad_outputs.dim() - 1)
+            )
+            group_grad = group_grad / counts
+        elif group_reduce_by == "worker":
+            group_grad = group_grad / group_size
+
+        group_grad = group_grad.view(
+            [num_groups, num_unique] + list(grad_outputs.shape)[1:]
+        )
+        grad_sum = group_grad.sum(dim=0)
+        grad_sq_sum = (group_grad * group_grad).sum(dim=0)
+
+        index_cuda = embedding_index.to(device=grad_outputs.device)
+        hashtable._hashtable_impl.accept_grad(index_cuda, grad_sum)
+        hashtable._hashtable_impl.accept_grad_sq(index_cuda, grad_sq_sum)
+
+        grad_sum._grad_already_handled = True
+        return grad_sum, None, None, None, None, None, None, None
 
 
 def is_hashtable(obj):

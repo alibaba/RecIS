@@ -3,42 +3,44 @@ import torch
 from recis.optim.sparse_optim import SparseOptimizer
 
 
-class SparseAdagrad(SparseOptimizer):
-    """Sparse Adagrad optimizer for efficient sparse parameter optimization.
+class SparseAdagradSum(SparseOptimizer):
+    """Sparse Adagrad optimizer with gradient sum (not average) for distributed training.
 
     This class implements the Adagrad optimization algorithm specifically optimized
-    for sparse parameters in recommendation systems. It extends the SparseOptimizer
-    base class and uses RecIS's C++ implementation for maximum performance.
+    for sparse parameters in recommendation systems. Unlike standard SparseAdagrad,
+    this version uses gradient SUM across workers instead of gradient AVERAGE,
+    making it suitable for distributed training scenarios where gradients should
+    be accumulated rather than averaged.
 
-    The Adagrad algorithm provides adaptive learning rates by scaling updates based
-    on the historical sum of squared gradients. For sparse parameters, this implementation
-    only  updates parameters that have received gradients, making it highly efficient
-    for large embedding tables where only a small fraction of parameters are active in
-    each training step.
+    Key differences from SparseAdagrad:
+        - Gradient update uses SUM of gradients from all workers (not average)
+        - State sum update uses SUM of squared gradients from all workers (not average of squared gradients)
+        - weight_decay is not supported
 
     Mathematical formulation:
 
     .. math::
 
-        state_sum_{t} = state_sum_{t-1} + g_t^2 \n
+        state_sum_{t} = state_sum_{t-1} + \\sum_{w} g_{w}^2 \n
         lr = lr / (1 + (step - 1) * lr_decay) \n
-        θ_t = θ_{t-1} - lr * (g_t / (√state_sum_t + ε))
+        θ_t = θ_{t-1} - lr * (\\sum_{w} g_{w} / (√state_sum_t + ε))
 
     Where:
         - θ: parameters
-        - g: gradients
+        - g_w: gradient from worker w
+        - \\sum_{w}: sum over all workers
         - ε: eps
         - lr: learning rate
         - lr_decay: learning rate decay
         - state_sum: historical sum of squared gradients
 
     Example:
-        Creating and using SparseAdagrad:
+        Creating and using SparseAdagradSum:
 
     .. code-block:: python
 
         # Initialize with custom hyperparameters
-        optimizer = SparseAdagrad(
+        optimizer = SparseAdagradSum(
             param_dict=sparse_parameters,
             lr=0.001,  # Learning rate
             eps=1e-8,  # Numerical stability
@@ -65,26 +67,28 @@ class SparseAdagrad(SparseOptimizer):
         weight_decay: float = 0,
         save_update_info_interval: int = 0,
     ) -> None:
-        """Initialize SparseAdagrad optimizer with specified hyperparameters.
+        """Initialize SparseAdagradSum optimizer with specified hyperparameters.
 
         Args:
             param_dict (dict): Dictionary of sparse parameters to optimize.
                 Keys are parameter names, values are parameter tensors (typically HashTables).
-            lr (float, optional): Learning rate. Defaults to 1e-2.
-            lr (float, Tensor, optional): learning rate (default: 1e-2)
-            lr_decay (float, optional): learning rate decay (default: 0)
-            initial_accumulator_value (float, optional): initial value of the sum of squares of gradients (default: 0)
-            eps (float, optional): term added to the denominator to improve numerical stability (default: 1e-10)
-            weight_decay (float, optional): weight decay (L2 penalty). Defaults to 0.
+            lr (float, optional): Learning rate. Defaults to 1e-3.
+            lr_decay (float, optional): Learning rate decay. Defaults to 0.
+            initial_accumulator_value (float, optional): Initial value of the sum of squares of gradients. Defaults to 0.
+            eps (float, optional): Term added to the denominator to improve numerical stability. Defaults to 1e-10.
+            weight_decay (float, optional): Unsupported for SparseAdagradSum.
+                Must be 0.
             save_update_info_interval (int, optional): Interval for saving update information.
                 Defaults to 0 (never save). Set to 1 to save every step, 2 to save every 2 steps, etc.
 
         Note:
-            The SparseAdagrad implemented here operates on RecIS HashTables.
-            Algorithmically, it is equivalent to the torch.optim.Adagrad optimizer
-            applied to parameters within a standard torch.nn.Embedding layer.
+            The SparseAdagradSum implemented here operates on RecIS HashTables.
+            It uses gradient SUM across workers instead of gradient AVERAGE,
+            which is different from the standard SparseAdagrad behavior.
         """
         super().__init__(lr=lr)
+        if weight_decay != 0:
+            raise ValueError("SparseAdagradSum does not support weight_decay")
 
         # Store hyperparameters
         self._lr = lr
@@ -94,15 +98,33 @@ class SparseAdagrad(SparseOptimizer):
         self._initial_accumulator_value = initial_accumulator_value
         self._save_update_info_interval = save_update_info_interval
 
-        self._imp = torch.classes.recis.SparseAdagrad.make(
+        self._imp = torch.classes.recis.SparseAdagradSum.make(
             param_dict,
             self._lr,
             self._lr_decay,
             self._initial_accumulator_value,
             self._eps,
-            self._weight_decay,
             self._save_update_info_interval,
         )
+
+    def zero_grad(self):
+        """Clear gradients with gradient accumulation support.
+
+        This method clears parameter gradients, but only when gradient accumulation
+        steps are completed. This ensures that gradients are properly accumulated
+        across multiple forward passes before being cleared.
+
+        Note:
+            When gradient accumulation is enabled, this method only clears
+            gradients every _grad_accum_steps calls, synchronized with the
+            step() method.
+        """
+        assert self._grad_accum_steps > 0
+
+        # Only clear gradients when accumulation steps are reached
+        if self._local_step % self._grad_accum_steps == 0:
+            self._imp.zero_grad(None)
+            self._imp.zero_grad_sq()
 
     def get_step_update_info(self) -> dict:
         """Get update information from the last optimizer step.

@@ -125,6 +125,9 @@ class SparseOptimizer : public torch::CustomClassHolder {
   /// Zeros out the gradients of all parameters.
   void zero_grad(bool set_to_none = true);
 
+  /// Zeros out the gradient squares of all parameters (for SparseAdagradSum).
+  void zero_grad_sq();
+
   /// Provides a const reference to the parameters in the first param_group this
   /// optimizer holds.
   const std::unordered_map<std::string, HashTablePtr> &parameters()

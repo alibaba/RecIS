@@ -171,6 +171,13 @@ class Hashtable : public torch::CustomClassHolder {
   torch::Tensor Grad();
   void ClearGrad();
 
+  // for sum opt (gradient sum and squared sum)
+  bool HasGradSq() const { return grad_sq_.size() > 0; };
+  void AcceptGradSq(const torch::Tensor &grad_index,
+                    const torch::Tensor &grad_sq);
+  torch::Tensor GradSq(int64_t accumulate_steps);
+  void ClearGradSq();
+
   const at::intrusive_ptr<recis::embedding::SliceInfo> SliceInfo();
   at::intrusive_ptr<recis::embedding::SlotGroup> SlotGroup();
   at::intrusive_ptr<recis::embedding::ChildrenInfo> ChildrenInfo();
@@ -211,5 +218,7 @@ class Hashtable : public torch::CustomClassHolder {
   // for opt
   std::vector<torch::Tensor> grad_index_;
   std::vector<torch::Tensor> grad_;
+  std::vector<torch::Tensor> grad_sq_index_;
+  std::vector<torch::Tensor> grad_sq_;
   HashtableConfig config_;
 };

@@ -170,6 +170,8 @@ class HashTableCoalescedGroup:
             coalesced=True,
             initializer=self._emb_opt.initializer,
             grad_reduce_by=self._emb_opt.grad_reduce_by,
+            hdmp_group_size=self._emb_opt.hdmp_group_size,
+            hdmp_group_reduce_by=self._emb_opt.hdmp_group_reduce_by,
             fp16_enabled=self._emb_opt.fp16_enabled,
             filter_hook=self._emb_opt.filter_hook,
         )

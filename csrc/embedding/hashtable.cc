@@ -113,6 +113,8 @@ void Hashtable::ResetInternalState() {
 
   grad_ = {};
   grad_index_ = {};
+  grad_sq_ = {};
+  grad_sq_index_ = {};
 }
 
 torch::Tensor Hashtable::ToStorageDevice(const torch::Tensor &tensor) {
@@ -154,9 +156,11 @@ void Hashtable::AcceptGrad(const torch::Tensor &grad_index,
 torch::Tensor Hashtable::Grad() {
   auto index = torch::cat(grad_index_, 0);
   auto grad_outputs = torch::cat(grad_, 0);
+
   auto output = at::_unique(index, false, true);
   torch::Tensor unique_values = std::get<0>(output);
   torch::Tensor unique_index = std::get<1>(output);
+
   std::vector<int64_t> final_shape = {};
   final_shape.push_back(0);
   auto emb_shape = grad_outputs.sizes().slice(1);
@@ -178,6 +182,7 @@ torch::Tensor Hashtable::Grad() {
     final_grad = torch::zeros(
         final_shape,
         torch::dtype(grad_outputs.dtype()).device(grad_outputs.device()));
+
     final_grad.index_add_(0, unique_index.view({-1}), grad_outputs);
     if (unique_values.numel() > 0) {
       final_shape[0] = unique_values.max().item<int64_t>() + 1;
@@ -194,6 +199,63 @@ torch::Tensor Hashtable::Grad() {
 void Hashtable::ClearGrad() {
   grad_index_.clear();
   grad_.clear();
+}
+
+void Hashtable::AcceptGradSq(const torch::Tensor &grad_index,
+                             const torch::Tensor &grad_sq) {
+  TORCH_CHECK(grad_index.scalar_type() == torch::kLong);
+  TORCH_CHECK(grad_sq.scalar_type() == slot_group_->EmbSlot()->Dtype());
+  grad_sq_index_.push_back(grad_index);
+  grad_sq_.push_back(grad_sq);
+}
+
+torch::Tensor Hashtable::GradSq(int64_t accumulate_steps) {
+  auto index = torch::cat(grad_sq_index_, 0);
+  auto grad_sq_outputs = torch::cat(grad_sq_, 0);
+
+  auto output = at::_unique(index, false, true);
+  torch::Tensor unique_values = std::get<0>(output);
+  torch::Tensor unique_index = std::get<1>(output);
+
+  std::vector<int64_t> final_shape = {};
+  final_shape.push_back(0);
+  auto emb_shape = grad_sq_outputs.sizes().slice(1);
+  final_shape.insert(final_shape.end(), emb_shape.data(),
+                     emb_shape.data() + emb_shape.size());
+  torch::Tensor final_indices;
+  torch::Tensor final_grad_sq;
+  if (index.numel() == unique_values.numel()) {
+    final_indices = index.view({1, -1});
+    final_grad_sq = grad_sq_outputs;
+    if (index.numel() > 0) {
+      final_shape[0] = index.max().item<int64_t>() + 1;
+    } else {
+      final_shape[0] = 0;
+    }
+  } else {
+    final_indices = unique_values.view({1, -1});
+    final_shape[0] = unique_values.numel();
+    final_grad_sq = torch::zeros(
+        final_shape,
+        torch::dtype(grad_sq_outputs.dtype()).device(grad_sq_outputs.device()));
+
+    final_grad_sq.index_add_(0, unique_index.view({-1}), grad_sq_outputs);
+    if (unique_values.numel() > 0) {
+      final_shape[0] = unique_values.max().item<int64_t>() + 1;
+    } else {
+      final_shape[0] = 0;
+    }
+  }
+  final_grad_sq = final_grad_sq / accumulate_steps;
+  auto sparse_grad_sq =
+      torch::sparse_coo_tensor(final_indices, final_grad_sq, final_shape);
+  sparse_grad_sq = sparse_grad_sq.detach_();
+  return sparse_grad_sq;
+}
+
+void Hashtable::ClearGradSq() {
+  grad_sq_index_.clear();
+  grad_sq_.clear();
 }
 
 const at::intrusive_ptr<recis::embedding::SliceInfo> Hashtable::SliceInfo() {
