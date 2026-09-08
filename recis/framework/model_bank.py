@@ -306,7 +306,9 @@ def load_pt_file(ckpt_dir: str, file_name: str, fs=None):
     from_pickle = False
     if fs.exists(pt_path):
         with fs.open(pt_path, "rb") as f:
-            data = torch.load(f=f, weights_only=False)
+            # Model-bank parsing only needs keys/meta. Force CPU here to avoid
+            # transiently restoring checkpoint tensors onto cuda:0 on every rank.
+            data = torch.load(f=f, map_location="cpu", weights_only=False)
     elif fs.exists(pk_path):
         from_pickle = True
         f = fs.open(pk_path, "rb")

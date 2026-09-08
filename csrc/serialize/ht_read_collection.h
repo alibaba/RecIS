@@ -35,6 +35,8 @@ class HTReadCollection : public at::intrusive_ptr_target {
   AT_DISALLOW_COPY_AND_ASSIGN(HTReadCollection);
 
  private:
+  void ProcessChunk(int64_t beg_ids, int64_t num_ids, HashTablePtr target_ht);
+
   bool id_done_;
   std::string share_name_;
   at::intrusive_ptr<HTIdReadBlock> id_reader_;

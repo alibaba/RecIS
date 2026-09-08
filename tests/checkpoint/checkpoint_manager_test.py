@@ -78,6 +78,45 @@ _mock_if_missing("column_io.dataset.log_util")
 from recis.framework.checkpoint_manager import Saver  # noqa: E402
 
 
+class TestSaveDeviceSynchronization(unittest.TestCase):
+    """Tests CUDA synchronization without requiring checkpoint data."""
+
+    def _make_saver_stub(self):
+        stub = MagicMock()
+        stub._shard_num = 1
+        stub._shard_id = 1
+        stub._sparse_state_dict = {}
+        stub._io_state = {}
+        fs = MagicMock()
+        fs.exists.return_value = True
+        stub._resolve_save_context.return_value = ("/tmp/ckpt", fs)
+        return stub
+
+    @patch("recis.framework.checkpoint_manager.torch.cuda.synchronize")
+    @patch("recis.framework.checkpoint_manager.torch.cuda.is_initialized")
+    def test_save_skips_cuda_sync_before_initialization(
+        self, is_initialized, synchronize
+    ):
+        is_initialized.return_value = False
+        sync_func = MagicMock()
+
+        Saver.save(self._make_saver_stub(), "ckpt", sync_func=sync_func)
+
+        synchronize.assert_not_called()
+        sync_func.assert_called_once_with()
+
+    @patch("recis.framework.checkpoint_manager.torch.cuda.synchronize")
+    @patch("recis.framework.checkpoint_manager.torch.cuda.is_initialized")
+    def test_save_synchronizes_initialized_cuda(self, is_initialized, synchronize):
+        is_initialized.return_value = True
+        sync_func = MagicMock()
+
+        Saver.save(self._make_saver_stub(), "ckpt", sync_func=sync_func)
+
+        synchronize.assert_called_once_with()
+        sync_func.assert_called_once_with()
+
+
 class TestUpdateCkptIndex(unittest.TestCase):
     """测试 _update_ckpt_index 方法：ckpt 版本列表与索引文件的更新逻辑。"""
 

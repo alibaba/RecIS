@@ -100,10 +100,10 @@ class MonitorReporter:
             try:
                 yield
             finally:
-                # Sync only the current stream: a device-wide synchronize would
-                # also wait for the pipeline-prefetch side stream, inflating
-                # every measured phase and serializing the two streams.
-                torch.cuda.current_stream().synchronize()
+                # Sync only the current stream so side-stream prefetch remains
+                # overlapped, but do not initialize CUDA for CPU-only jobs.
+                if torch.cuda.is_initialized():
+                    torch.cuda.current_stream().synchronize()
                 end = time.time()
                 elapsed = (end - start) * 1000  # ms
                 cls.report(metric_name, elapsed, tag=tag, force=force, type=type)

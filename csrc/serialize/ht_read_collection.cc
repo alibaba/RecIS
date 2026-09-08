@@ -3,6 +3,8 @@
 #include <string>
 
 #include "ATen/core/List.h"
+#include "c10/core/DeviceGuard.h"
+#include "c10/core/DeviceType.h"
 #include "c10/util/Exception.h"
 #include "c10/util/intrusive_ptr.h"
 #include "embedding/hashtable.h"
@@ -15,17 +17,8 @@ namespace serialize {
 namespace {
 // split into chunks, each chunk is processed concurrently
 struct ChunkInfo {
-  int64_t slice_id;
-  int64_t beg_ids;    // beginning id index (sample number)
-  int64_t num_ids;    // number of ids (sample number)
-  int64_t beg_bytes;  // beginning byte offset
-  int64_t num_bytes;  // number of bytes
-  ChunkInfo(int64_t slice_id, int64_t beg_ids, int64_t num_ids)
-      : slice_id(slice_id),
-        beg_ids(beg_ids),
-        num_ids(num_ids),
-        beg_bytes(beg_ids * sizeof(int64_t)),
-        num_bytes(num_ids * sizeof(int64_t)) {}
+  int64_t beg_ids;  // beginning id index (sample number)
+  int64_t num_ids;  // number of ids (sample number)
 };
 }  // namespace
 
@@ -71,6 +64,79 @@ bool HTReadCollection::Empty() {
   return block_reader_.empty() && id_reader_ == nullptr;
 }
 
+void HTReadCollection::ProcessChunk(int64_t beg_ids, int64_t num_ids,
+                                    HashTablePtr target_ht) {
+  if (num_ids == 0) {
+    return;
+  }
+
+  int64_t beg_bytes = beg_ids * sizeof(int64_t);
+  int64_t num_bytes = num_ids * sizeof(int64_t);
+
+  auto id_block_info = id_reader_->GetBlockInfo();
+  int64_t id_block_beg = id_block_info->OffsetBeg();
+
+  torch::Tensor chunk_ids = torch::empty(
+      {num_ids}, at::TensorOptions().dtype(torch::kInt64).device(torch::kCPU));
+
+  auto id_file = id_reader_->GetTableReader()->File();
+  torch::string_view ret;
+
+  int64_t id_offset = id_block_beg + beg_bytes;
+  int64_t id_read_size = num_bytes;
+
+  RECIS_STATUS_COND(id_file->Read(id_offset, id_read_size, &ret,
+                                  (char *)chunk_ids.data_ptr()));
+
+  auto chunk_accept = HTIdReadBlock::MarkIdAcceptable(
+      chunk_ids, target_ht->SliceInfo()->slice_begin(),
+      target_ht->SliceInfo()->slice_end(),
+      target_ht->SliceInfo()->slice_size());
+
+  id_reader_->PrepareIdsForInsert(chunk_ids, chunk_accept);
+
+  auto chunk_index =
+      target_ht->InsertLookupIndexWithIndicator(chunk_ids, chunk_accept);
+
+  for (auto slot_reader : block_reader_) {
+    auto slot_block_info = slot_reader->GetBlockInfo();
+    auto flat_nbytes = slot_reader->GetFlatBytes();
+
+    auto slot_file_offset = beg_ids * flat_nbytes;
+    auto read_size_bytes = num_ids * flat_nbytes;
+
+    int64_t final_file_offset = slot_block_info->OffsetBeg() + slot_file_offset;
+
+    auto slot_shape = slot_block_info->Shape();
+    slot_shape[0] = num_ids;
+    at::Tensor slot_tensor =
+        torch::empty(slot_shape, at::TensorOptions()
+                                     .device(torch::kCPU)
+                                     .dtype(slot_block_info->Dtype()));
+    TORCH_CHECK(slot_block_info->Dtype() == slot_reader->GetSlot()->Dtype(),
+                "Slot dtype not match", "expected: ", slot_block_info->Dtype(),
+                " actual: ", slot_reader->GetSlot()->Dtype(), ";",
+                slot_block_info->DebugInfo());
+    TORCH_CHECK(
+        slot_tensor.sizes().vec() ==
+            slot_reader->GetSlot()->FullShape(slot_tensor.size(0)),
+        "shape not match",
+        "expected: ", slot_reader->GetSlot()->FullShape(slot_tensor.size(0)),
+        " actual: ", slot_tensor.sizes(), ";", slot_block_info->DebugInfo());
+
+    auto slot_file = slot_reader->GetTableReader()->File();
+    torch::string_view slot_ret;
+    RECIS_STATUS_COND(slot_file->Read(final_file_offset, read_size_bytes,
+                                      &slot_ret,
+                                      (char *)slot_tensor.data_ptr()));
+
+    slot_reader->GetSlot()->IndexInsert(
+        chunk_index.to(slot_reader->GetSlot()->TensorOptions().device()),
+        slot_tensor.to(slot_reader->GetSlot()->TensorOptions().device()),
+        chunk_accept.to(slot_reader->GetSlot()->TensorOptions().device()));
+  }
+}
+
 c10::List<at::intrusive_ptr<at::ivalue::Future>>
 HTReadCollection::LoadChunksAsync(at::PTThreadPool *pool, int64_t chunk_size) {
   c10::List<at::intrusive_ptr<at::ivalue::Future>> ret(
@@ -94,89 +160,41 @@ HTReadCollection::LoadChunksAsync(at::PTThreadPool *pool, int64_t chunk_size) {
   }
 
   std::vector<ChunkInfo> out_slices;
-  int64_t slice_id = 0;
   for (int64_t j = 0; j < total_ids; j += ids_per_chunk) {
     int64_t num_ids = std::min(total_ids - j, ids_per_chunk);
-    out_slices.emplace_back(slice_id++, j, num_ids);
+    out_slices.push_back({j, num_ids});
   }
+
+  c10::Device device = block_reader_[0]->GetSlot()->TensorOptions().device();
+  // GpuIdMap/cuco insert synchronizes on the calling thread's CUDA context.
+  // PTThreadPool workers default to cuda:0 and PPU drivers may abort on
+  // stream sync from background threads, so run GPU chunks on the loader
+  // thread.
+  const bool sync_on_loader_thread = device.is_cuda();
 
   for (const auto &chunk : out_slices) {
     auto future = at::make_intrusive<at::ivalue::Future>(at::NoneType::get());
 
-    pool->run([this, chunk, target_ht, future]() mutable {
+    if (sync_on_loader_thread) {
       try {
-        if (chunk.num_ids == 0) {
-          future->markCompleted();
-          return;
-        }
+        c10::DeviceGuard device_guard(device);
+        ProcessChunk(chunk.beg_ids, chunk.num_ids, target_ht);
+        future->markCompleted();
+      } catch (std::exception &e) {
+        LOG(ERROR) << "Chunk processing exception: " << e.what();
+        future->setError(std::current_exception());
+      } catch (...) {
+        LOG(ERROR) << "Unknown exception in chunk processing";
+        future->setError(std::current_exception());
+      }
+      ret.push_back(future);
+      continue;
+    }
 
-        auto id_block_info = id_reader_->GetBlockInfo();
-        int64_t id_block_beg = id_block_info->OffsetBeg();
-
-        torch::Tensor chunk_ids = torch::empty(
-            {chunk.num_ids},
-            at::TensorOptions().dtype(torch::kInt64).device(torch::kCPU));
-
-        auto id_file = id_reader_->GetTableReader()->File();
-        torch::string_view ret;
-
-        int64_t id_offset = id_block_beg + chunk.beg_bytes;
-        int64_t id_read_size = chunk.num_bytes;
-
-        RECIS_STATUS_COND(id_file->Read(id_offset, id_read_size, &ret,
-                                        (char *)chunk_ids.data_ptr()));
-
-        auto chunk_accept = HTIdReadBlock::MarkIdAcceptable(
-            chunk_ids, target_ht->SliceInfo()->slice_begin(),
-            target_ht->SliceInfo()->slice_end(),
-            target_ht->SliceInfo()->slice_size());
-
-        id_reader_->PrepareIdsForInsert(chunk_ids, chunk_accept);
-
-        auto chunk_index =
-            target_ht->InsertLookupIndexWithIndicator(chunk_ids, chunk_accept);
-
-        for (auto slot_reader : block_reader_) {
-          auto slot_block_info = slot_reader->GetBlockInfo();
-          auto flat_nbytes = slot_reader->GetFlatBytes();
-
-          auto slot_file_offset = chunk.beg_ids * flat_nbytes;
-          auto read_size_bytes = chunk.num_ids * flat_nbytes;
-
-          int64_t final_file_offset =
-              slot_block_info->OffsetBeg() + slot_file_offset;
-
-          auto slot_shape = slot_block_info->Shape();
-          slot_shape[0] = chunk.num_ids;
-          at::Tensor slot_tensor =
-              torch::empty(slot_shape, at::TensorOptions()
-                                           .device(torch::kCPU)
-                                           .dtype(slot_block_info->Dtype()));
-          TORCH_CHECK(
-              slot_block_info->Dtype() == slot_reader->GetSlot()->Dtype(),
-              "Slot dtype not match", "expected: ", slot_block_info->Dtype(),
-              " actual: ", slot_reader->GetSlot()->Dtype(), ";",
-              slot_block_info->DebugInfo());
-          TORCH_CHECK(
-              slot_tensor.sizes().vec() ==
-                  slot_reader->GetSlot()->FullShape(slot_tensor.size(0)),
-              "shape not match", "expected: ",
-              slot_reader->GetSlot()->FullShape(slot_tensor.size(0)),
-              " actual: ", slot_tensor.sizes(), ";",
-              slot_block_info->DebugInfo());
-          auto slot_file = slot_reader->GetTableReader()->File();
-          torch::string_view slot_ret;
-          RECIS_STATUS_COND(slot_file->Read(final_file_offset, read_size_bytes,
-                                            &slot_ret,
-                                            (char *)slot_tensor.data_ptr()));
-
-          slot_reader->GetSlot()->IndexInsert(
-              chunk_index.to(slot_reader->GetSlot()->TensorOptions().device()),
-              slot_tensor.to(slot_reader->GetSlot()->TensorOptions().device()),
-              chunk_accept.to(
-                  slot_reader->GetSlot()->TensorOptions().device()));
-        }
-
+    pool->run([this, chunk, target_ht, future, device]() mutable {
+      try {
+        c10::DeviceGuard device_guard(device);
+        ProcessChunk(chunk.beg_ids, chunk.num_ids, target_ht);
         future->markCompleted();
       } catch (std::exception &e) {
         LOG(ERROR) << "Chunk processing exception: " << e.what();

@@ -2,6 +2,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 
 import torch
 import torch.nn as nn
@@ -9,6 +10,7 @@ import torch.testing._internal.common_utils as common
 
 from recis.framework.checkpoint_manager import ExtraFields, Saver, SaverOptions
 from recis.framework.filesystem import get_file_system
+from recis.framework.model_bank import load_pt_file
 from recis.nn.modules.embedding import EmbeddingOption
 from recis.nn.modules.embedding_engine import EmbeddingEngine
 from recis.nn.modules.hashtable import filter_out_sparse_param
@@ -18,6 +20,27 @@ from recis.utils.logger import Logger
 
 
 logger = Logger(__name__)
+
+
+class TestLoadPtFileDeviceSafety(unittest.TestCase):
+    """Tests that model-bank inspection never restores tensors onto CUDA."""
+
+    @patch("recis.framework.model_bank.torch.load")
+    def test_pt_checkpoint_is_loaded_on_cpu(self, torch_load):
+        expected = {"dense.weight": MagicMock()}
+        torch_load.return_value = expected
+        fs = MagicMock()
+        fs.exists.side_effect = lambda path: path.endswith("model.pt")
+        file_obj = MagicMock()
+        fs.open.return_value.__enter__.return_value = file_obj
+
+        data, from_pickle = load_pt_file("/checkpoint", "model", fs=fs)
+
+        self.assertIs(data, expected)
+        self.assertFalse(from_pickle)
+        torch_load.assert_called_once_with(
+            f=file_obj, map_location="cpu", weights_only=False
+        )
 
 
 class Model(torch.nn.Module):

@@ -554,7 +554,10 @@ class Saver:
             self._register_ckpt(
                 self._ckpt_file_manager, ckpt_id, ckpt_path, label_key, label_value
             )
-        torch.cuda.synchronize()
+        # Checkpointing also supports CPU-only jobs. Avoid triggering CUDA lazy
+        # initialization when no CUDA work has been performed in this process.
+        if torch.cuda.is_initialized():
+            torch.cuda.synchronize()
         sync_func()
 
     def save_sparse_params(
