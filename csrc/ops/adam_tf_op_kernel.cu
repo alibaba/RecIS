@@ -3,6 +3,8 @@
 #include <cuda_runtime.h>
 #include <torch/extension.h>
 
+#include <cstdint>
+
 #include "cuda/cuda_param.cuh"
 #include "cuda/element_wise_kernel.cuh"
 #include "cuda/packer.cuh"
@@ -39,13 +41,19 @@ __global__ void fused_adamw_tf_apply_cuda_kernel(
   static constexpr int pack_size =
       recis::cuda::select_pack_size<scalar_t, scalar_t>::value;
   using PK = recis::cuda::Packer<scalar_t, pack_size>;
+  const auto pack_alignment = alignof(typename PK::type);
+  const bool pack_aligned =
+      reinterpret_cast<std::uintptr_t>(params[vec_id]) % pack_alignment == 0 &&
+      reinterpret_cast<std::uintptr_t>(grads[vec_id]) % pack_alignment == 0 &&
+      reinterpret_cast<std::uintptr_t>(avg[vec_id]) % pack_alignment == 0 &&
+      reinterpret_cast<std::uintptr_t>(avg_sq[vec_id]) % pack_alignment == 0;
   float b1_power = powf(b1, steps[vec_id]);
   float b2_power = powf(b2, steps[vec_id]);
   float alpha = -lr / (1. - b1_power) * sqrtf(1. - b2_power);
   for (int64_t index = tid; index * pack_size < size_local;
        index += threads_num) {
     int64_t idx = index * pack_size;
-    if (idx + pack_size < size_local) {
+    if (pack_aligned && idx + pack_size <= size_local) {
       typename PK::type param_vec, grad_vec, a_vec, a_sq_vec;
       PK::load(params[vec_id] + idx, param_vec);
       PK::load(grads[vec_id] + idx, grad_vec);
@@ -72,7 +80,8 @@ __global__ void fused_adamw_tf_apply_cuda_kernel(
       PK::store(avg_sq[vec_id] + idx, a_sq_vec);
 
     } else {
-      for (int64_t i = idx; i < size_local; i++) {
+      const int64_t end = min(idx + pack_size, size_local);
+      for (int64_t i = idx; i < end; i++) {
         avg[vec_id][i] = avg[vec_id][i] * b1 + grads[vec_id][i] * (1. - b1);
         avg_sq[vec_id][i] = avg_sq[vec_id][i] * b2 +
                             (1. - b2) * grads[vec_id][i] * grads[vec_id][i];

@@ -203,6 +203,9 @@ class Trainer:
         ddp_find_unused_parameters: bool = True,
         ddp_broadcast_buffers: bool = True,
         saver: Optional[Saver] = None,
+        ddp_gradient_as_bucket_view: bool = False,
+        ddp_bucket_cap_mb: int = 25,
+        ddp_static_graph: bool = False,
         **kwargs,
     ) -> None:
         """Initialize the Trainer with model, datasets, and training configuration.
@@ -228,6 +231,16 @@ class Trainer:
                 as hashtable filter steps do not need it). Enable only if the
                 dense model relies on synced buffers (e.g. BatchNorm running
                 stats). Defaults to True, matching DDP's default behavior.
+            ddp_gradient_as_bucket_view (bool): Passed to DDP. When True,
+                gradients are views into communication buckets, reducing peak
+                memory usage and copies. Defaults to False, preserving the
+                existing Trainer/DDP behavior.
+            ddp_bucket_cap_mb (int): Passed to DDP. Controls the communication
+                bucket size in MiB. Defaults to 25, matching DDP's default.
+            ddp_static_graph (bool): Passed to DDP. When True, DDP assumes that
+                the used-parameter set and control flow remain stable for the
+                entire training loop. Enable only for models that satisfy this
+                requirement. Defaults to False, matching DDP's default.
             **kwargs: Additional arguments passed to Accelerator.
                 - monitor_report_args (recis.hooks.monitor_report_hook.ReportArguments)
                 - auto_profiler_args (recis.hooks.auto_profiler_hook.AutoProfilerArguments)
@@ -275,6 +288,9 @@ class Trainer:
         ddp_kwargs = DistributedDataParallelKwargs(
             find_unused_parameters=ddp_find_unused_parameters,
             broadcast_buffers=ddp_broadcast_buffers,
+            gradient_as_bucket_view=ddp_gradient_as_bucket_view,
+            bucket_cap_mb=ddp_bucket_cap_mb,
+            static_graph=ddp_static_graph,
         )
         self._auto_profiler_args: Optional[AutoProfilerArguments] = kwargs.pop(
             "auto_profiler_args", None
