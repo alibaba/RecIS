@@ -7,8 +7,10 @@ _register_ckpt, _maybe_inject_mos_resume_entry, load() 路径解析。
     python -m pytest tests/checkpoint/checkpoint_manager_test.py -v
 """
 
+import hashlib
 import os
 import sys
+from collections import OrderedDict
 
 
 # 仅在 recis.so 不存在时设置 BUILD_DOCUMENT（本地开发环境）。
@@ -75,7 +77,211 @@ _mock_if_missing("column_io")
 _mock_if_missing("column_io.dataset")
 _mock_if_missing("column_io.dataset.log_util")
 
-from recis.framework.checkpoint_manager import Saver  # noqa: E402
+import torch  # noqa: E402
+
+from recis.framework.checkpoint_compat import (  # noqa: E402
+    collect_filter_global_step_names,
+    use_child_filter_global_step_names,
+)
+from recis.framework.checkpoint_manager import ExtraFields, Saver  # noqa: E402
+from recis.framework.model_bank import (  # noqa: E402
+    MBC,
+    DensePatternMatcher,
+    ModelBankEntry,
+    ModelBankParser,
+    parse_dense_oname,
+)
+
+
+class _FakeEmbeddingOption:
+    def __init__(self, children):
+        self.children = children
+
+    def coalesced_info(self):
+        return (
+            '{"dim": 8, "dtype": "torch.float32", "device": "cpu", '
+            '"initializer": "ConstantInitializer_0", '
+            '"grad_reduce_by": "worker", "hdmp_group_size": null, '
+            '"hdmp_group_reduce_by": null, '
+            '"filter_hook": "GlobalStepFilter"}'
+        )
+
+
+class _FakeFilterHook(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.register_buffer("_global_step", torch.tensor([17], dtype=torch.int64))
+
+
+class _FakeHashTable(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self._filter_hook_impl = _FakeFilterHook()
+
+
+class _FakeDynamicEmbedding(torch.nn.Module):
+    def __init__(self, children):
+        super().__init__()
+        self._emb_opt = _FakeEmbeddingOption(children)
+        self._hashtable = _FakeHashTable()
+
+
+class _FakeEmbeddingModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        option = _FakeEmbeddingOption(["child_a", "child_b"])
+        current_hash = hashlib.sha256(option.coalesced_info().encode()).hexdigest()
+        self.embeddings = torch.nn.ModuleDict(
+            {
+                f"CoalescedHashtable_{current_hash}": _FakeDynamicEmbedding(
+                    option.children
+                )
+            }
+        )
+
+
+class TestFilterGlobalStepCheckpointCompatibility(unittest.TestCase):
+    def setUp(self):
+        self.model = _FakeEmbeddingModel()
+        self.groups = collect_filter_global_step_names(self.model)
+
+    def test_save_uses_child_names_only(self):
+        dense_state = OrderedDict(self.model.state_dict())
+
+        use_child_filter_global_step_names(dense_state, self.groups)
+
+        self.assertEqual(len(self.groups), 1)
+        group = self.groups[0]
+        self.assertNotIn(group.runtime_name, dense_state)
+        self.assertEqual(
+            set(dense_state),
+            {"child_a@filter_global_step", "child_b@filter_global_step"},
+        )
+        self.assertEqual(dense_state["child_a@filter_global_step"].item(), 17)
+        self.assertEqual(dense_state["child_b@filter_global_step"].item(), 17)
+
+    @patch("recis.framework.checkpoint_manager.load_pt_file")
+    def test_loads_pre_hdmp_hash_name(self, load_pt_file_mock):
+        group = self.groups[0]
+        self.assertEqual(len(group.legacy_names), 2)
+        old_hash_name = group.legacy_names[1]
+        load_pt_file_mock.return_value = (
+            {old_hash_name: torch.tensor([29], dtype=torch.int64)},
+            False,
+        )
+        saver = object.__new__(Saver)
+        saver._model = self.model
+        saver._dense_name_aliases = dict.fromkeys(group.child_names, group.legacy_names)
+        saver._dense_name_to_runtime = dict.fromkeys(
+            group.child_names, group.runtime_name
+        )
+        model_bank_conf = {name: {} for name in group.child_names}
+
+        Saver._load_dense_model(saver, "/old-checkpoint", model_bank_conf)
+
+        loaded_step = self.model.embeddings[
+            group.runtime_name.split(".")[1]
+        ]._hashtable._filter_hook_impl._global_step
+        self.assertEqual(loaded_step.item(), 29)
+
+
+class TestModelBankOptimizerSelection(unittest.TestCase):
+    def test_unresolved_dense_buffer_does_not_reassign_optimizer(self):
+        dense_parameter = "dense.weight"
+        dense_buffer = "child_a@filter_global_step"
+        optimizer = ExtraFields.recis_dense_optim
+        model_names = {dense_parameter, dense_buffer, optimizer}
+        parser = object.__new__(ModelBankParser)
+        parser._model_names = set(model_names)
+        parser._original_model_names = set(model_names)
+        parser._dense_model_names = {dense_parameter, dense_buffer}
+        parser._dense_parameter_names = {dense_parameter}
+        parser._dense_name_to_runtime = {}
+        parser._dense_runtime_to_names = {}
+        parser._sparse_model_names = set()
+        parser._extra_fields = ExtraFields
+        parser._dense_pattern_matcher = DensePatternMatcher()
+        parser._dense_oname = {}
+        parser._sparse_oname = {}
+        parser._get_dst_names = MagicMock(
+            side_effect=lambda path, _: (
+                set(),
+                {dense_parameter} if path == "/resume" else set(),
+                {optimizer},
+            )
+        )
+        external = ModelBankEntry(
+            path="/external",
+            load={"*"},
+            exclude={optimizer},
+            ignore_error=True,
+        )
+        resume = ModelBankEntry(
+            path="/resume",
+            load={"*"},
+            ignore_error=True,
+        )
+
+        parsed = parser._travel_model_bank_reversely([external, resume])
+
+        self.assertEqual(parsed[dense_parameter][MBC.LOAD], "/resume")
+        self.assertEqual(parsed[optimizer][MBC.LOAD], "/resume")
+        self.assertNotIn(dense_buffer, parsed)
+
+
+class TestModelBankFilterGlobalStepSelection(unittest.TestCase):
+    def test_high_priority_child_resolves_shared_filter_step(self):
+        child_a = "child_a@filter_global_step"
+        child_b = "child_b@filter_global_step"
+        runtime_name = "embeddings.CoalescedHashtable_hash._global_step"
+        model_names = {child_a, child_b}
+        parser = object.__new__(ModelBankParser)
+        parser._model_names = set(model_names)
+        parser._original_model_names = set(model_names)
+        parser._dense_model_names = set(model_names)
+        parser._dense_parameter_names = set()
+        parser._dense_name_to_runtime = {
+            child_a: runtime_name,
+            child_b: runtime_name,
+        }
+        parser._dense_runtime_to_names = {runtime_name: set(model_names)}
+        parser._sparse_model_names = set()
+        parser._extra_fields = ExtraFields
+        parser._dense_pattern_matcher = DensePatternMatcher()
+        parser._dense_oname = {}
+        parser._sparse_oname = {}
+        parser._get_dst_names = MagicMock(
+            side_effect=lambda path, _: (
+                set(),
+                {child_a} if path == "/resume" else {child_b},
+                set(),
+            )
+        )
+        base = ModelBankEntry(path="/base", load={"*"}, ignore_error=True)
+        resume = ModelBankEntry(path="/resume", load={"*"}, ignore_error=True)
+
+        parsed = parser._travel_model_bank_reversely([base, resume])
+
+        self.assertEqual(parsed[child_a][MBC.LOAD], "/resume")
+        self.assertNotIn(child_b, parsed)
+
+    def test_filter_step_supports_table_oname(self):
+        oname_success = [0]
+
+        dense_oname = parse_dense_oname(
+            DensePatternMatcher(),
+            [{"new@*": "old@*"}],
+            {"new@filter_global_step"},
+            {"old@filter_global_step"},
+            False,
+            oname_success,
+        )
+
+        self.assertEqual(
+            dense_oname,
+            {"new@filter_global_step": "old@filter_global_step"},
+        )
+        self.assertEqual(oname_success, [1])
 
 
 class TestSaveDeviceSynchronization(unittest.TestCase):

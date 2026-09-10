@@ -405,6 +405,10 @@ class DynamicEmbedding(torch.nn.Module):
         """
         super().__init__()
         self._emb_opt = emb_opt
+        # Hash-based module names are computed before HashTable initializes and
+        # mutates the initializer shape. Keep that exact input for checkpoint
+        # compatibility with older coalesced-info schemas.
+        self._checkpoint_coalesced_info = emb_opt.coalesced_info()
         self._world_size = int(os.environ.get("WORLD_SIZE", 1))
         self._rank = int(os.environ.get("RANK", 0))
         if pg is None:

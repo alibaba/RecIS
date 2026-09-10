@@ -7,6 +7,10 @@ from typing import Callable, List, Optional
 
 import torch
 
+from recis.framework.checkpoint_compat import (
+    collect_filter_global_step_names,
+    use_child_filter_global_step_names,
+)
 from recis.framework.filesystem import get_file_system
 from recis.framework.model_bank import (
     MBC,
@@ -184,9 +188,26 @@ class Saver:
         self._shard_id = int(os.environ.get("RANK", 0))
         self._shard_num = int(os.environ.get("WORLD_SIZE", 1))
         self._model = options.model
+        self._filter_global_step_names = collect_filter_global_step_names(self._model)
         self._sparse_state_dict, self._dense_state_dict = split_sparse_dense_state_dict(
             self._model.state_dict()
         )
+        use_child_filter_global_step_names(
+            self._dense_state_dict, self._filter_global_step_names
+        )
+        self._dense_name_aliases = {
+            child_name: group.legacy_names
+            for group in self._filter_global_step_names
+            for child_name in group.child_names
+        }
+        self._dense_name_to_runtime = {
+            child_name: group.runtime_name
+            for group in self._filter_global_step_names
+            for child_name in group.child_names
+        }
+        self._dense_parameter_names = {
+            name for name, _ in self._model.named_parameters()
+        }
         self._checkpoint_file = "checkpoint"
         self._checkpoint_version_list = []
         self._max_keep = options.max_keep
@@ -333,6 +354,9 @@ class Saver:
             self._sparse_tables,
             self._dense_names,
             ExtraFields,
+            self._dense_name_aliases,
+            self._dense_parameter_names,
+            self._dense_name_to_runtime,
         )
 
         self._has_bank = self._model_bank_parser.has_bank()
@@ -865,13 +889,31 @@ class Saver:
         filter_dict = {}
         for k in model_bank_conf.keys():
             if MBC.ONAME in model_bank_conf[k]:
-                oname = model_bank_conf[k][MBC.ONAME]
-                if oname in state_dict_loaded:
-                    filter_dict[k] = state_dict_loaded[oname]
-                else:
-                    logger.warning(f"[oname] No dense model found dst, for {oname}")
+                source_name = model_bank_conf[k][MBC.ONAME]
             else:
-                filter_dict[k] = state_dict_loaded[k]
+                source_name = next(
+                    (
+                        name
+                        for name in (k, *self._dense_name_aliases.get(k, ()))
+                        if name in state_dict_loaded
+                    ),
+                    None,
+                )
+
+            if source_name is None or source_name not in state_dict_loaded:
+                logger.warning(f"No dense model found dst, for {source_name or k}")
+                continue
+
+            runtime_name = self._dense_name_to_runtime.get(k, k)
+            value = state_dict_loaded[source_name]
+            if runtime_name in filter_dict and not torch.equal(
+                filter_dict[runtime_name], value
+            ):
+                raise RuntimeError(
+                    "Inconsistent filter global steps for coalesced hashtable "
+                    f"children: {runtime_name}"
+                )
+            filter_dict[runtime_name] = value
 
         if len(filter_dict) != 0:
             logger.info(f"Load dense model from checkpoint {ckpt_dir}")

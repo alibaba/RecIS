@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional, Set
 import numpy as np
 import torch
 
+from recis.framework.checkpoint_compat import is_filter_global_step_name
 from recis.framework.filesystem import get_file_system
 from recis.info import is_internal_enabled
 from recis.serialize.checkpoint_reader import CheckpointReader
@@ -416,7 +417,7 @@ def parse_dense_oname(
     dst_keys_set = set(dst_keys)
 
     for key in src_keys:
-        if "@" in key:
+        if "@" in key and not is_filter_global_step_name(key):
             continue
         mapped_key = None
         for idx, rule in enumerate(oname_rules):
@@ -494,6 +495,9 @@ class ModelBankParser:
         sparse_tables: set[str],
         dense_model_names: set[str],
         extra_fields,
+        dense_name_aliases: Optional[dict[str, tuple[str, ...]]] = None,
+        dense_parameter_names: Optional[set[str]] = None,
+        dense_name_to_runtime: Optional[dict[str, str]] = None,
     ):
         self._output_dir = output_dir
         self._model_bank_content = model_bank_content
@@ -502,6 +506,12 @@ class ModelBankParser:
         self._original_dense_model_names = deepcopy(dense_model_names)
         self._original_sparse_model_names = deepcopy(sparse_model_names)
         self._original_sparse_tables = deepcopy(sparse_tables)
+        self._dense_name_aliases = dense_name_aliases or {}
+        self._dense_parameter_names = dense_parameter_names or set()
+        self._dense_name_to_runtime = dense_name_to_runtime or {}
+        self._dense_runtime_to_names = {}
+        for name, runtime_name in self._dense_name_to_runtime.items():
+            self._dense_runtime_to_names.setdefault(runtime_name, set()).add(name)
         self._dense_oname = {}
         self._sparse_oname = {}
         self._dense_pattern_matcher = DensePatternMatcher()
@@ -573,6 +583,9 @@ class ModelBankParser:
             try:
                 data, _ = load_pt_file(ckpt_path, "model")
                 dense_names.update(data.keys())
+                for name, aliases in self._dense_name_aliases.items():
+                    if any(alias in data for alias in aliases):
+                        dense_names.add(name)
             except Exception as e:
                 if ignore_error:
                     logger.warning(f"Load dense model file failed: {e}")
@@ -637,10 +650,14 @@ class ModelBankParser:
                 )
         return cond_1 or cond_2 or cond_3
 
-    def _get_names_set(self, names: Set[str]) -> set[str]:
+    def _get_names_set(
+        self, names: Set[str], model_names: Optional[set[str]] = None
+    ) -> set[str]:
+        if model_names is None:
+            model_names = self._model_names
         data = set()
         for name in names:
-            data.update(get_match_by_pattern(name, self._model_names))
+            data.update(get_match_by_pattern(name, model_names))
         return data
 
     def _add_dense_optim_names(self, names: set[str]):
@@ -648,13 +665,18 @@ class ModelBankParser:
         if add dense modules, add recis.dense.optim to names automatically
         """
 
-        has_dense_module = False
-        for name in names:
-            if name in self._dense_model_names:
-                has_dense_module = True
-                break
-        if has_dense_module:
-            names.add(self._extra_fields.recis_dense_optim)
+        has_dense_parameter = bool(names & self._dense_parameter_names)
+        dense_optim_name = self._extra_fields.recis_dense_optim
+        if has_dense_parameter and dense_optim_name in self._model_names:
+            names.add(dense_optim_name)
+
+    def _remove_resolved_name(self, name: str) -> None:
+        """Removes a resolved name and any aliases for the same shared state."""
+        runtime_name = self._dense_name_to_runtime.get(name)
+        if runtime_name is None:
+            self._model_names.discard(name)
+            return
+        self._model_names.difference_update(self._dense_runtime_to_names[runtime_name])
 
     def _travel_model_bank_reversely(self, model_bank: list[ModelBankEntry]):
         var_dict = {}
@@ -671,11 +693,13 @@ class ModelBankParser:
                 logger.warning(f"No dst vars found in ckpt: {path}")
                 continue
 
-            exclude_names_set = self._get_names_set(bank.exclude)
             load_names_set = self._get_names_set(bank.load)
             self._add_dense_optim_names(load_names_set)
+            exclude_names_set = self._get_names_set(
+                bank.exclude, self._original_model_names
+            )
 
-            need_load_names = load_names_set - exclude_names_set
+            need_load_names = (load_names_set - exclude_names_set) & self._model_names
             if len(need_load_names) == 0:
                 logger.warning(
                     f"No need to load vars in {path} because all vars are excluded"
@@ -715,7 +739,7 @@ class ModelBankParser:
                             MBC.IGNORE_ERROR: bank.ignore_error,
                         }
                     )
-                    self._model_names.discard(name)
+                    self._remove_resolved_name(name)
 
             self._dense_oname.setdefault(path, {}).update(dense_oname)
             self._sparse_oname.setdefault(path, {}).update(sparse_oname)

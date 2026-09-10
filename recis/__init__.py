@@ -3,7 +3,7 @@ import os
 import torch
 
 
-__version__ = "1.2.11"
+__version__ = "1.2.12"
 
 pkg_path = os.path.dirname(os.path.realpath(__file__))
 lib_path = os.path.join(pkg_path, "lib")
