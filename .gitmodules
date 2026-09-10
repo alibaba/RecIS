@@ -4,6 +4,3 @@
 [submodule "third_party/column-io"]
 	path = third_party/column-io
 	url = http://gitlab.alibaba-inc.com/xrec/column-io.git
-[submodule "recis/utils/torch_fx_tool"]
-	path = recis/utils/torch_fx_tool
-	url = http://gitlab.alibaba-inc.com/xrec/torch_fx_tool.git
