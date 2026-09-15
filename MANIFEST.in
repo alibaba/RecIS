@@ -1,3 +1,5 @@
 include version.py
+include wheel_debug.py
+include csrc/c_api/fslib/bundled_libraries.txt
 include recis/version_info.py
 include recis/lib/*

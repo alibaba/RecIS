@@ -6,9 +6,51 @@ from setuptools import find_packages, setup
 from torch.cuda import get_device_name
 from torch.utils import cpp_extension
 from version import get_wheel_version
+from wheel_debug import split_wheel
 
 
 BASEDIR = os.path.dirname(os.path.realpath(__file__))
+
+
+try:
+    from setuptools.command.bdist_wheel import bdist_wheel as _bdist_wheel
+except ImportError:
+    try:
+        from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
+    except ImportError as exc:
+        if os.getenv("NEED_STRIP_DEBUGINFO", "0") == "1" or "bdist_wheel" in sys.argv:
+            raise RuntimeError(
+                "no supported bdist_wheel implementation is available"
+            ) from exc
+        _bdist_wheel = None
+
+
+if _bdist_wheel is not None:
+
+    class bdist_wheel(_bdist_wheel):
+        def run(self):
+            split_debug = os.getenv("NEED_STRIP_DEBUGINFO", "0") == "1"
+            if split_debug:
+                base_dist_dir = self.dist_dir
+                self.dist_dir = os.path.join(base_dist_dir, "main")
+            super().run()
+            if split_debug:
+                wheel_path = self.distribution.dist_files[-1][2]
+                with open(
+                    os.path.join(BASEDIR, "csrc/c_api/fslib/bundled_libraries.txt")
+                ) as f:
+                    preserve_names = []
+                    for line in f:
+                        name = line.split("#", 1)[0].strip()
+                        if name:
+                            preserve_names.append(name)
+                split_wheel(
+                    wheel_path,
+                    os.path.join(base_dist_dir, "debug"),
+                    preserve_names=preserve_names,
+                )
+else:
+    bdist_wheel = None
 
 
 def get_source_file(source_dir, delete_set, with_path):
@@ -231,6 +273,7 @@ setup(
     cmdclass={
         "build_ext": cpp_extension.BuildExtension.with_options(
             no_python_abi_suffix=True
-        )
+        ),
+        **({"bdist_wheel": bdist_wheel} if bdist_wheel else {}),
     },
 )

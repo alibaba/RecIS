@@ -1,0 +1,6 @@
+# Libraries downloaded from ZIP_URL. They are intentionally preserved byte-for-byte.
+libpangudfs_pangu_client.so.1
+libfslib_plugin_pangu.so
+libkmonitor_client_cpp.so
+libfslib_plugin_dfs.so
+libfslib-framework.so

@@ -4,18 +4,20 @@ import shutil
 import unittest
 from collections import defaultdict
 from typing import List, Optional, Union
+from unittest import mock
 
 import torch
 import torch.distributed as dist
 import torch.testing._internal.common_utils as common
 
+from recis.common.singleton import SingletonMeta
 from recis.hooks.filter_hook import HashTableFilterHook
 from recis.nn.functional import fused_ops
 from recis.nn.hashtable_hook import AdmitHook, FilterHook
 from recis.nn.initializers import ConstantInitializer
 from recis.nn.modules.embedding import EmbeddingOption
 from recis.nn.modules.embedding_engine import EmbeddingEngine
-from recis.nn.modules.hashtable import split_sparse_dense_state_dict
+from recis.nn.modules.hashtable import HashtableRegister, split_sparse_dense_state_dict
 from recis.nn.modules.hashtable_hook_impl import HashtableHookFactory
 from recis.optim import SparseAdamWTF
 from recis.ragged.tensor import RaggedTensor
@@ -484,6 +486,18 @@ class HashTableFilterHookTest(unittest.TestCase):
             self.encode_ids[fea] = self.ee._fea_to_group[fea].encode_id(fea)
 
     def setUp(self):
+        # Each test owns its tables and hooks, even when xdist reuses a worker.
+        # addCleanup also restores the previous instances if setup fails.
+        isolated_instances = mock.patch.dict(SingletonMeta._instances)
+        isolated_instances.start()
+        self.addCleanup(isolated_instances.stop)
+        SingletonMeta._instances.pop(HashtableRegister, None)
+        factory = HashtableHookFactory()
+        # Keep implementations registered at module import; isolate table instances.
+        for attribute in ("_filters", "_admits"):
+            isolated_hooks = mock.patch.object(factory, attribute, defaultdict(dict))
+            isolated_hooks.start()
+            self.addCleanup(isolated_hooks.stop)
         exec_step = 1
         self.setIds()
         self.setFeas()

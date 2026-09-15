@@ -8,6 +8,18 @@ endif()
 set(ZIP_FILE "${CMAKE_BINARY_DIR}/xdl_fslib_dependency.tar.gz")
 set(DEPS_DIR "${CMAKE_BINARY_DIR}/fs_deps")
 
+# These libraries come from ZIP_URL and will move out of the RecIS wheel. Keep
+# this file as the shared source of truth for installation and wheel stripping.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/bundled_libraries.txt" FSLIB_BUNDLED_LIBRARY_LINES)
+set(FSLIB_BUNDLED_LIBRARIES "")
+foreach(LIBRARY_LINE IN LISTS FSLIB_BUNDLED_LIBRARY_LINES)
+    string(REGEX REPLACE "#.*$" "" LIBRARY_NAME "${LIBRARY_LINE}")
+    string(STRIP "${LIBRARY_NAME}" LIBRARY_NAME)
+    if(NOT LIBRARY_NAME STREQUAL "")
+        list(APPEND FSLIB_BUNDLED_LIBRARIES "${DEPS_DIR}/lib64/${LIBRARY_NAME}")
+    endif()
+endforeach()
+
 file(DOWNLOAD ${ZIP_URL} ${ZIP_FILE} SHOW_PROGRESS)
 
 execute_process(
@@ -43,12 +55,4 @@ endif()
 target_compile_options(fslib_c_api PRIVATE -std=c++17)
 target_compile_options(fslib_c_api PRIVATE -g)
 install(TARGETS fslib_c_api DESTINATION ${RECIS_LIB_INSTALL_DIR})
-install(FILES
-    # relative lib, not certainly depended
-    ${DEPS_DIR}/lib64/libpangudfs_pangu_client.so.1
-    ${DEPS_DIR}/lib64/libfslib_plugin_pangu.so
-    ${DEPS_DIR}/lib64/libkmonitor_client_cpp.so
-    ${DEPS_DIR}/lib64/libfslib_plugin_dfs.so
-    # direct lib, certainly depended
-    ${DEPS_DIR}/lib64/libfslib-framework.so
-  DESTINATION ${RECIS_LIB_INSTALL_DIR})
+install(FILES ${FSLIB_BUNDLED_LIBRARIES} DESTINATION ${RECIS_LIB_INSTALL_DIR})
