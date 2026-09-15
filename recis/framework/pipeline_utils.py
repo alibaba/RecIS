@@ -7,6 +7,7 @@ forward); only the transform runs in the worker thread, released by
 ``notify_prefetch`` after forward so it overlaps with backward/optim.
 """
 
+import sys
 from dataclasses import dataclass
 from typing import Callable, Iterator, Optional, Tuple, Union
 
@@ -246,3 +247,22 @@ def notify_prefetch(prefetch_iter) -> None:
     """Release the next-batch transform on the prefetch worker."""
     if prefetch_iter is not None and hasattr(prefetch_iter, "notify"):
         prefetch_iter.notify()
+
+
+def close_prefetch(prefetch_iter) -> None:
+    """Close an iterator, preserving an exception already being unwound.
+
+    Cleanup failures propagate on normal exit. During exception unwinding
+    they are logged so they cannot replace the original training failure.
+    """
+    unwinding = sys.exc_info()[0] is not None
+    try:
+        close = getattr(prefetch_iter, "close", None)
+        if callable(close):
+            close()
+    except Exception:
+        if not unwinding:
+            raise
+        logger.error(  # noqa: G201 - Logger has no exception() method.
+            "Prefetch cleanup failed during exception unwinding", exc_info=True
+        )

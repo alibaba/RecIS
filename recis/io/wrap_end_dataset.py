@@ -36,6 +36,23 @@ class _WrapEndIterator:
         self._dataset = dataset
         self._input_iterator = input_iterator
         self._should_stop = False
+        self._closed = False
+
+    def close(self):
+        """Forward cleanup, retaining ownership if the input needs a retry.
+
+        Calls to next() and close() must be serialized by the consumer.
+        Closing also stops delivery, preserving the end-marker convention.
+        """
+        if self._closed:
+            return
+        self._should_stop = True
+        close = getattr(self._input_iterator, "close", None)
+        if callable(close):
+            close()
+        self._input_iterator = None
+        self._dataset = None
+        self._closed = True
 
     @MonitorReporter.report_time_wrapper(DS_END_LATENCY, tag=None)
     def __next__(self):

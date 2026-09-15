@@ -21,6 +21,7 @@ from recis.framework.pipeline_utils import (
     PREFETCH_BEFORE_FORWARD,
     PREFETCH_BEFORE_OPTIM_STEP,
     PrefetchArguments,
+    close_prefetch,
     notify_prefetch,
     resolve_prefetch_model,
     setup_pipeline_prefetch,
@@ -633,22 +634,26 @@ class Trainer:
             ):
                 break
             iterator = self.get_new_window_iter(self.train_dataset)
-            need_break = iterator is None
-            need_break = self.sync_exit_flag(need_break)
-            if need_break:
-                break
-            iterator = wrap_with_prefetch(
-                iterator,
-                self._pipeline_prefetch_transform,
-                buffer_size=self._prefetch_buffer_size,
-                lazy_start=True,
-                stream_priority=self._prefetch_stream_priority,
-                enable_thread=self._prefetch_enable_thread,
-                fetch_in_thread=self._prefetch_fetch_in_thread,
-            )
-            for hook in self.hooks:
-                hook.before_window(is_train=True)
-            self._train_loop_internal(iterator, max_steps, epoch)
+            try:
+                need_break = iterator is None
+                need_break = self.sync_exit_flag(need_break)
+                if need_break:
+                    break
+                iterator = wrap_with_prefetch(
+                    iterator,
+                    self._pipeline_prefetch_transform,
+                    buffer_size=self._prefetch_buffer_size,
+                    lazy_start=True,
+                    stream_priority=self._prefetch_stream_priority,
+                    enable_thread=self._prefetch_enable_thread,
+                    fetch_in_thread=self._prefetch_fetch_in_thread,
+                )
+                for hook in self.hooks:
+                    hook.before_window(is_train=True)
+                self._train_loop_internal(iterator, max_steps, epoch)
+            finally:
+                self._active_prefetch_iter = None
+                close_prefetch(iterator)
             for hook in self.hooks:
                 hook.after_window(is_train=True)
             window_iter += 1
@@ -663,21 +668,25 @@ class Trainer:
             ):
                 break
             iterator = self.get_new_window_iter(self.eval_dataset)
-            need_break = iterator is None
-            need_break = self.sync_exit_flag(need_break)
-            if need_break:
-                break
-            iterator = wrap_with_prefetch(
-                iterator,
-                self._pipeline_prefetch_transform,
-                buffer_size=self._prefetch_buffer_size,
-                stream_priority=self._prefetch_stream_priority,
-                enable_thread=self._prefetch_enable_thread,
-                fetch_in_thread=self._prefetch_fetch_in_thread,
-            )
-            for hook in self.hooks:
-                hook.before_window(is_train=False)
-            self._eval_loop_internal(iterator, max_steps)
+            try:
+                need_break = iterator is None
+                need_break = self.sync_exit_flag(need_break)
+                if need_break:
+                    break
+                iterator = wrap_with_prefetch(
+                    iterator,
+                    self._pipeline_prefetch_transform,
+                    buffer_size=self._prefetch_buffer_size,
+                    stream_priority=self._prefetch_stream_priority,
+                    enable_thread=self._prefetch_enable_thread,
+                    fetch_in_thread=self._prefetch_fetch_in_thread,
+                )
+                for hook in self.hooks:
+                    hook.before_window(is_train=False)
+                self._eval_loop_internal(iterator, max_steps)
+            finally:
+                self._active_prefetch_iter = None
+                close_prefetch(iterator)
             for hook in self.hooks:
                 hook.after_window(is_train=False)
             window_iter += 1
@@ -691,15 +700,64 @@ class Trainer:
             ):
                 break
             train_iterator = self.get_new_window_iter(self.train_dataset)
-            train_need_break = train_iterator is None
-            train_need_break = self.sync_exit_flag(train_need_break)
-            if train_need_break:
-                logger.info(
-                    "train_and_eval window will stop, because train dataset has no window to read."
+            try:
+                train_need_break = train_iterator is None
+                train_need_break = self.sync_exit_flag(train_need_break)
+                if train_need_break:
+                    logger.info(
+                        "train_and_eval window will stop, because train dataset has no window to read."
+                    )
+                    break
+                train_iterator = wrap_with_prefetch(
+                    train_iterator,
+                    self._pipeline_prefetch_transform,
+                    buffer_size=self._prefetch_buffer_size,
+                    lazy_start=True,
+                    stream_priority=self._prefetch_stream_priority,
+                    enable_thread=self._prefetch_enable_thread,
+                    fetch_in_thread=self._prefetch_fetch_in_thread,
                 )
-                break
-            train_iterator = wrap_with_prefetch(
-                train_iterator,
+                for hook in self.hooks:
+                    hook.before_window(is_train=True)
+                self.model.train()
+                self._train_loop_internal(train_iterator, train_steps, epoch)
+            finally:
+                self._active_prefetch_iter = None
+                close_prefetch(train_iterator)
+            eval_iterator = self.get_new_window_iter(self.eval_dataset)
+            try:
+                eval_need_break = eval_iterator is None
+                eval_need_break = self.sync_exit_flag(eval_need_break)
+                if eval_need_break:
+                    logger.info(
+                        "train_and_eval window will stop, because eval dataset has no window to read."
+                    )
+                    break
+                eval_iterator = wrap_with_prefetch(
+                    eval_iterator,
+                    self._pipeline_prefetch_transform,
+                    buffer_size=self._prefetch_buffer_size,
+                    stream_priority=self._prefetch_stream_priority,
+                    enable_thread=self._prefetch_enable_thread,
+                    fetch_in_thread=self._prefetch_fetch_in_thread,
+                )
+                for hook in self.hooks:
+                    hook.after_window(is_train=True)
+                self.model.eval()
+                self._eval_loop_internal(eval_iterator, eval_steps)
+            finally:
+                self._active_prefetch_iter = None
+                close_prefetch(eval_iterator)
+            for hook in self.hooks:
+                hook.after_window(is_train=False)
+            window_iter += 1
+
+    def _train_loop(self, max_steps=None, epoch=1):
+        self.model.train()
+        iterator = iter(self.train_dataset)
+        try:
+            iterator = wrap_with_prefetch(
+                iterator,
                 self._pipeline_prefetch_transform,
                 buffer_size=self._prefetch_buffer_size,
                 lazy_start=True,
@@ -707,58 +765,27 @@ class Trainer:
                 enable_thread=self._prefetch_enable_thread,
                 fetch_in_thread=self._prefetch_fetch_in_thread,
             )
-            for hook in self.hooks:
-                hook.before_window(is_train=True)
-            self.model.train()
-            self._train_loop_internal(train_iterator, train_steps, epoch)
-            eval_iterator = self.get_new_window_iter(self.eval_dataset)
-            eval_need_break = eval_iterator is None
-            eval_need_break = self.sync_exit_flag(eval_need_break)
-            if eval_need_break:
-                logger.info(
-                    "train_and_eval window will stop, because eval dataset has no window to read."
-                )
-                break
-            eval_iterator = wrap_with_prefetch(
-                eval_iterator,
+            self._train_loop_internal(iterator, max_steps, epoch)
+        finally:
+            self._active_prefetch_iter = None
+            close_prefetch(iterator)
+
+    def _eval_loop(self, max_steps=None):
+        self.model.eval()
+        iterator = iter(self.eval_dataset)
+        try:
+            iterator = wrap_with_prefetch(
+                iterator,
                 self._pipeline_prefetch_transform,
                 buffer_size=self._prefetch_buffer_size,
                 stream_priority=self._prefetch_stream_priority,
                 enable_thread=self._prefetch_enable_thread,
                 fetch_in_thread=self._prefetch_fetch_in_thread,
             )
-            for hook in self.hooks:
-                hook.after_window(is_train=True)
-            self.model.eval()
-            self._eval_loop_internal(eval_iterator, eval_steps)
-            for hook in self.hooks:
-                hook.after_window(is_train=False)
-            window_iter += 1
-
-    def _train_loop(self, max_steps=None, epoch=1):
-        self.model.train()
-        iterator = wrap_with_prefetch(
-            iter(self.train_dataset),
-            self._pipeline_prefetch_transform,
-            buffer_size=self._prefetch_buffer_size,
-            lazy_start=True,
-            stream_priority=self._prefetch_stream_priority,
-            enable_thread=self._prefetch_enable_thread,
-            fetch_in_thread=self._prefetch_fetch_in_thread,
-        )
-        self._train_loop_internal(iterator, max_steps, epoch)
-
-    def _eval_loop(self, max_steps=None):
-        self.model.eval()
-        iterator = wrap_with_prefetch(
-            iter(self.eval_dataset),
-            self._pipeline_prefetch_transform,
-            buffer_size=self._prefetch_buffer_size,
-            stream_priority=self._prefetch_stream_priority,
-            enable_thread=self._prefetch_enable_thread,
-            fetch_in_thread=self._prefetch_fetch_in_thread,
-        )
-        self._eval_loop_internal(iterator, max_steps)
+            self._eval_loop_internal(iterator, max_steps)
+        finally:
+            self._active_prefetch_iter = None
+            close_prefetch(iterator)
 
     def _train_eval_loop(self, train_steps=None, eval_steps=None, epoch=1):
         self._train_loop(train_steps, epoch)
