@@ -12,6 +12,12 @@ from recis.optim.sparse_adagrad_sum import SparseAdagradSum as SparseAdagradSum
 from recis.optim.sparse_adam import SparseAdam as SparseAdam
 from recis.optim.sparse_adamw import SparseAdamW as SparseAdamW
 from recis.optim.sparse_adamw_tf import SparseAdamWTF as SparseAdamWTF
+from recis.optim.sparse_row_wise_adagrad import (
+    SparseRowWiseAdagrad as SparseRowWiseAdagrad,
+)
+from recis.optim.sparse_row_wise_adagrad_sum import (
+    SparseRowWiseAdagradSum as SparseRowWiseAdagradSum,
+)
 
 
 __all__ = [
@@ -26,5 +32,7 @@ __all__ = [
     "SparseAdamWTF",
     "SparseAdagrad",
     "SparseAdagradSum",
+    "SparseRowWiseAdagrad",
+    "SparseRowWiseAdagradSum",
     "wrapped_named_optimizer",
 ]

@@ -14,6 +14,7 @@
 #include "embedding/hashtable.h"
 #include "embedding/initializer.h"
 #include "embedding/optim.h"
+#include "embedding/row_wise_adagrad.h"
 #include "embedding/slot_group.h"
 #include "monitor/metric_client.h"
 #include "ops/adam_tf_op.h"
@@ -111,6 +112,7 @@ TORCH_LIBRARY(recis, m) {
       .def("reset", &Hashtable::Reset)
       .def("slot_group", &Hashtable::SlotGroup)
       .def("children_info", &Hashtable::ChildrenInfo)
+      .def("requires_optimizer_state", &Hashtable::RequiresOptimizerState)
       .def("append_filter_slot", &Hashtable::AppendFilterSlot)
       .def("append_step_filter_slot", &Hashtable::AppendStepFilterSlot)
       .def("update_slot", &Hashtable::UpdateSlot)
@@ -215,6 +217,59 @@ TORCH_LIBRARY(recis, m) {
            &recis::optim::SparseAdagrad::clear_step_update_info)
 
       .def_static("make", recis::optim::SparseAdagrad::Make);
+
+  m.class_<recis::optim::SparseRowWiseAdagrad>("SparseRowWiseAdagrad")
+      .def("step", &recis::optim::SparseRowWiseAdagrad::step)
+      .def("add_parameters",
+           &recis::optim::SparseRowWiseAdagrad::add_parameters)
+      .def("state_dict", &recis::optim::SparseRowWiseAdagrad::state_dict)
+      .def("load_state_dict",
+           &recis::optim::SparseRowWiseAdagrad::load_state_dict)
+      .def("reset_state_dict",
+           &recis::optim::SparseRowWiseAdagrad::reset_state_dict)
+      .def(
+          "zero_grad",
+          [](const c10::intrusive_ptr<recis::optim::SparseRowWiseAdagrad>& self,
+             c10::optional<bool> set_to_none) {
+            self->zero_grad(set_to_none.value_or(true));
+          })
+      .def(
+          "set_grad_accum_steps",
+          [](const c10::intrusive_ptr<recis::optim::SparseRowWiseAdagrad>& self,
+             const int64_t step) { self->set_grad_accum_steps(step); })
+      .def(
+          "set_lr",
+          [](const c10::intrusive_ptr<recis::optim::SparseRowWiseAdagrad>& self,
+             double lr) { self->set_lr(lr); })
+      .def_static("make", recis::optim::SparseRowWiseAdagrad::Make);
+
+  m.class_<recis::optim::SparseRowWiseAdagradSum>("SparseRowWiseAdagradSum")
+      .def("step", &recis::optim::SparseRowWiseAdagradSum::step)
+      .def("add_parameters",
+           &recis::optim::SparseRowWiseAdagradSum::add_parameters)
+      .def("state_dict", &recis::optim::SparseRowWiseAdagradSum::state_dict)
+      .def("load_state_dict",
+           &recis::optim::SparseRowWiseAdagradSum::load_state_dict)
+      .def("reset_state_dict",
+           &recis::optim::SparseRowWiseAdagradSum::reset_state_dict)
+      .def("zero_grad",
+           [](const c10::intrusive_ptr<recis::optim::SparseRowWiseAdagradSum>&
+                  self,
+              c10::optional<bool> set_to_none) {
+             self->zero_grad(set_to_none.value_or(true));
+           })
+      .def("zero_grad_sq",
+           [](const c10::intrusive_ptr<recis::optim::SparseRowWiseAdagradSum>&
+                  self) { self->zero_grad_sq(); })
+      .def("set_grad_accum_steps",
+           [](const c10::intrusive_ptr<recis::optim::SparseRowWiseAdagradSum>&
+                  self,
+              const int64_t step) { self->set_grad_accum_steps(step); })
+      .def("set_lr",
+           [](const c10::intrusive_ptr<recis::optim::SparseRowWiseAdagradSum>&
+                  self,
+              double lr) { self->set_lr(lr); })
+      .def_static("make", recis::optim::SparseRowWiseAdagradSum::Make);
 
   // SparseAdagradSum binding
   m.class_<recis::optim::SparseAdagradSum>("SparseAdagradSum")

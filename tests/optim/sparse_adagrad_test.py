@@ -151,7 +151,7 @@ class Test(unittest.TestCase):
         self.recis_model = RecisModel(
             emb_size=self.emb_size,
             num_classes=self.num_classes,
-            name="test",
+            name=f"test_{self._testMethodName}",
             device=self.DEVICE,
         )
         self.recis_model = self.recis_model.train()
@@ -294,6 +294,52 @@ class Test(unittest.TestCase):
                 (load_ids, load_index, load_emb, load_state_sum),
             )
         )
+
+    def test_weight_decay_uses_adjusted_gradient(self):
+        weight_decay = 0.1
+        model = RecisModel(
+            emb_size=self.emb_size,
+            num_classes=self.num_classes,
+            name="test_weight_decay",
+            device=self.DEVICE,
+        ).train()
+        optimizer = SparseAdagrad(
+            param_dict=filter_out_sparse_param(model),
+            lr=self.lr,
+            lr_decay=self.lr_decay,
+            initial_accumulator_value=self.initial_accumulator_value,
+            weight_decay=weight_decay,
+            save_update_info_interval=1,
+        )
+        ids = self.ids[1]
+
+        for _ in range(2):
+            _, logits = model(ids)
+            loss = model.loss(logits, self.labels[ids])
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+
+        update_info = optimizer.get_step_update_info()
+
+        def value_with_suffix(suffix):
+            return next(
+                value for key, value in update_info.items() if key.endswith(suffix)
+            )
+
+        state_sum_before = value_with_suffix("_updated_state_sum")
+        params_before = value_with_suffix("_updated_params_before")
+        params_after = value_with_suffix("_updated_params_after")
+        raw_grad = value_with_suffix("_updated_grad")
+        saved_step = value_with_suffix("_last_saved_step").item()
+        adjusted_grad = raw_grad + weight_decay * params_before
+        state_sum_after = state_sum_before + adjusted_grad.square()
+        effective_lr = self.lr / (1 + (saved_step - 1) * self.lr_decay)
+        expected_params_after = params_before - effective_lr * adjusted_grad / (
+            state_sum_after.sqrt() + optimizer._eps
+        )
+
+        torch.testing.assert_close(params_after, expected_params_after)
 
 
 if __name__ == "__main__":

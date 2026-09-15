@@ -64,11 +64,17 @@ class SparseOptimizerParamGroup {
                                            : nullptr) {}
   SparseOptimizerParamGroup(
       std::unordered_map<std::string, HashTablePtr> params)
-      : params_(std::move(params)) {}
+      : SparseOptimizerParamGroup(std::move(params), nullptr) {}
   SparseOptimizerParamGroup(
       std::unordered_map<std::string, HashTablePtr> params,
       std::unique_ptr<SparseOptimizerOptions> options)
-      : params_(std::move(params)), options_(std::move(options)) {}
+      : options_(std::move(options)) {
+    for (auto &param : params) {
+      if (!param.second.defined() || param.second->RequiresOptimizerState()) {
+        params_.emplace(param.first, std::move(param.second));
+      }
+    }
+  }
 
   bool has_options() const;
   SparseOptimizerOptions &options();

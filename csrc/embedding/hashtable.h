@@ -45,12 +45,14 @@ class Hashtable : public torch::CustomClassHolder {
     int64_t slice_end;
     int64_t slice_size;
     bool use_pinned_memory;
+    bool requires_optimizer_state;
 
     HashtableConfig(int64_t bs, const std::vector<int64_t> &shape,
                     torch::Dtype dt, torch::Device dev, bool coal,
                     const std::vector<std::string> &childs,
                     at::intrusive_ptr<recis::embedding::Generator> gen,
-                    int64_t sb, int64_t se, int64_t ss, bool upm)
+                    int64_t sb, int64_t se, int64_t ss, bool upm,
+                    bool requires_opt_state)
         : block_size(bs),
           embedding_shape(shape),
           dtype(dt),
@@ -61,7 +63,8 @@ class Hashtable : public torch::CustomClassHolder {
           slice_begin(sb),
           slice_end(se),
           slice_size(ss),
-          use_pinned_memory(upm) {}
+          use_pinned_memory(upm),
+          requires_optimizer_state(requires_opt_state) {}
   };
 
   static c10::intrusive_ptr<Hashtable> Make(
@@ -70,13 +73,13 @@ class Hashtable : public torch::CustomClassHolder {
       const std::vector<std::string> &children,
       at::intrusive_ptr<recis::embedding::Generator> generator,
       int64_t slice_begin, int64_t slice_end, int64_t slice_size,
-      bool use_pinned_memory);
+      bool use_pinned_memory, bool requires_optimizer_state);
   Hashtable(int64_t block_size, const std::vector<int64_t> &embedding_shape,
             torch::Dtype dtype, torch::Device device, bool coalesce,
             const std::vector<std::string> &children,
             at::intrusive_ptr<recis::embedding::Generator> generator,
             int64_t slice_begin, int64_t slice_end, int64_t slice_size,
-            bool use_pinned_memory);
+            bool use_pinned_memory, bool requires_optimizer_state);
 
   std::tuple<torch::Tensor, torch::Tensor> EmbeddingLookup(
       const torch::Tensor &ids, bool readonly);
@@ -182,6 +185,9 @@ class Hashtable : public torch::CustomClassHolder {
   at::intrusive_ptr<recis::embedding::SlotGroup> SlotGroup();
   at::intrusive_ptr<recis::embedding::ChildrenInfo> ChildrenInfo();
   at::intrusive_ptr<recis::embedding::Slot> GetSlot(const std::string &name);
+  bool RequiresOptimizerState() const {
+    return config_.requires_optimizer_state;
+  }
 
  private:
   std::mutex blocknum_mutex_;

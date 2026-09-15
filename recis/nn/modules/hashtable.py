@@ -173,6 +173,7 @@ class HashTable(torch.nn.Module):
         hdmp_group_reduce_by: Optional[str] = None,
         filter_hook: Optional[FilterHook] = None,
         use_pinned_memory: bool = False,
+        requires_optimizer_state: bool = True,
     ):
         """Initialize hash table module.
 
@@ -200,6 +201,8 @@ class HashTable(torch.nn.Module):
             use_pinned_memory (bool, optional): Whether to use pinned memory for
                 CPU intermediate tensors to accelerate H2D/D2H transfers.
                 Defaults to False. Set to True to enable pinned memory.
+            requires_optimizer_state (bool, optional): Whether sparse optimizers
+                should manage this table. Defaults to True.
 
         Raises:
             AssertionError: If grad_reduce_by is not "id", "worker", "worker_sum",
@@ -249,6 +252,7 @@ class HashTable(torch.nn.Module):
             slice.slice_end,
             slice.slice_size,
             use_pinned_memory,
+            requires_optimizer_state,
         )
         self._backward_holder = torch.tensor([0.0], requires_grad=True)
         self._worker_num = int(os.environ.get("WORLD_SIZE", 1))
@@ -272,6 +276,10 @@ class HashTable(torch.nn.Module):
     def clear_child(cls, child) -> None:
         """Clear child hashtable."""
         HashtableRegister().get_ht_by_child_name(child)._hashtable_impl.clear(child)
+
+    @property
+    def requires_optimizer_state(self) -> bool:
+        return self._hashtable_impl.requires_optimizer_state()
 
     def forward(
         self,
@@ -1071,6 +1079,15 @@ def filter_out_sparse_param(model: torch.nn.Module) -> dict:
     state_dict = model.state_dict()
     sparse_state_dict, _ = split_sparse_dense_state_dict(state_dict)
     return sparse_state_dict
+
+
+def filter_out_trainable_sparse_param(model: torch.nn.Module) -> dict:
+    """Extract HashTables that require sparse optimizer state."""
+    return {
+        name: hashtable
+        for name, hashtable in filter_out_sparse_param(model).items()
+        if hashtable.requires_optimizer_state()
+    }
 
 
 class HashtableRegister(metaclass=SingletonMeta):

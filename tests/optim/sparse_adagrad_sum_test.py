@@ -1,5 +1,6 @@
 import unittest
 import uuid
+from unittest import mock
 
 import torch
 
@@ -8,6 +9,41 @@ from recis.optim.sparse_adagrad_sum import SparseAdagradSum
 
 
 class SparseAdagradSumTest(unittest.TestCase):
+    def test_super_param_state_restores_live_learning_rate_and_interval(self):
+        optimizer = SparseAdagradSum.__new__(SparseAdagradSum)
+        optimizer._lr = 0.1
+        optimizer._lr_decay = 0.2
+        optimizer._initial_accumulator_value = 0.3
+        optimizer._eps = 1e-4
+        optimizer._save_update_info_interval = 4
+        optimizer._imp = mock.Mock()
+        optimizer.param_groups = [{"lr": 0.5}]
+
+        self.assertEqual(optimizer.super_param_state_dict()["lr"], 0.5)
+        optimizer.load_super_param_state_dict(
+            {
+                "lr": 0.25,
+                "lr_decay": 0.4,
+                "initial_accumulator_value": 0.6,
+                "eps": 1e-6,
+                "save_update_info_interval": 8,
+            }
+        )
+
+        self.assertEqual(optimizer.param_groups[0]["lr"], 0.25)
+        optimizer._imp.set_lr.assert_called_once_with(0.25)
+        optimizer._imp.set_save_update_info_interval.assert_called_once_with(8)
+        self.assertEqual(
+            optimizer.super_param_state_dict(),
+            {
+                "lr": 0.25,
+                "lr_decay": 0.4,
+                "initial_accumulator_value": 0.6,
+                "eps": 1e-6,
+                "save_update_info_interval": 8,
+            },
+        )
+
     def test_rejects_weight_decay(self):
         with self.assertRaisesRegex(ValueError, "does not support weight_decay"):
             SparseAdagradSum({}, weight_decay=1e-4)

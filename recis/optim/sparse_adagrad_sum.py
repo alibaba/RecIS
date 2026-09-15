@@ -97,6 +97,7 @@ class SparseAdagradSum(SparseOptimizer):
         self._weight_decay = weight_decay
         self._initial_accumulator_value = initial_accumulator_value
         self._save_update_info_interval = save_update_info_interval
+        self._update_super_param_state_dict()
 
         self._imp = torch.classes.recis.SparseAdagradSum.make(
             param_dict,
@@ -209,6 +210,46 @@ class SparseAdagradSum(SparseOptimizer):
         """
         self._imp.set_save_update_info_interval(interval)
         self._save_update_info_interval = interval
+
+    def _update_super_param_state_dict(self):
+        self._lr = self.param_groups[0]["lr"]
+        self._super_param_state_dict = {
+            "lr": self._lr,
+            "lr_decay": self._lr_decay,
+            "initial_accumulator_value": self._initial_accumulator_value,
+            "eps": self._eps,
+            "save_update_info_interval": self._save_update_info_interval,
+        }
+
+    def super_param_state_dict(self) -> dict:
+        """Return the optimizer's saved hyperparameter metadata."""
+        self._update_super_param_state_dict()
+        return self._super_param_state_dict
+
+    def load_super_param_state_dict(self, state_dict: dict):
+        """Load saved hyperparameters supported by the live optimizer.
+
+        Learning rate and update-info interval are applied to the underlying
+        optimizer. The other values are retained as checkpoint metadata because
+        the native optimizer exposes them only at construction time; construct
+        the optimizer with those saved values for an exact behavioral resume.
+
+        Args:
+            state_dict (dict): Saved sparse optimizer hyperparameters.
+        """
+        self._lr = state_dict.get("lr", self._lr)
+        self._lr_decay = state_dict.get("lr_decay", self._lr_decay)
+        self._initial_accumulator_value = state_dict.get(
+            "initial_accumulator_value", self._initial_accumulator_value
+        )
+        self._eps = state_dict.get("eps", self._eps)
+        self._save_update_info_interval = state_dict.get(
+            "save_update_info_interval", self._save_update_info_interval
+        )
+        self.param_groups[0]["lr"] = self._lr
+        if self._imp is not None:
+            self._imp.set_lr(self._lr)
+            self._imp.set_save_update_info_interval(self._save_update_info_interval)
 
     def save_update_info_interval(self) -> int:
         """Get the current interval for saving update information.

@@ -6,6 +6,8 @@
 #include <cuda_fp16.h>
 #include <torch/extension.h>
 
+#include <cstdint>
+
 #include "ATen/Dispatch.h"
 #include "cuda/cuda_param.cuh"
 #include "cuda/utils.cuh"
@@ -53,8 +55,10 @@ void gather_kernel_launcher(const int64_t* ids, const scalar_t* emb,
                                         id_blocks, real_pack_size);
   dim3 grids(id_blocks);
   dim3 blocks(emb_thread_size, id_tile_size);
-  if (real_pack_size == 2) {
-    GATHER_LAUNCH_KERNEL(scalar_t, scalar_t);
+  if (real_pack_size == 1) {
+    GATHER_LAUNCH_KERNEL(scalar_t, uint8_t);
+  } else if (real_pack_size == 2) {
+    GATHER_LAUNCH_KERNEL(scalar_t, uint16_t);
   } else if (real_pack_size == 4) {
     GATHER_LAUNCH_KERNEL(scalar_t, float);
   } else if (real_pack_size == 8) {
@@ -130,8 +134,10 @@ void block_gather_kernel_launcher(const int64_t* ids, scalar_t** emb_blocks,
 
   dim3 grids(id_blocks);
   dim3 blocks(emb_thread_size, id_tile_size);
-  if (real_pack_size == 2) {
-    BLOCK_GATHER_LAUNCH_KERNEL(scalar_t, scalar_t);
+  if (real_pack_size == 1) {
+    BLOCK_GATHER_LAUNCH_KERNEL(scalar_t, uint8_t);
+  } else if (real_pack_size == 2) {
+    BLOCK_GATHER_LAUNCH_KERNEL(scalar_t, uint16_t);
   } else if (real_pack_size == 4) {
     BLOCK_GATHER_LAUNCH_KERNEL(scalar_t, float);
   } else if (real_pack_size == 8) {
@@ -214,8 +220,10 @@ void block_insert_kernel_launcher(const int64_t* ids, scalar_t** emb_blocks,
 
   dim3 grids(id_blocks);
   dim3 blocks(emb_thread_size, id_tile_size);
-  if (real_pack_size == 2) {
-    BLOCK_INSERT_LAUNCH_KERNEL(scalar_t, scalar_t, is_broadcast);
+  if (real_pack_size == 1) {
+    BLOCK_INSERT_LAUNCH_KERNEL(scalar_t, uint8_t, is_broadcast);
+  } else if (real_pack_size == 2) {
+    BLOCK_INSERT_LAUNCH_KERNEL(scalar_t, uint16_t, is_broadcast);
   } else if (real_pack_size == 4) {
     BLOCK_INSERT_LAUNCH_KERNEL(scalar_t, float, is_broadcast);
   } else if (real_pack_size == 8) {

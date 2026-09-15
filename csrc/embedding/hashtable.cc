@@ -66,10 +66,10 @@ Hashtable::Hashtable(int64_t block_size,
                      const std::vector<std::string> &children,
                      at::intrusive_ptr<recis::embedding::Generator> generator,
                      int64_t slice_begin, int64_t slice_end, int64_t slice_size,
-                     bool use_pinned_memory)
+                     bool use_pinned_memory, bool requires_optimizer_state)
     : config_(block_size, embedding_shape, dtype, device, coalesce, children,
-              generator, slice_begin, slice_end, slice_size,
-              use_pinned_memory) {
+              generator, slice_begin, slice_end, slice_size, use_pinned_memory,
+              requires_optimizer_state) {
   ResetInternalState();
 }
 
@@ -79,10 +79,11 @@ c10::intrusive_ptr<Hashtable> Hashtable::Make(
     const std::vector<std::string> &children,
     at::intrusive_ptr<recis::embedding::Generator> generator,
     int64_t slice_begin, int64_t slice_end, int64_t slice_size,
-    bool use_pinned_memory) {
+    bool use_pinned_memory, bool requires_optimizer_state) {
   auto ret = c10::make_intrusive<Hashtable>(
       block_size, embedding_shape, dtype, device, coalesce, children, generator,
-      slice_begin, slice_end, slice_size, use_pinned_memory);
+      slice_begin, slice_end, slice_size, use_pinned_memory,
+      requires_optimizer_state);
   return ret;
 }
 

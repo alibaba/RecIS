@@ -432,6 +432,7 @@ class DynamicEmbedding(torch.nn.Module):
             hdmp_group_reduce_by=self._emb_opt.hdmp_group_reduce_by,
             filter_hook=self._emb_opt.filter_hook,
             use_pinned_memory=use_pinned_memory,
+            requires_optimizer_state=self._emb_opt.trainable,
         )
 
     @property

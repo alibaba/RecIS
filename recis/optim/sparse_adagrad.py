@@ -20,9 +20,10 @@ class SparseAdagrad(SparseOptimizer):
 
     .. math::
 
-        state_sum_{t} = state_sum_{t-1} + g_t^2 \n
+        adjusted_grad_t = g_t + weight_decay * θ_{t-1} \n
+        state_sum_{t} = state_sum_{t-1} + adjusted_grad_t^2 \n
         lr = lr / (1 + (step - 1) * lr_decay) \n
-        θ_t = θ_{t-1} - lr * (g_t / (√state_sum_t + ε))
+        θ_t = θ_{t-1} - lr * (adjusted_grad_t / (√state_sum_t + ε))
 
     Where:
         - θ: parameters

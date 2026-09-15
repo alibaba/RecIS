@@ -31,14 +31,14 @@ class DemoModel(torch.nn.Module):
         emb_options = {
             "table_1": EmbeddingOption(
                 embedding_dim=EMB_DIM,
-                shared_name="table_1",
+                shared_name="resume_checkpoint_io_table_1",
                 combiner="sum",
                 coalesced=True,
                 device=device,
             ),
             "table_2": EmbeddingOption(
                 embedding_dim=EMB_DIM,
-                shared_name="table_2",
+                shared_name="resume_checkpoint_io_table_2",
                 combiner="sum",
                 coalesced=True,
                 device=device,

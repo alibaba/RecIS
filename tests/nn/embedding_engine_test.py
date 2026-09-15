@@ -7,6 +7,11 @@ import torch.testing._internal.common_utils as common
 from recis.nn.initializers import TruncNormalInitializer
 from recis.nn.modules.embedding import EmbeddingOption, NoReduceEmbedding
 from recis.nn.modules.embedding_engine import EmbeddingEngine
+from recis.nn.modules.hashtable import (
+    filter_out_sparse_param,
+    filter_out_trainable_sparse_param,
+)
+from recis.optim import SparseAdagrad
 from recis.ragged.tensor import RaggedTensor
 
 
@@ -48,6 +53,55 @@ class EmbeddingEngineTest(unittest.TestCase):
         ee = EmbeddingEngine({"fea1": emb_opt1, "fea2": emb_opt2})
         out = ee({"fea1": rt1, "fea2": rt2})
         print(out)
+
+    def test_trainable_children_are_grouped_separately(self):
+        options = {
+            "mixed_frozen": EmbeddingOption(
+                shared_name="mixed_child", trainable=False
+            ),
+            "mixed_trainable": EmbeddingOption(
+                shared_name="mixed_child", trainable=True
+            ),
+            "trainable": EmbeddingOption(
+                shared_name="trainable_child", trainable=True
+            ),
+            "frozen": EmbeddingOption(
+                shared_name="frozen_child", trainable=False
+            ),
+        }
+
+        engine = EmbeddingEngine(options)
+
+        trainable_table = engine._fea_to_ht["mixed_frozen"]
+        self.assertEqual(trainable_table, engine._fea_to_ht["mixed_trainable"])
+        self.assertEqual(trainable_table, engine._fea_to_ht["trainable"])
+        self.assertNotEqual(trainable_table, engine._fea_to_ht["frozen"])
+
+        sparse_params = filter_out_sparse_param(engine)
+        trainable_sparse_params = filter_out_trainable_sparse_param(engine)
+        self.assertEqual(len(sparse_params), 2)
+        self.assertEqual(len(trainable_sparse_params), 1)
+        self.assertEqual(
+            sorted(
+                hashtable.requires_optimizer_state()
+                for hashtable in sparse_params.values()
+            ),
+            [False, True],
+        )
+        self.assertNotIn("_Frozen", next(iter(trainable_sparse_params)))
+
+        SparseAdagrad(sparse_params)
+        state_name = "sparse_adagrad_state_sum"
+        next(iter(trainable_sparse_params.values())).slot_group().slot_by_name(
+            state_name
+        )
+        frozen_table = next(
+            table
+            for table in sparse_params.values()
+            if not table.requires_optimizer_state()
+        )
+        with self.assertRaises(RuntimeError):
+            frozen_table.slot_group().slot_by_name(state_name)
 
     def _make_no_reduce_inputs(self):
         seq_ids = torch.tensor(

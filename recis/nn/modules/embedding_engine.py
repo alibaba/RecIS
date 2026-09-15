@@ -59,11 +59,13 @@ class HashTableCoalescedGroup:
 
     """
 
-    def __init__(self, name):
+    def __init__(self, name, requires_optimizer_state=True):
         """Initialize coalesced group.
 
         Args:
             name (str): Name of the coalesced group.
+            requires_optimizer_state (bool): Whether sparse optimizers should
+                manage the physical HashTable.
         """
         self._emb_opt = None
         self._fea_to_runtime = {}
@@ -74,6 +76,7 @@ class HashTableCoalescedGroup:
         self._children = {}
         self._children_info = {}
         self._name = name
+        self._requires_optimizer_state = requires_optimizer_state
 
     def add_option(self, fea_name, emb_opt):
         """Add an embedding option to the group.
@@ -174,6 +177,7 @@ class HashTableCoalescedGroup:
             hdmp_group_reduce_by=self._emb_opt.hdmp_group_reduce_by,
             fp16_enabled=self._emb_opt.fp16_enabled,
             filter_hook=self._emb_opt.filter_hook,
+            trainable=self._requires_optimizer_state,
         )
 
 
@@ -672,17 +676,27 @@ class EmbeddingEngine(nn.Module):
         self._fea_to_group = {}
         self._emb_opts = emb_options
         self._offset_dtype = torch.int32
+        child_trainable = defaultdict(bool)
+        for emb_opt in emb_options.values():
+            child_trainable[emb_opt.shared_name] |= emb_opt.trainable
+
         tmp_ht_to_coalesced = {}  # check hashtable
         for fea_name, emb_opt in emb_options.items():
+            requires_optimizer_state = child_trainable[emb_opt.shared_name]
             ht_name = f"CoalescedHashtable_{hashlib.sha256(emb_opt.coalesced_info().encode()).hexdigest()}"
+            if not requires_optimizer_state:
+                ht_name += "_Frozen"
             if emb_opt.shared_name not in tmp_ht_to_coalesced:
                 tmp_ht_to_coalesced[emb_opt.shared_name] = ht_name
             elif not tmp_ht_to_coalesced[emb_opt.shared_name] == ht_name:
+                prev_ht_name = tmp_ht_to_coalesced[emb_opt.shared_name]
                 raise RuntimeError(
-                    f"Create embedding failed, emb sahred name already created by info: {self._fea_group[ht_name]._emb_opt.coalesced_info()}, current: {emb_opt.coalesced_info()}"
+                    f"Create embedding failed, emb shared name already created by info: {self._fea_group[prev_ht_name]._emb_opt.coalesced_info()}, current: {emb_opt.coalesced_info()}"
                 )
             if ht_name not in self._fea_group:
-                self._fea_group[ht_name] = HashTableCoalescedGroup(ht_name)
+                self._fea_group[ht_name] = HashTableCoalescedGroup(
+                    ht_name, requires_optimizer_state
+                )
             self._fea_group[ht_name].add_option(fea_name, emb_opt)
             self._fea_to_ht[fea_name] = ht_name
             self._fea_to_group[fea_name] = self._fea_group[ht_name]

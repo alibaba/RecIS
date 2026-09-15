@@ -75,13 +75,13 @@ class SparseOptimizer(Optimizer):
         super().__init__(lr_param_groups, defaults={})
 
     def add_params(self, params: dict):
-        self._imp.add_parameters(params)
+        self._imp.add_parameters(self.filter_param_dict(params))
 
     def filter_param_dict(self, param_dict):
         new_param_dict = {}
         values = []
         for key, value in param_dict.items():
-            if value in values:
+            if not value.requires_optimizer_state() or value in values:
                 continue
             new_param_dict[key] = value
             values.append(value)

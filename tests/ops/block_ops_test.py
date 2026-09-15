@@ -38,6 +38,30 @@ class TestGather(unittest.TestCase):
         ans = self.block[self.index]
         self.assertTrue(torch.equal(ret, ans))
 
+    def test_int8_small_dimension_gather(self):
+        block_size = 4
+        ids = torch.tensor([0, 3, 4, 7], device="cuda")
+        for embedding_dim in (1, 2):
+            blocks = [
+                torch.randint(
+                    -128,
+                    128,
+                    (block_size, embedding_dim),
+                    dtype=torch.int8,
+                    device="cuda",
+                )
+                for _ in range(2)
+            ]
+            block = torch.cat(blocks)
+
+            gathered = torch.ops.recis.gather(ids, block)
+            block_gathered = torch.ops.recis.block_gather(
+                ids, blocks, block_size, -1, False
+            )
+
+            torch.testing.assert_close(gathered, block[ids])
+            torch.testing.assert_close(block_gathered, block[ids])
+
 
 class TestInsert(unittest.TestCase):
     def setUp(self):
@@ -69,6 +93,31 @@ class TestInsert(unittest.TestCase):
             )
             last_num += real_num
             cur_index += 1
+
+    def test_int8_small_dimension_block_insert(self):
+        block_size = 4
+        ids = torch.tensor([0, 3, 4, 7], device="cuda")
+        for embedding_dim in (1, 2):
+            blocks = [
+                torch.zeros(
+                    (block_size, embedding_dim),
+                    dtype=torch.int8,
+                    device="cuda",
+                )
+                for _ in range(2)
+            ]
+            embedding = torch.randint(
+                -128,
+                128,
+                (ids.numel(), embedding_dim),
+                dtype=torch.int8,
+                device="cuda",
+            )
+
+            torch.ops.recis.block_insert(ids, embedding, blocks, block_size)
+
+            inserted = torch.cat(blocks)[ids]
+            torch.testing.assert_close(inserted, embedding)
 
 
 class TestApplyAdamw(unittest.TestCase):
