@@ -4,6 +4,7 @@
 #include <algorithm>
 
 #ifdef USE_ROCM
+#include <cuda/std/functional>
 #include <hipcub/agent/single_pass_scan_operators.hpp>
 #include <hipcub/block/block_scan.hpp>
 #include <hipcub/hipcub.hpp>

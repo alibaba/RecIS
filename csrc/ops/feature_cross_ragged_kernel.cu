@@ -9,6 +9,7 @@
 #include <torch/extension.h>
 
 #ifdef USE_ROCM
+#include <cuda/std/limits>
 #include <hipcub/device/device_segmented_radix_sort.hpp>
 #include <hipcub/device/device_segmented_sort.hpp>
 #include <hipcub/hipcub.hpp>

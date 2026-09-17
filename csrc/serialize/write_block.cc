@@ -166,8 +166,8 @@ torch::intrusive_ptr<WriteBlock> HTSlotWriteBlock::Make(
 
 void HTSlotWriteBlock::WriteData(FileOutputBuffer *file) {
   auto options = torch::TensorOptions().dtype(torch::kLong).device(torch::kCPU);
-  torch::Tensor index =
-      torch::from_blob(index_->data(), {index_->size()}, options);
+  torch::Tensor index = torch::from_blob(
+      index_->data(), {static_cast<int64_t>(index_->size())}, options);
   index = index.to(slot_->TensorOptions().device());
   for (auto beg = 0; beg < index.numel(); beg += BlockWriteSize()) {
     auto end = std::min(beg + BlockWriteSize(), index.numel());

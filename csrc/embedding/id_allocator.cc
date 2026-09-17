@@ -48,7 +48,7 @@ void IdAllocator::IncreaseBlock(int64_t increase_num) {
   auto cur_block_size = free_blocks_.size();
   while (cur_block_size < inc_size) {
     free_blocks_.push_back(torch::empty(
-        {free_block_size_},
+        {static_cast<int64_t>(free_block_size_)},
         torch::TensorOptions().dtype(torch::kInt64).device(id_device_)));
     ++cur_block_size;
   }

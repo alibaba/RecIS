@@ -96,6 +96,21 @@ def get_wheel_tag_device_type():
             version = "".join(filter(None, match.groups()))
             return f"cu{version}"
 
+    # Check pip-installed ROCm SDK: 10.0.0 -> rocm1000
+    try:
+        from importlib.metadata import (
+            PackageNotFoundError,
+            version as distribution_version,
+        )
+
+        rocm_sdk_version = distribution_version("rocm-sdk-devel")
+        match = re.match(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?", rocm_sdk_version)
+        if match:
+            version = "".join(filter(None, match.groups()))
+            return f"rocm{version}"
+    except PackageNotFoundError:
+        pass
+
     return "cpu"
 
 
