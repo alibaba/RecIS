@@ -39,7 +39,6 @@ from recis.hooks.checkpoint_hooks import (
 )
 from recis.hooks.initial_profiler_hook import _InitialProfilerHook
 from recis.hooks.monitor_report_hook import MetricReportHook, ReportArguments
-from recis.hooks.mos_report_hook import MosReporterEvalHook
 from recis.monitor.monitor_reporter import MODEL_FWD_NAME, MonitorReporter
 from recis.optim import sparse_optim
 from recis.utils.data_utils import copy_data_to_device
@@ -87,7 +86,6 @@ class TrainingArguments:
         ckpt_load_arg (Optional[CheckpointLoadArguments]): Arguments for checkpoint load. Defaults to None.
         mixed_precision (Optional[str]): Mixed precision training mode. Defaults to None. Only support "bf16" and "fp16".
         window_iter (Optional[int]): Number of windows to iter. Defaults to None.
-        eval_mos_report_uri (Optional[str]): URI for MOS report when eval. Defaults to None.
         prefetch (PrefetchArguments): Pipeline prefetch configuration (enable
             switch / buffer size, custom transform fn, side-stream priority,
             notify position). Defaults to a disabled ``PrefetchArguments()``.
@@ -116,7 +114,6 @@ class TrainingArguments:
     ckpt_load_arg: Optional[CheckpointLoadArguments] = None
     mixed_precision: Optional[str] = None
     window_iter: Optional[int] = None
-    eval_mos_report_uri: Optional[str] = None
     prefetch: PrefetchArguments = field(default_factory=PrefetchArguments)
 
 
@@ -466,8 +463,6 @@ class Trainer:
                 self.hooks.append(self._auto_profiler_hook)
 
         self.hooks.append(metric_report_hook)
-        if self.args.eval_mos_report_uri:
-            self.hooks.append(MosReporterEvalHook(self.args.eval_mos_report_uri))
 
     def add_hooks(self, hooks: List[Hook]):
         """Add multiple hooks to the trainer.
@@ -860,7 +855,7 @@ class Trainer:
 
     @property
     def output_dir(self):
-        """转发 Saver.output_dir. openlm_hub 模式下返回 MOS URI 而非文件路径."""
+        """Return the configured checkpoint output directory."""
         if self.saver is not None:
             return self.saver.output_dir
         return None
@@ -878,7 +873,7 @@ class Trainer:
         if self._prefetch_notify_position == PREFETCH_BEFORE_BACKWARD:
             notify_prefetch(self._active_prefetch_iter)
 
-        add_metric("epoch", epoch, report_to_mos=True)
+        add_metric("epoch", epoch)
 
         self.accelerator.backward(loss)
         for hook in self.hooks:
@@ -896,4 +891,4 @@ class Trainer:
         if self.sparse_optimizer is not None:
             self.sparse_optimizer.zero_grad()
 
-        add_metric("loss", loss.item(), report_to_mos=True)
+        add_metric("loss", loss.item())

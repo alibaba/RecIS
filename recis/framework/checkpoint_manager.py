@@ -20,7 +20,6 @@ from recis.framework.model_bank import (
     pickle_to_torch,
     show_model_bank_format,
 )
-from recis.info import is_internal_enabled
 from recis.nn.modules.hashtable import (
     filter_out_sparse_param,
     split_sparse_dense_state_dict,
@@ -28,20 +27,7 @@ from recis.nn.modules.hashtable import (
 from recis.optim.sparse_optim import SparseOptimizer
 from recis.serialize import Loader as SLoader, Saver as SSaver
 from recis.utils.logger import Logger
-from recis.utils.openlm_hub_helper import (
-    MOS_URI_PREFIX,
-    OPENLM_HUB_CKPT_AVAILABLE,
-    OpenlmHubHelper,
-)
 
-
-if is_internal_enabled() and not os.environ.get("BUILD_DOCUMENT", None) == "1":
-    from pangudfs_client.common.exception.exceptions import PanguException
-
-    from recis.utils.mos import Mos
-else:
-    PanguException = None
-    Mos = None
 
 logger = Logger(__name__)
 
@@ -213,31 +199,7 @@ class Saver:
         self._max_keep = options.max_keep
         self._extra_save_dict = {}
 
-        self._mos = None
         self._output_dir = options.output_dir
-        # openlm_hub 模式下 save 时由 _resolve_save_context 赋值,
-        # 供 _register_ckpt 使用; 非 openlm_hub 时保持 None.
-        self._ckpt_file_manager = None
-        self.openlm_hub_helper = None
-        if self._output_dir.startswith(MOS_URI_PREFIX):
-            assert Mos is not None, "Cannot import mos, check internal version."
-            self._mos = Mos(self._output_dir)
-            self._output_dir = self._mos.real_physical_path
-            if OPENLM_HUB_CKPT_AVAILABLE:
-                self.openlm_hub_helper = OpenlmHubHelper(
-                    self._mos.version_uri, self._mos.user_id
-                )
-
-        # output_dir 是 MOS uri → 自动走标准 openlm_hub ckpt 流程
-        self._is_openlm_hub_ckpt = self.openlm_hub_helper is not None
-
-        # 标准 openlm_hub 用法: ckpt 写入路径由 MosCkptFileManager 每次 save 决定,
-        # Saver.output_dir 返回 MOS uri 当标识用, 不是文件系统路径.
-        if self._is_openlm_hub_ckpt:
-            logger.info(
-                f"标准 openlm_hub ckpt 模式: Saver.output_dir = "
-                f"{self.openlm_hub_helper.version_uri} (MOS uri, not a filesystem path)"
-            )
 
         self._sparse_optim = options.sparse_optim
         self._sparse_optim_state = {}
@@ -291,59 +253,10 @@ class Saver:
                     f"model name conflict, sparse and dense names should not have intersection: {key}"
                 )
 
-    def _maybe_inject_mos_resume_entry(self, model_bank_content):
-        """openlm_hub 标准用法下做断点续训 —— 帮任务自动找
-        上次存的 ckpt 接着练, 给 model_bank 末尾塞一条续训用的条目.
-
-        老模式: save 时往 ``{output_dir}/checkpoint``
-        追加一行 ckpt_id 当索引, 启动时 ``ModelBankParser._complete_model_bank``
-        读这个文件取最后一行就是 latest ckpt, 直接续训. 不依赖 openlm_hub / MOS.
-
-        openlm_hub 标准用法 = ckpt 注册和路径分配全交给 MOS, recis 这边不再写
-        ``{output_dir}/checkpoint`` 索引文件. 老的索引查找读到空, 不补的话训练每次
-        启动都是冷启动. 本方法是这种用法下的替身: 调
-        ``MosCkptFileManager(version_uri, mode='r')`` 直接问 MOS 当前 version 下
-        最新 ckpt 的物理路径, 拼成一条跟 ``_complete_model_bank`` 等价的条目
-        追加到列表末尾. 训练启动时 ModelBankParser 照常处理, 效果等于自动续训.
-
-        Returns:
-            list: 传入的 model_bank_content. 命中 MOS 最新 ckpt 时末尾追加一条
-            续训条目; 没启用 openlm_hub 标准用法 / 没接 MOS / MOS 查不到时原样返回.
-        """
-        if not self._is_openlm_hub_ckpt:
-            return model_bank_content
-        result = self.openlm_hub_helper.resolve_latest_resume()
-        if result is None:
-            logger.info(
-                f"No existing ckpt under {self.openlm_hub_helper.version_uri}; skip auto-resume entry"
-            )
-            return model_bank_content
-        resume_path, ckpt_physical_path = result
-        current_app = os.environ.get("HIPPO_APP", "")
-        tag = (
-            " (cross-app)"
-            if current_app and current_app not in ckpt_physical_path
-            else ""
-        )
-        logger.info(f"Auto-resume entry resolved via openlm_hub{tag}: {resume_path}")
-        # entry schema 对齐 _complete_model_bank, parser 视作老路径查找等价物
-        entry = {
-            MBC.PATH: resume_path,
-            MBC.LOAD: {"*"},
-            MBC.EXCLUDE: set(),
-            MBC.IS_DYNAMIC: False,
-            MBC.HASHTABLE_CLEAR: True,
-            MBC.IGNORE_ERROR: True,
-            MBC.ONAME: [],
-        }
-        return list(model_bank_content) + [entry]
-
     def _init_model_bank(self, model_bank=None):
         model_bank_content = (
             model_bank if model_bank is not None else self._model_bank_content
         )
-        model_bank_content = self._maybe_inject_mos_resume_entry(model_bank_content)
-
         self._check_name_conflict()
 
         self._model_bank_parser = ModelBankParser(
@@ -379,33 +292,13 @@ class Saver:
 
     @property
     def output_dir(self):
-        """ckpt 写出位置. 两种语义:
-
-        - 老协议: 真实文件系统路径, ckpt 落在 ``{output_dir}/{ckpt_id}/``,
-          可 ``ls`` / ``cd``.
-        - 标准 openlm_hub 用法: MOS uri (``model.proj.name/version=xxx``),
-          **不是路径** -- 实际写入位置每次 save 由 MosCkptFileManager 决定.
-          只能当模型标识用 (log / tracker tag / MOS API), 不要 ``os.path.join``.
-        """
-        if self._is_openlm_hub_ckpt:
-            return self.openlm_hub_helper.version_uri
+        """Return the checkpoint output directory."""
         return self._output_dir
 
     @output_dir.setter
     def output_dir(self, value):
-        """仅用于 testcase, 部分 testcase 用它把 save 重定向到临时目录。仅在非 MOS 模式下生效
-        （那时 getter 返回的是 _output_dir)
-        """
+        """Redirect checkpoint output to a different directory."""
         self._output_dir = value
-
-    @property
-    def mos(self):
-        """:class:`recis.utils.mos.Mos` 客户端, 非 MOS 任务返回 ``None``.
-
-        - ``saver.mos.version_uri``: MOS 上的模型标识
-        - ``saver.mos.last_ckpt_id``: 最近一次注册的 ckpt id
-        """
-        return self._mos
 
     def _get_dense_names(self):
         return set(self._dense_state_dict.keys())
@@ -465,35 +358,9 @@ class Saver:
             raise ValueError(f"name {name} already registered")
 
     def _resolve_save_context(self, ckpt_id: str):
-        """解析 ckpt 写入路径与文件系统。
-
-        - openlm_hub 模式: rank 0 调用 MosCkptFileManager 获取写入路径并存入
-          self._ckpt_file_manager（该字段在 __init__ 中初始化为 None），
-          其他 rank 通过 broadcast 同步 ckpt_path 后自行创建文件系统对象。
-        - 老协议: 直接拼接 output_dir / ckpt_id。
-
-        Returns:
-            tuple: (ckpt_path, fs)
-        """
-        if self._is_openlm_hub_ckpt:
-            # 仅 rank 0 调用 MOS，避免多 rank 独立调 MosCkptFileManager 时因
-            # 时序差异（如 pangu 切换）导致各 worker 拿到不同的写入路径。
-            if self._shard_id == 0:
-                self._ckpt_file_manager, ckpt_path, fs = (
-                    self.openlm_hub_helper.get_save_context(ckpt_id)
-                )
-            else:
-                ckpt_path = ""
-            if self._shard_num > 1:
-                obj_list = [ckpt_path]
-                torch.distributed.broadcast_object_list(obj_list, src=0)
-                ckpt_path = obj_list[0]
-            if self._shard_id != 0:
-                fs = get_file_system(ckpt_path)
-            return ckpt_path, fs
-        else:
-            ckpt_path = os.path.join(self._output_dir, ckpt_id)
-            return ckpt_path, get_file_system(ckpt_path)
+        """Resolve a checkpoint path and its filesystem."""
+        ckpt_path = os.path.join(self._output_dir, ckpt_id)
+        return ckpt_path, get_file_system(ckpt_path)
 
     def save(
         self,
@@ -504,35 +371,13 @@ class Saver:
     ):
         """Save a complete checkpoint with the given ID.
 
-        流程::
-
-            save(ckpt_id)
-            |
-            +-- 1. 解析路径 + 文件系统
-            |   +-- [openlm_hub] rank 0: helper.get_save_context()
-            |   |               其他 rank: broadcast 同步 ckpt_path
-            |   +-- [老协议]     os.path.join(output_dir, ckpt_id)
-            |
-            +-- 2. makedirs(ckpt_path)
-            |
-            +-- 3. save_sparse_params()                 <- all rank
-            |
-            +-- 4. flush & save io_states               <- all rank
-            |
-            +-- 5. if shard_id == 0:                        <- rank-0 only
-            |   +-- a. _save_rank0_states()   补空索引 / dense / extra 落盘
-            |   +-- b. _update_ckpt_index()   写索引文件 + version_list
-            |   +-- c. _evict_old_ckpt()      淘汰旧 ckpt (len > max_keep 时)
-            |   +-- d. _register_ckpt()       注册 ckpt + 上报 metrics
-            |
-            +-- 6. cuda.synchronize + sync_func
-
         Args:
             ckpt_id (str): Unique identifier for this checkpoint.
-            label_key (str): Key for the label when saving to MOS. Defaults to None.
-            label_value (str): Value for the label when saving to MOS. Defaults to None.
+            label_key (str): Optional checkpoint label key. Defaults to None.
+            label_value (str): Optional checkpoint label value. Defaults to None.
             sync_func (Callable): Function to sync files. Defaults to None.
         """
+        del label_key, label_value
         if not sync_func:
             sync_func = get_default_sync_fn(self._shard_num)
 
@@ -540,11 +385,7 @@ class Saver:
 
         logger.info(f"Save checkpoint {ckpt_id} to {ckpt_path}")
         if not fs.exists(ckpt_path):
-            try:
-                fs.makedirs(ckpt_path + "/", exist_ok=True)
-            except PanguException as e:
-                if e.pangu_err_no == 7:
-                    pass
+            fs.makedirs(ckpt_path + "/", exist_ok=True)
         if len(self._sparse_state_dict.keys()) > 0:
             self.save_sparse_params(
                 self._shard_id,
@@ -575,9 +416,6 @@ class Saver:
             self._update_ckpt_index(ckpt_id, ckpt_path, fs)
             if len(self._checkpoint_version_list) > self._max_keep:
                 self._evict_old_ckpt(self._checkpoint_version_list[0], ckpt_path, fs)
-            self._register_ckpt(
-                self._ckpt_file_manager, ckpt_id, ckpt_path, label_key, label_value
-            )
         # Checkpointing also supports CPU-only jobs. Avoid triggering CUDA lazy
         # initialization when no CUDA work has been performed in this process.
         if torch.cuda.is_initialized():
@@ -650,8 +488,8 @@ class Saver:
             ckpt_path (str): Path to save checkpoint.
             dense_state_dict (dict): Dense parameters to save.
             fs: Optional filesystem instance. If None, will be resolved from
-                ckpt_path via get_file_system(). Pass explicitly when using
-                MosCkptFileManager to avoid protocol resolution issues.
+                ckpt_path via get_file_system(). Pass an explicit instance when
+                the checkpoint path uses a custom filesystem protocol.
         """
         if fs is None:
             fs = get_file_system(ckpt_path)
@@ -735,116 +573,39 @@ class Saver:
                     f.write(f"{self._shard_num}")
 
     def _update_ckpt_index(self, ckpt_id: str, ckpt_path: str, fs):
-        """更新 ckpt 版本列表, 老协议下同步写 checkpoint 索引文件.
+        """Append a checkpoint ID to the local checkpoint index."""
+        del ckpt_path
+        checkpoint_data = ckpt_id + "\n"
+        index_path = os.path.join(self._output_dir, self._checkpoint_file)
+        if fs.exists(index_path):
+            with fs.open(index_path, "r") as out_f:
+                checkpoint_data = out_f.read() + ckpt_id + "\n"
 
-        - openlm_hub 模式跳过索引文件 (由 MOS register_ckpt 接管);
-          老协议追加 ckpt_id 到 checkpoint 索引文件.
-        - 追加 version_list; openlm_hub 模式额外缓存 WRITE 路径
-          (供后续 _evict_old_ckpt 删文件用).
-        """
-        if not self._is_openlm_hub_ckpt:
-            checkpoint_data = ckpt_id + "\n"
-            if fs.exists(os.path.join(self._output_dir, self._checkpoint_file)):
-                with fs.open(
-                    os.path.join(self._output_dir, self._checkpoint_file), "r"
-                ) as out_f:
-                    checkpoint_data = out_f.read() + ckpt_id + "\n"
-
-            with fs.open(
-                os.path.join(self._output_dir, self._checkpoint_file), "w"
-            ) as out_f:
-                out_f.write(checkpoint_data)
+        with fs.open(index_path, "w") as out_f:
+            out_f.write(checkpoint_data)
 
         self._checkpoint_version_list.append(ckpt_id)
-        if self._is_openlm_hub_ckpt:
-            self.openlm_hub_helper.cache_write_path(ckpt_id, ckpt_path)
 
     def _evict_old_ckpt(self, ckpt_id_to_remove: str, ckpt_path: str, fs):
-        """淘汰旧 ckpt: 删文件 + 注销 MOS 记录."""
+        """Remove an old checkpoint and update the checkpoint index."""
+        del ckpt_path
+        old_path = os.path.join(self._output_dir, ckpt_id_to_remove + "/")
+        logger.info(f"Remove checkpoint {old_path}")
+        try:
+            fs.rm(old_path, recursive=True)
+        except FileNotFoundError:
+            logger.warning(f"Checkpoint path already removed: {old_path}")
 
-        def _safe_remove_path(path):
-            try:
-                fs.rm(path, recursive=True)
-            except FileNotFoundError:
-                logger.warning(f"Checkpoint path already removed: {path}")
-            except Exception as e:
-                if (
-                    PanguException is not None
-                    and isinstance(e, PanguException)
-                    and e.pangu_err_no == 2
-                ):
-                    logger.warning(f"Checkpoint path already removed: {path}")
-                else:
-                    raise
-
-        if self._is_openlm_hub_ckpt:
-            old_ckpt_path = self.openlm_hub_helper.pop_write_path(ckpt_id_to_remove)
-            logger.info(f"Remove checkpoint {ckpt_id_to_remove}: {old_ckpt_path}")
-            if old_ckpt_path is not None:
-                _safe_remove_path(old_ckpt_path + "/")
-        else:
-            logger.info(
-                f"Remove checkpoint {os.path.join(self._output_dir, ckpt_id_to_remove)}"
-            )
-            _safe_remove_path(os.path.join(self._output_dir, ckpt_id_to_remove + "/"))
-            remains = []
-            with fs.open(
-                os.path.join(self._output_dir, self._checkpoint_file), "r"
-            ) as f:
-                lines = [
-                    line.strip()
-                    for line in f.read().split("\n")
-                    if len(line.strip()) != 0
-                ]
-                for ckpt_id in lines:
-                    if ckpt_id != ckpt_id_to_remove:
-                        remains.append(ckpt_id)
-            with fs.open(
-                os.path.join(self._output_dir, self._checkpoint_file), "w"
-            ) as f:
-                for ckpt_id in remains:
-                    f.write(ckpt_id + "\n")
+        index_path = os.path.join(self._output_dir, self._checkpoint_file)
+        with fs.open(index_path, "r") as in_f:
+            checkpoint_ids = [
+                line.strip() for line in in_f.read().splitlines() if line.strip()
+            ]
+        with fs.open(index_path, "w") as out_f:
+            for checkpoint_id in checkpoint_ids:
+                if checkpoint_id != ckpt_id_to_remove:
+                    out_f.write(checkpoint_id + "\n")
         self._checkpoint_version_list = self._checkpoint_version_list[1:]
-        if self._is_openlm_hub_ckpt:
-            self.openlm_hub_helper.delete(ckpt_id_to_remove)
-        elif self._mos:
-            self._mos.ckpt_update(
-                ckpt_id=ckpt_id_to_remove, path=ckpt_path, is_delete=True
-            )
-
-    def _register_ckpt(
-        self,
-        ckpt_file_manager,
-        ckpt_id: str,
-        ckpt_path: str,
-        label_key: Optional[str],
-        label_value: Optional[str],
-    ):
-        """注册 ckpt 到 MOS 并上报 metrics.
-
-        Args:
-            ckpt_file_manager: MosCkptFileManager 对象 (openlm_hub 模式下
-                self._ckpt_file_manager 的值), 老协议时传 None。
-            ckpt_id: checkpoint 标识。
-            ckpt_path: checkpoint 物理路径。
-            label_key: MOS label key。
-            label_value: MOS label value。
-        """
-        if self.openlm_hub_helper and ckpt_file_manager is not None:
-            ckpt_labels = []
-            if label_key is not None and label_value is not None:
-                ckpt_labels.append(f"{label_key}={label_value}")
-            self.openlm_hub_helper.register_and_report(
-                ckpt_file_manager, ckpt_id, labels=ckpt_labels
-            )
-            self._mos.last_ckpt_id = ckpt_id
-        elif self._mos:
-            self._mos.ckpt_update(
-                ckpt_id=ckpt_id,
-                path=ckpt_path,
-                label_key=label_key,
-                label_value=label_value,
-            )
 
     def _load_sparse_model(self, ckpt_dir: str, model_bank_conf: dict):
         """Load sparse parameters from checkpoint.
@@ -1039,63 +800,31 @@ class Saver:
         direct_path=False,
         model_bank_conf: Optional[dict] = None,
     ):
-        """根据传入的入参组合决定从哪里加载 ckpt, 真值表:
-
-        +----------------------------------------+----------+-------------------------------+
-        | usage                                  | branch   | resolved ckpt_path            |
-        +----------------------------------------+----------+-------------------------------+
-        | load()                                 | by mode  | see below                     |
-        +----------------------------------------+----------+-------------------------------+
-        | load(ckpt_id="ckpt-100")               | by mode  | see below                     |
-        +----------------------------------------+----------+-------------------------------+
-        | load(ckpt_path="/x/y/")                | literal  | "/x/y/"                       |
-        +----------------------------------------+----------+-------------------------------+
-        | load(ckpt_path="/x/y/", direct_path=1) | literal  | "/x/y/" (same as above)       |
-        +----------------------------------------+----------+-------------------------------+
-
-        "by mode" 进一步分两种：
-        - 标准 openlm_hub 用法：走 MOS 查
-            - ckpt_id=None    → MosCkptFileManager(version_uri, "r") 拿最新
-            - ckpt_id="xxx"   → MosCkptFileManager(version_uri/ckpt_id=xxx, "r")
-        - 老协议：读 {output_dir}/checkpoint 索引文件
-            - ckpt_id=None    → 取索引最后一行
-            - ckpt_id="xxx"   → 直接拼 {output_dir}/{ckpt_id}/
-
-        关键点：**只要 caller 传了非空 ckpt_path, 就一律按字面路径加载**，不会
-        被 MOS 查询或索引文件覆盖。这样 caller 的"我要加载这个具体路径"意图
-        永远不会被框架静默改写。
-        """
+        """Load a checkpoint from an explicit path or the checkpoint index."""
         if model_bank_conf is None:
             model_bank_conf = {}
-        if direct_path or (self._is_openlm_hub_ckpt and ckpt_path):
-            # 传了ckpt_path 直接用, 不走 MOS 查询也不查索引文件.
-            # openlm_hub 模式下也一样: 显式路径优先于自动解析.
+        if direct_path:
             if not ckpt_path:
                 return
-            logger.info(f"Load ckpt from literal path: {ckpt_path}")
-        elif self._is_openlm_hub_ckpt:
-            ckpt_path = self.openlm_hub_helper.resolve_load_path(ckpt_id)
-            if ckpt_path is None:
-                return
-            logger.info(f"Load ckpt resolved via openlm_hub: {ckpt_path}")
+            logger.info(f"Load checkpoint from explicit path: {ckpt_path}")
         else:
             ckpt_path = self._output_dir if not ckpt_path else ckpt_path
             fs = get_file_system(ckpt_path)
             if ckpt_id is None:
-                if fs.exists(os.path.join(ckpt_path, self._checkpoint_file)):
-                    content = fs.open(
-                        os.path.join(ckpt_path, self._checkpoint_file), "r"
-                    ).read()
-                    lines = content.split("\n")[::-1]
-                    ckpt_id = None
-                    for line in lines:
-                        if len(line) == 0:
-                            continue
-                        ckpt_id = line.strip()
-                        break
-                else:
+                index_path = os.path.join(ckpt_path, self._checkpoint_file)
+                if not fs.exists(index_path):
                     logger.warning(f"Checkpoint index not found under {ckpt_path}")
                     return
+                with fs.open(index_path, "r") as index_file:
+                    checkpoint_ids = [
+                        line.strip()
+                        for line in index_file.read().splitlines()
+                        if line.strip()
+                    ]
+                if not checkpoint_ids:
+                    logger.warning(f"Checkpoint index is empty under {ckpt_path}")
+                    return
+                ckpt_id = checkpoint_ids[-1]
             logger.info(f"Load checkpoint from {ckpt_path} (ckpt_id={ckpt_id})")
             ckpt_path = os.path.join(ckpt_path, ckpt_id)
         self.load_by_config(ckpt_path, self._shard_id, model_bank_conf)

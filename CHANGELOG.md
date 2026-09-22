@@ -1,3 +1,17 @@
+# RecIS v1.2.18 Release Notes
+
+RecIS 1.2.18 adds GPU shard sampling, operator profiling, automatic timeline
+collection, two-stage dense-forward pipelining, grouped sparse-gradient
+aggregation, row-wise sparse Adagrad, and optional debuginfo wheels. It also
+improves checkpoint compatibility, DDP bucket-view handling, iterator cleanup,
+and NVIDIA/ROCm build compatibility.
+
+The public build uses column-io 0.3.0 and public dependency sources. Model
+checkpointing uses filesystem paths, and the repository does not require
+private Python packages or private submodules.
+
+---
+
 # 🚀 RecIS v1.2.0 Release Notes
 
 We are excited to announce the release of **RecIS v1.2.0**. This version brings **offline server** support, **MFU/MFU metrics** monitoring, **sparse Adagrad** optimizer, **trace writer v2**, and syncs **column-io 0.3.0** with comprehensive open-source cleanup.

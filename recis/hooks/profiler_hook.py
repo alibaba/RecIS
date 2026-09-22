@@ -9,12 +9,11 @@ from recis.hooks.initial_profiler_hook import (
     _InitialProfilerHook as _InitialProfilerHook,  # Compatibility re-export.
 )
 from recis.hooks.initial_profiler_hook import USER_PROFILER_CREATE_STEP
-from recis.info import is_internal_enabled
 from recis.utils.logger import Logger
 
 
-# Seconds a trace save (export/upload/MOS RPCs) may block before the trace
-# is abandoned, so a stuck filesystem or RPC cannot stall the training step.
+# Seconds a trace save may block before the trace is abandoned, so a stuck
+# filesystem cannot stall the training step.
 _TRACE_SAVE_TIMEOUT = 600
 
 
@@ -91,13 +90,6 @@ class ProfilerHook(Hook):
         self.logger = Logger("ProfilerHook")
         if wait <= 0:
             raise ValueError("ProfilerHook wait must be greater than 0")
-        if output_dir.startswith("model"):
-            assert is_internal_enabled(), "Cannot import mos, check internal version."
-            # Lazy import: avoids the recis.hooks -> recis.framework import
-            # cycle.
-            from recis.utils.mos import Mos
-
-            output_dir = Mos(output_dir).real_physical_path
         self.output_dir = output_dir
 
         self.wait = wait

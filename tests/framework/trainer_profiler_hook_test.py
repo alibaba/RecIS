@@ -52,7 +52,6 @@ class TestTrainerProfilerHook(unittest.TestCase):
             load_update_steps=None,
             load_update_windows=1,
             load_update_epochs=None,
-            eval_mos_report_uri=None,
         )
         trainer.saver = SimpleNamespace()
         trainer._auto_profiler_args = None

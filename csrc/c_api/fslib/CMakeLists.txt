@@ -1,10 +1,12 @@
 file(GLOB fslib_c_api_CC "*.cc")
 
-if(DEFINED NEED_FSLIB_ABI AND NEED_FSLIB_ABI EQUAL 0)
-    set(ZIP_URL "http://sample-lake.oss-cn-beijing.aliyuncs.com/deploy/abi0/xdl_fslib_dependency-1.0.2.tar.gz")
-else()
-    set(ZIP_URL "http://sample-lake.oss-cn-beijing.aliyuncs.com/deploy/abi1/xdl_fslib_dependency-1.0.2.tar.gz")
+set(RECIS_FSLIB_DEPENDENCY_URL "" CACHE STRING
+    "URL of the optional fslib dependency archive")
+if(RECIS_FSLIB_DEPENDENCY_URL STREQUAL "")
+    message(FATAL_ERROR
+        "RECIS_FSLIB_DEPENDENCY_URL is required when building fslib support")
 endif()
+set(ZIP_URL "${RECIS_FSLIB_DEPENDENCY_URL}")
 set(ZIP_FILE "${CMAKE_BINARY_DIR}/xdl_fslib_dependency.tar.gz")
 set(DEPS_DIR "${CMAKE_BINARY_DIR}/fs_deps")
 

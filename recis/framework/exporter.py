@@ -6,23 +6,10 @@ import torch
 import torch.distributed as dist
 
 from recis.framework.filesystem import get_file_system
-from recis.info import is_internal_enabled
 from recis.nn.modules.hashtable import filter_out_sparse_param
 from recis.serialize import Loader, Saver
 from recis.utils.logger import Logger
-try:
-    from recis.utils.torch_fx_tool.ExportTorchFxTool import ExportTorchFxTool
-except ImportError:
-    ExportTorchFxTool = None
 
-
-if is_internal_enabled() and not os.environ.get("BUILD_DOCUMENT", None) == "1":
-    from pangudfs_client.common.exception.exceptions import PanguException
-
-    from recis.utils.mos import Mos
-else:
-    PanguException = None
-    Mos = None
 
 logger = Logger(__name__)
 TMP_EXPORT_LOCAL_PATH = "./__tmp_export_path__/"
@@ -58,7 +45,7 @@ class Exporter:
         filter_sparse_opt (bool): Whether to filter sparse optimization parameters.
         fg_conf (dict): Feature generation configuration.
         mc_conf (dict): Model compilation configuration.
-        fx_tool (ExportTorchFxTool): Tool for exporting TorchFX models.
+        fx_tool: Optional dense model export backend.
     """
 
     def __init__(
@@ -104,7 +91,6 @@ class Exporter:
         Raises:
             AssertionError: If neither fg nor fg_conf_or_path is provided.
             AssertionError: If neither fg nor mc_conf_or_path is provided.
-            AssertionError: If MOS is required but not available for model paths.
         """
         self.rank = int(os.environ.get("RANK", 0))
         self.shard_num = int(os.environ.get("WORLD_SIZE", 1))
@@ -114,16 +100,7 @@ class Exporter:
         self.dense_model = model.get_submodule(dense_model_name)
         self.dense_model_name = dense_model_name
         self.dataset = dataset
-        if ckpt_dir.startswith("model"):
-            assert Mos is not None, "Cannot import mos, check interneal version."
-            ckpt_dir = Mos(ckpt_dir, True).real_physical_path
         self.ckpt_dir = ckpt_dir
-        if export_dir.startswith("model"):
-            assert Mos is not None, "Cannot import mos, check interneal version."
-            if add_subfolder:
-                export_dir = Mos(export_dir, False).real_physical_path
-            else:
-                export_dir = Mos(export_dir, True).real_physical_path
 
         # add subfolder for export_dir
         if add_subfolder and not export_dir.endswith("data"):
@@ -160,14 +137,7 @@ class Exporter:
         else:
             self.mc_conf = fg.get_mc_conf()
 
-        if ExportTorchFxTool is not None:
-            self.fx_tool = ExportTorchFxTool(
-                fx_folder=os.path.join(TMP_EXPORT_LOCAL_PATH, export_folder_name),
-                model_name=self.export_model_name,
-            )
-            self.fx_tool.set_output_nodes_name(export_outputs)
-        else:
-            self.fx_tool = None
+        self.fx_tool = None
 
     def export(self):
         """Execute the complete model export process.
@@ -204,16 +174,10 @@ class Exporter:
         The method supports both local filesystem and cloud storage backends,
         automatically handling path resolution for different storage types.
 
-        Raises:
-            PanguException: If directory creation fails due to permission issues.
         """
         fs = get_file_system(self.export_dir)
         if not fs.exists(self.export_dir):
-            try:
-                fs.makedirs(self.export_dir + "/", exist_ok=True)
-            except PanguException as e:
-                if e.pangu_err_no == 7:
-                    pass
+            fs.makedirs(self.export_dir + "/", exist_ok=True)
         # load dense model
         pt_file = os.path.join(self.ckpt_dir, "model.pt")
         fs = get_file_system(pt_file)
@@ -257,8 +221,8 @@ class Exporter:
             self.dense_optimizer.zero_grad()
         if self.fx_tool is None:
             raise RuntimeError(
-                "ExportTorchFxTool is not available in open-source version. "
-                "Model export requires the internal torch_fx_tool submodule."
+                "Dense model export requires an export backend that is not "
+                "included in this distribution."
             )
         self.fx_tool.export_fx_model(self.dense_model, dense_data[0], self.mc_conf)
         dist.barrier()

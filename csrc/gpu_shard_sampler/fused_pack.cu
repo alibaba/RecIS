@@ -215,6 +215,24 @@ std::tuple<torch::Tensor, std::vector<torch::Tensor>> unified_batched_gather(
 // 3. fused_serialize: all ranks → flat byte buffer
 // ════════════════════════════════════════════════════════════════════════
 
+__device__ inline void StoreInt64Unaligned(uint8_t* dst, int64_t value) {
+  const auto* src = reinterpret_cast<const uint8_t*>(&value);
+#pragma unroll
+  for (int i = 0; i < 8; ++i) {
+    dst[i] = src[i];
+  }
+}
+
+__device__ inline int64_t LoadInt64Unaligned(const uint8_t* src) {
+  int64_t value;
+  auto* dst = reinterpret_cast<uint8_t*>(&value);
+#pragma unroll
+  for (int i = 0; i < 8; ++i) {
+    dst[i] = src[i];
+  }
+  return value;
+}
+
 __global__ void fused_serialize_kernel(
     const int64_t* __restrict__ all_lengths,             // [E, total_recv]
     const int64_t* __restrict__ value_ptrs,              // [E] device pointers
@@ -240,9 +258,10 @@ __global__ void fused_serialize_kernel(
   // Section 1: all_lengths entry f for rank r
   // Layout: [E, N] row-major, entry f at offset f * N * 8
   int64_t lengths_off = (int64_t)f * N * 8;
-  for (int i = threadIdx.x; i < N; i += blockDim.x)
-    ((int64_t*)(dst + lengths_off))[i] =
-        all_lengths[f * total_recv + start + i];
+  for (int i = threadIdx.x; i < N; i += blockDim.x) {
+    StoreInt64Unaligned(dst + lengths_off + (int64_t)i * 8,
+                        all_lengths[f * total_recv + start + i]);
+  }
 
   // Section 2: all_values entry f for rank r
   // all_values starts after all_lengths: E * N * 8 bytes
@@ -298,10 +317,9 @@ __global__ void fused_deserialize_fixed_kernel(
   const uint8_t* src = recv_flat + recv_offsets[r];
 
   // Section 1: all_lengths [E, N] → scatter
-  const int64_t* lengths_src = reinterpret_cast<const int64_t*>(src);
   for (int f = 0; f < E; f++) {
     for (int i = threadIdx.x; i < N; i += blockDim.x) {
-      int64_t val = lengths_src[f * N + i];
+      int64_t val = LoadInt64Unaligned(src + ((int64_t)f * N + i) * 8);
       int64_t out_pos = scatter_indices[base + i];
       out_lengths[f * Q + out_pos] = val;
       recv_lengths[f * total_items + base + i] = val;

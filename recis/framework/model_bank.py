@@ -11,15 +11,8 @@ import torch
 
 from recis.framework.checkpoint_compat import is_filter_global_step_name
 from recis.framework.filesystem import get_file_system
-from recis.info import is_internal_enabled
 from recis.serialize.checkpoint_reader import CheckpointReader
 from recis.utils.logger import Logger
-
-
-if is_internal_enabled() and not os.environ.get("BUILD_DOCUMENT", None) == "1":
-    from recis.utils.mos import Mos
-else:
-    Mos = None
 
 
 logger = Logger(__name__)
@@ -209,9 +202,6 @@ def get_update_path(path, is_bank=True) -> str:
         logger.warning("get_update_path: path is empty")
         return ""
 
-    if path.startswith("model."):
-        mos = Mos(path, is_bank)
-        path = mos.real_physical_path
     path = maybe_get_latest_version(path, (not is_bank))
     return path
 

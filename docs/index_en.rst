@@ -1,4 +1,4 @@
-:github_url: https://code.alibaba-inc.com/xrec/xrec
+:github_url: https://github.com/alibaba/RecIS
 
 RecIS Documentation
 ===================

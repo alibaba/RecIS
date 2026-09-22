@@ -86,6 +86,11 @@ def get_wheel_tag_device_type():
                 version = "".join(filter(None, match.groups()))
                 return f"cuppu{version}"
 
+    # A wheel must describe the CUDA runtime used by its PyTorch build. The
+    # host may contain unrelated CUDA toolkits under /usr/local.
+    if torch.version.cuda is not None:
+        return f"cu{torch.version.cuda.replace('.', '')}"
+
     # Check CUDA: /usr/local/cuda-12.8 -> cu128
     cuda_dirs = sorted(glob.glob("/usr/local/cuda-*"), key=len, reverse=True)
     if cuda_dirs:
