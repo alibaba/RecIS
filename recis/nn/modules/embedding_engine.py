@@ -2,6 +2,7 @@ import copy
 import hashlib
 import math
 from collections import defaultdict
+from typing import Optional
 
 import torch
 from torch import nn
@@ -173,8 +174,8 @@ class HashTableCoalescedGroup:
             coalesced=True,
             initializer=self._emb_opt.initializer,
             grad_reduce_by=self._emb_opt.grad_reduce_by,
-            hdmp_group_size=self._emb_opt.hdmp_group_size,
-            hdmp_group_reduce_by=self._emb_opt.hdmp_group_reduce_by,
+            sparse_grad_group_size=self._emb_opt.sparse_grad_group_size,
+            sparse_grad_group_reduce_by=self._emb_opt.sparse_grad_group_reduce_by,
             fp16_enabled=self._emb_opt.fp16_enabled,
             filter_hook=self._emb_opt.filter_hook,
             trainable=self._requires_optimizer_state,
@@ -654,6 +655,8 @@ class EmbeddingEngine(nn.Module):
         self,
         emb_options: dict[str, EmbeddingOption],
         use_pinned_memory: bool = False,
+        sparse_grad_group_reduce_impl: Optional[str] = None,
+        sparse_grad_group_reduce_chunk_groups: Optional[int] = None,
     ):
         """Initialize embedding engine with multiple embedding options.
 
@@ -664,6 +667,10 @@ class EmbeddingEngine(nn.Module):
                 CPU intermediate tensors in all hashtables to accelerate H2D/D2H
                 transfers. Defaults to False. Set to True to enable pinned memory
                 in scenarios where pinned memory is available.
+            sparse_grad_group_reduce_impl (str, optional): Sparse gradient group
+                reduction implementation shared by every hashtable in this engine.
+            sparse_grad_group_reduce_chunk_groups (int, optional): Number of source
+                groups processed per chunk by "chunk_compact".
 
         Raises:
             RuntimeError: If embedding options have conflicting configurations
@@ -705,6 +712,10 @@ class EmbeddingEngine(nn.Module):
             self._ht[ht_name] = DynamicEmbedding(
                 fea_group.embedding_info(),
                 use_pinned_memory=use_pinned_memory,
+                sparse_grad_group_reduce_impl=sparse_grad_group_reduce_impl,
+                sparse_grad_group_reduce_chunk_groups=(
+                    sparse_grad_group_reduce_chunk_groups
+                ),
             )
             logger.info(
                 f"ht name: {ht_name}, coalesced info: {fea_group.embedding_info().coalesced_info()}, children: {fea_group.embedding_info().children}"

@@ -584,11 +584,12 @@ void SparseRowWiseAdagradSum::step() {
       if (!p.defined() || !p->HasGrad()) {
         continue;
       }
-      TORCH_CHECK(
-          p->HasGradSq(),
-          "SparseRowWiseAdagradSum requires grad_sq for parameter '", name,
-          "'. Use grad_reduce_by='hdmp_group_sum' so HashTable backward calls "
-          "accept_grad_sq.");
+      TORCH_CHECK(p->HasGradSq(),
+                  "SparseRowWiseAdagradSum requires grad_sq for parameter '",
+                  name,
+                  "'. Use grad_reduce_by='group_sum' so HashTable backward "
+                  "calls "
+                  "accept_grad_sq.");
       const auto &grad = p->Grad();
       if (!grad.defined()) {
         continue;

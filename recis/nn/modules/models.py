@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import torch.nn as nn
 
@@ -210,6 +212,8 @@ class RecISModel(nn.Module):
         multihash_conf=None,
         block_builder_class=BlockBuilder,
         use_pinned_memory: bool = False,
+        sparse_grad_group_reduce_impl: Optional[str] = None,
+        sparse_grad_group_reduce_chunk_groups: Optional[int] = None,
     ):
         """Initialize the RecIS Model.
 
@@ -232,11 +236,20 @@ class RecISModel(nn.Module):
                 CPU intermediate tensors in all hashtables to accelerate H2D/D2H
                 transfers. Defaults to False. Set to True to enable pinned memory
                 in scenarios where pinned memory is available.
+            sparse_grad_group_reduce_impl (str, optional): Sparse gradient group
+                reduction implementation shared by every embedding hashtable.
+            sparse_grad_group_reduce_chunk_groups (int, optional): Number of source
+                groups processed per chunk by "chunk_compact".
         """
         super().__init__()
         self.feature_engine = FeatureEngine(feature_list=feature_confs)
         self.embedding_engine = EmbeddingEngine(
-            emb_confs, use_pinned_memory=use_pinned_memory
+            emb_confs,
+            use_pinned_memory=use_pinned_memory,
+            sparse_grad_group_reduce_impl=sparse_grad_group_reduce_impl,
+            sparse_grad_group_reduce_chunk_groups=(
+                sparse_grad_group_reduce_chunk_groups
+            ),
         )
         self.block_builder = block_builder_class(
             feature_blocks,
@@ -295,6 +308,10 @@ class RecISModel(nn.Module):
             multihash_conf=fg.multihash_conf,
             block_builder_class=block_builder_class,
             use_pinned_memory=use_pinned_memory,
+            sparse_grad_group_reduce_impl=fg.sparse_grad_group_reduce_impl,
+            sparse_grad_group_reduce_chunk_groups=(
+                fg.sparse_grad_group_reduce_chunk_groups
+            ),
         )
 
     def prefetch_step(self, samples: dict):

@@ -8,6 +8,7 @@ _register_ckpt, _maybe_inject_mos_resume_entry, load() 路径解析。
 """
 
 import hashlib
+import json
 import os
 import sys
 from collections import OrderedDict
@@ -94,15 +95,21 @@ from recis.framework.model_bank import (  # noqa: E402
 
 
 class _FakeEmbeddingOption:
-    def __init__(self, children):
+    def __init__(self, children, use_sparse_grad_group=False):
         self.children = children
+        self.use_sparse_grad_group = use_sparse_grad_group
 
     def coalesced_info(self):
+        grad_reduce_by = "group_sum" if self.use_sparse_grad_group else "worker"
+        group_size = 32 if self.use_sparse_grad_group else None
+        group_reduce_by = "worker_sum" if self.use_sparse_grad_group else None
         return (
             '{"dim": 8, "dtype": "torch.float32", "device": "cpu", '
             '"initializer": "ConstantInitializer_0", '
-            '"grad_reduce_by": "worker", "hdmp_group_size": null, '
-            '"hdmp_group_reduce_by": null, '
+            f'"grad_reduce_by": "{grad_reduce_by}", '
+            f'"sparse_grad_group_size": {json.dumps(group_size)}, '
+            '"sparse_grad_group_reduce_by": '
+            f"{json.dumps(group_reduce_by)}, "
             '"filter_hook": "GlobalStepFilter"}'
         )
 
@@ -120,23 +127,22 @@ class _FakeHashTable(torch.nn.Module):
 
 
 class _FakeDynamicEmbedding(torch.nn.Module):
-    def __init__(self, children):
+    def __init__(self, option):
         super().__init__()
-        self._emb_opt = _FakeEmbeddingOption(children)
+        self._emb_opt = option
         self._hashtable = _FakeHashTable()
 
 
 class _FakeEmbeddingModel(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, use_sparse_grad_group=False):
         super().__init__()
-        option = _FakeEmbeddingOption(["child_a", "child_b"])
+        option = _FakeEmbeddingOption(
+            ["child_a", "child_b"],
+            use_sparse_grad_group=use_sparse_grad_group,
+        )
         current_hash = hashlib.sha256(option.coalesced_info().encode()).hexdigest()
         self.embeddings = torch.nn.ModuleDict(
-            {
-                f"CoalescedHashtable_{current_hash}": _FakeDynamicEmbedding(
-                    option.children
-                )
-            }
+            {f"CoalescedHashtable_{current_hash}": _FakeDynamicEmbedding(option)}
         )
 
 
@@ -161,28 +167,53 @@ class TestFilterGlobalStepCheckpointCompatibility(unittest.TestCase):
         self.assertEqual(dense_state["child_b@filter_global_step"].item(), 17)
 
     @patch("recis.framework.checkpoint_manager.load_pt_file")
-    def test_loads_pre_hdmp_hash_name(self, load_pt_file_mock):
+    def test_loads_legacy_sparse_grad_group_hash_names(self, load_pt_file_mock):
         group = self.groups[0]
-        self.assertEqual(len(group.legacy_names), 2)
-        old_hash_name = group.legacy_names[1]
-        load_pt_file_mock.return_value = (
-            {old_hash_name: torch.tensor([29], dtype=torch.int64)},
-            False,
-        )
-        saver = object.__new__(Saver)
-        saver._model = self.model
-        saver._dense_name_aliases = dict.fromkeys(group.child_names, group.legacy_names)
-        saver._dense_name_to_runtime = dict.fromkeys(
-            group.child_names, group.runtime_name
-        )
-        model_bank_conf = {name: {} for name in group.child_names}
+        self.assertEqual(len(group.legacy_names), 3)
+        for expected_step, old_hash_name in enumerate(group.legacy_names[1:], 29):
+            with self.subTest(old_hash_name=old_hash_name):
+                load_pt_file_mock.return_value = (
+                    {old_hash_name: torch.tensor([expected_step], dtype=torch.int64)},
+                    False,
+                )
+                saver = object.__new__(Saver)
+                saver._model = self.model
+                saver._dense_name_aliases = dict.fromkeys(
+                    group.child_names, group.legacy_names
+                )
+                saver._dense_name_to_runtime = dict.fromkeys(
+                    group.child_names, group.runtime_name
+                )
+                model_bank_conf = {name: {} for name in group.child_names}
 
-        Saver._load_dense_model(saver, "/old-checkpoint", model_bank_conf)
+                Saver._load_dense_model(saver, "/old-checkpoint", model_bank_conf)
 
-        loaded_step = self.model.embeddings[
-            group.runtime_name.split(".")[1]
-        ]._hashtable._filter_hook_impl._global_step
-        self.assertEqual(loaded_step.item(), 29)
+                loaded_step = self.model.embeddings[
+                    group.runtime_name.split(".")[1]
+                ]._hashtable._filter_hook_impl._global_step
+                self.assertEqual(loaded_step.item(), expected_step)
+
+    def test_collects_previous_grouping_schema_hash_name(self):
+        model = _FakeEmbeddingModel(use_sparse_grad_group=True)
+        group = collect_filter_global_step_names(model)[0]
+        option = next(iter(model.embeddings.values()))._emb_opt
+        legacy_fields = {
+            "sparse_grad_group_size": "hdmp_group_size",
+            "sparse_grad_group_reduce_by": "hdmp_group_reduce_by",
+        }
+        legacy_info = {
+            legacy_fields.get(name, name): value
+            for name, value in json.loads(option.coalesced_info()).items()
+        }
+        legacy_info["grad_reduce_by"] = "hdmp_group_sum"
+        legacy_hash = hashlib.sha256(json.dumps(legacy_info).encode()).hexdigest()
+
+        self.assertTrue(
+            any(
+                f"CoalescedHashtable_{legacy_hash}" in name
+                for name in group.legacy_names
+            )
+        )
 
 
 class TestModelBankOptimizerSelection(unittest.TestCase):

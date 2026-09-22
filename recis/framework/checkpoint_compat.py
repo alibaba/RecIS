@@ -4,13 +4,17 @@ import hashlib
 import json
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import torch
 
 
 _FILTER_GLOBAL_STEP_STATE_SUFFIX = "._hashtable._filter_hook_impl._global_step"
 _FILTER_GLOBAL_STEP_CHILD_SUFFIX = "@filter_global_step"
+_LEGACY_SPARSE_GRAD_GROUP_FIELDS = {
+    "sparse_grad_group_size": "hdmp_group_size",
+    "sparse_grad_group_reduce_by": "hdmp_group_reduce_by",
+}
 
 
 @dataclass(frozen=True)
@@ -31,29 +35,47 @@ def _join_module_name(module_name: str, suffix: str) -> str:
     return f"{module_name}{suffix}" if module_name else suffix.lstrip(".")
 
 
-def _pre_hdmp_filter_global_step_name(
+def _legacy_filter_global_step_names(
     module_name: str, coalesced_info: str
-) -> Optional[str]:
-    """Returns the hash-based name used before HDMP fields were added."""
-    legacy_info = json.loads(coalesced_info)
-    removed_hdmp_field = False
-    for field_name in ("hdmp_group_size", "hdmp_group_reduce_by"):
-        if field_name in legacy_info:
-            legacy_info.pop(field_name)
-            removed_hdmp_field = True
-    if not removed_hdmp_field:
-        return None
+) -> Tuple[str, ...]:
+    """Returns hash-based names from earlier sparse-gradient-group schemas."""
+    runtime_info = json.loads(coalesced_info)
 
     current_hash = hashlib.sha256(coalesced_info.encode()).hexdigest()
-    legacy_hash = hashlib.sha256(json.dumps(legacy_info).encode()).hexdigest()
     current_marker = f"CoalescedHashtable_{current_hash}"
     if current_marker not in module_name:
-        return None
+        return ()
 
-    legacy_module_name = module_name.replace(
-        current_marker, f"CoalescedHashtable_{legacy_hash}", 1
-    )
-    return _join_module_name(legacy_module_name, _FILTER_GLOBAL_STEP_STATE_SUFFIX)
+    legacy_infos = []
+    renamed_info = {
+        _LEGACY_SPARSE_GRAD_GROUP_FIELDS.get(field_name, field_name): value
+        for field_name, value in runtime_info.items()
+    }
+    if renamed_info.get("grad_reduce_by") == "group_sum":
+        renamed_info["grad_reduce_by"] = "hdmp_group_sum"
+    if renamed_info != runtime_info:
+        legacy_infos.append(renamed_info)
+
+    pre_group_info = {
+        field_name: value
+        for field_name, value in runtime_info.items()
+        if field_name not in _LEGACY_SPARSE_GRAD_GROUP_FIELDS
+    }
+    if pre_group_info != runtime_info:
+        legacy_infos.append(pre_group_info)
+
+    legacy_names = []
+    for legacy_info in legacy_infos:
+        legacy_hash = hashlib.sha256(json.dumps(legacy_info).encode()).hexdigest()
+        legacy_module_name = module_name.replace(
+            current_marker, f"CoalescedHashtable_{legacy_hash}", 1
+        )
+        legacy_name = _join_module_name(
+            legacy_module_name, _FILTER_GLOBAL_STEP_STATE_SUFFIX
+        )
+        if legacy_name not in legacy_names:
+            legacy_names.append(legacy_name)
+    return tuple(legacy_names)
 
 
 def collect_filter_global_step_names(
@@ -76,9 +98,11 @@ def collect_filter_global_step_names(
         coalesced_info = getattr(module, "_checkpoint_coalesced_info", None)
         if coalesced_info is None:
             coalesced_info = emb_opt.coalesced_info()
-        pre_hdmp_name = _pre_hdmp_filter_global_step_name(module_name, coalesced_info)
-        if pre_hdmp_name is not None and pre_hdmp_name != runtime_name:
-            legacy_names.append(pre_hdmp_name)
+        legacy_names.extend(
+            name
+            for name in _legacy_filter_global_step_names(module_name, coalesced_info)
+            if name != runtime_name
+        )
         groups.append(
             _FilterGlobalStepNames(
                 runtime_name=runtime_name,

@@ -233,7 +233,8 @@ class SparseAdagradSum : public SparseOptimizer {
 
  private:
   // Uses the same state slot names as SparseAdagrad so existing checkpoints can
-  // be inherited when switching to SparseAdagradSum/HDMP.
+  // be inherited when switching to SparseAdagradSum with sparse gradient
+  // groups.
   static const char *Prefix() { return "sparse_adagrad_"; }
   static std::string StepName() {
     static const std::string s = torch::str(Prefix(), "step");

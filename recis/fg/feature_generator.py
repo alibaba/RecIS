@@ -88,8 +88,10 @@ class FG:
         shape_manager: ShapeManager,
         use_coalesce=True,
         grad_reduce_by="worker",
-        hdmp_group_size=None,
-        hdmp_group_reduce_by=None,
+        sparse_grad_group_size=None,
+        sparse_grad_group_reduce_by=None,
+        sparse_grad_group_reduce_impl=None,
+        sparse_grad_group_reduce_chunk_groups=None,
         initializer="uniform",
         init_kwargs=None,
         emb_default_class="hash_table",
@@ -106,6 +108,12 @@ class FG:
                 Defaults to True.
             grad_reduce_by (str, optional): Gradient reduction strategy.
                 Defaults to "worker".
+            sparse_grad_group_reduce_impl (str, optional): Sparse gradient group
+                reduction implementation shared by all embeddings in this FG.
+                Options are "dense", "compact", and "chunk_compact".
+            sparse_grad_group_reduce_chunk_groups (int, optional): Number of source
+                groups processed per chunk by "chunk_compact". This setting is
+                shared by all embeddings in this FG.
             initializer (str, optional): Embedding initializer type. Must be one of
                 "constant", "uniform", "normal", "xavier_normal", "xavier_uniform".
                 Defaults to "uniform".
@@ -127,8 +135,12 @@ class FG:
         self.shape_manager = shape_manager
         self.use_coalesce = use_coalesce
         self.grad_reduce_by = grad_reduce_by
-        self.hdmp_group_size = hdmp_group_size
-        self.hdmp_group_reduce_by = hdmp_group_reduce_by
+        self.sparse_grad_group_size = sparse_grad_group_size
+        self.sparse_grad_group_reduce_by = sparse_grad_group_reduce_by
+        self.sparse_grad_group_reduce_impl = sparse_grad_group_reduce_impl
+        self.sparse_grad_group_reduce_chunk_groups = (
+            sparse_grad_group_reduce_chunk_groups
+        )
         self.embedding_initializer = INITIALIZER_MAPPING[initializer]
         if emb_default_class not in ["hash_table", "bucket_emb"]:
             raise ValueError(
@@ -413,8 +425,8 @@ class FG:
                     combiner=conf.combiner,
                     initializer=self.embedding_initializer(**self.init_kwargs),
                     grad_reduce_by=self.grad_reduce_by,
-                    hdmp_group_size=self.hdmp_group_size,
-                    hdmp_group_reduce_by=self.hdmp_group_reduce_by,
+                    sparse_grad_group_size=self.sparse_grad_group_size,
+                    sparse_grad_group_reduce_by=self.sparse_grad_group_reduce_by,
                     use_weight=False,
                     device=device,
                     dtype=dtype,
@@ -449,8 +461,8 @@ class FG:
                         combiner=conf.combiner,
                         initializer=self.embedding_initializer(**self.init_kwargs),
                         grad_reduce_by=self.grad_reduce_by,
-                        hdmp_group_size=self.hdmp_group_size,
-                        hdmp_group_reduce_by=self.hdmp_group_reduce_by,
+                        sparse_grad_group_size=self.sparse_grad_group_size,
+                        sparse_grad_group_reduce_by=self.sparse_grad_group_reduce_by,
                         use_weight=False,
                         device=device,
                         dtype=dtype,

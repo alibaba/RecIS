@@ -56,18 +56,12 @@ class EmbeddingEngineTest(unittest.TestCase):
 
     def test_trainable_children_are_grouped_separately(self):
         options = {
-            "mixed_frozen": EmbeddingOption(
-                shared_name="mixed_child", trainable=False
-            ),
+            "mixed_frozen": EmbeddingOption(shared_name="mixed_child", trainable=False),
             "mixed_trainable": EmbeddingOption(
                 shared_name="mixed_child", trainable=True
             ),
-            "trainable": EmbeddingOption(
-                shared_name="trainable_child", trainable=True
-            ),
-            "frozen": EmbeddingOption(
-                shared_name="frozen_child", trainable=False
-            ),
+            "trainable": EmbeddingOption(shared_name="trainable_child", trainable=True),
+            "frozen": EmbeddingOption(shared_name="frozen_child", trainable=False),
         }
 
         engine = EmbeddingEngine(options)
@@ -102,6 +96,36 @@ class EmbeddingEngineTest(unittest.TestCase):
         )
         with self.assertRaises(RuntimeError):
             frozen_table.slot_group().slot_by_name(state_name)
+
+    def test_sparse_grad_group_reduce_impl_is_engine_wide(self):
+        options = {
+            "fea1": EmbeddingOption(
+                embedding_dim=8,
+                shared_name="table1",
+                grad_reduce_by="group_sum",
+                sparse_grad_group_size=1,
+                sparse_grad_group_reduce_by="worker_sum",
+            ),
+            "fea2": EmbeddingOption(
+                embedding_dim=16,
+                shared_name="table2",
+                grad_reduce_by="group_sum",
+                sparse_grad_group_size=1,
+                sparse_grad_group_reduce_by="worker_sum",
+            ),
+        }
+
+        engine = EmbeddingEngine(
+            options,
+            sparse_grad_group_reduce_impl="chunk_compact",
+            sparse_grad_group_reduce_chunk_groups=2,
+        )
+
+        self.assertEqual(len(engine._ht), 2)
+        for embedding in engine._ht.values():
+            hashtable = embedding._hashtable
+            self.assertEqual(hashtable._sparse_grad_group_reduce_impl, "chunk_compact")
+            self.assertEqual(hashtable._sparse_grad_group_reduce_chunk_groups, 2)
 
     def _make_no_reduce_inputs(self):
         seq_ids = torch.tensor(

@@ -6,13 +6,10 @@ from typing import List, Optional, Tuple
 import torch
 
 from recis.common.singleton import SingletonMeta
+from recis.nn.functional.sparse_grad_group_ops import GradGroupSumFunction
 from recis.nn.hashtable_hook import AdmitHook, FilterHook
 from recis.nn.initializers import ConstantInitializer
 from recis.nn.modules.hashtable_hook_impl import HashtableHookFactory, ReadOnlyHookImpl
-from recis.utils.logger import Logger
-
-
-logger = Logger(__name__)
 
 
 class Slice:
@@ -169,8 +166,10 @@ class HashTable(torch.nn.Module):
         initializer=None,
         name: str = "hashtable",
         grad_reduce_by: str = "worker",
-        hdmp_group_size: Optional[int] = None,
-        hdmp_group_reduce_by: Optional[str] = None,
+        sparse_grad_group_size: Optional[int] = None,
+        sparse_grad_group_reduce_by: Optional[str] = None,
+        sparse_grad_group_reduce_impl: Optional[str] = None,
+        sparse_grad_group_reduce_chunk_groups: Optional[int] = None,
         filter_hook: Optional[FilterHook] = None,
         use_pinned_memory: bool = False,
         requires_optimizer_state: bool = True,
@@ -191,12 +190,20 @@ class HashTable(torch.nn.Module):
                 Options:
                 - "worker": Average gradients across workers
                 - "worker_sum": Sum gradients across workers (for SparseAdagradSum)
-                - "hdmp_group_sum": Sum HDMP group-reduced gradients and store
+                - "group_sum": Sum group-reduced sparse gradients and store
                   group-reduced gradient squares (for SparseAdagradSum)
                 - "id": Average gradients by feature ID
-            hdmp_group_size (int, optional): Worker count in each HDMP source group.
-            hdmp_group_reduce_by (str, optional): Reduction method inside each HDMP
-                source group. Options: "id", "worker", "worker_sum".
+            sparse_grad_group_size (int, optional): Worker count in each sparse
+                gradient source group.
+            sparse_grad_group_reduce_by (str, optional): Reduction method inside
+                each sparse gradient source group. Options: "id", "worker",
+                "worker_sum".
+            sparse_grad_group_reduce_impl (str, optional): Group reduction
+                implementation. Options: "dense", "compact", "chunk_compact".
+                Defaults to "compact" when grouped reduction is enabled.
+            sparse_grad_group_reduce_chunk_groups (int, optional): Number of
+                source groups processed per chunk when the implementation is
+                "chunk_compact". Defaults to 1.
             filter_hook (Optional[FilterHook], optional): Filter hook. Defaults to None.
             use_pinned_memory (bool, optional): Whether to use pinned memory for
                 CPU intermediate tensors to accelerate H2D/D2H transfers.
@@ -206,7 +213,7 @@ class HashTable(torch.nn.Module):
 
         Raises:
             AssertionError: If grad_reduce_by is not "id", "worker", "worker_sum",
-                or "hdmp_group_sum".
+                or "group_sum".
         """
         super().__init__()
         if initializer is None:
@@ -217,13 +224,33 @@ class HashTable(torch.nn.Module):
         if children is None:
             children = [name]
         self._device = device
-        assert grad_reduce_by in ["id", "worker", "worker_sum", "hdmp_group_sum"]
-        if grad_reduce_by == "hdmp_group_sum":
-            assert hdmp_group_size is not None and hdmp_group_size > 0
-            assert hdmp_group_reduce_by in ["id", "worker", "worker_sum"]
+        assert grad_reduce_by in [
+            "id",
+            "worker",
+            "worker_sum",
+            "group_sum",
+        ]
+        if grad_reduce_by == "group_sum":
+            assert sparse_grad_group_size is not None and sparse_grad_group_size > 0
+            assert sparse_grad_group_reduce_by in ["id", "worker", "worker_sum"]
+            if sparse_grad_group_reduce_impl is None:
+                sparse_grad_group_reduce_impl = "compact"
+            assert sparse_grad_group_reduce_impl in [
+                "dense",
+                "compact",
+                "chunk_compact",
+            ]
+            if sparse_grad_group_reduce_impl == "chunk_compact":
+                if sparse_grad_group_reduce_chunk_groups is None:
+                    sparse_grad_group_reduce_chunk_groups = 1
+                assert sparse_grad_group_reduce_chunk_groups > 0
         self._grad_reduce_by = grad_reduce_by
-        self._hdmp_group_size = hdmp_group_size
-        self._hdmp_group_reduce_by = hdmp_group_reduce_by
+        self._sparse_grad_group_size = sparse_grad_group_size
+        self._sparse_grad_group_reduce_by = sparse_grad_group_reduce_by
+        self._sparse_grad_group_reduce_impl = sparse_grad_group_reduce_impl
+        self._sparse_grad_group_reduce_chunk_groups = (
+            sparse_grad_group_reduce_chunk_groups
+        )
         self._initializer.set_shape([block_size] + embedding_shape)
         self._initializer.set_dtype(dtype)
         self._initializer.build()
@@ -333,20 +360,25 @@ class HashTable(torch.nn.Module):
                 embedding = GradIDMeanFunction.apply(embedding, index)
             elif self._grad_reduce_by == "worker_sum":
                 embedding = GradWorkerSumFunction.apply(embedding, index, self, emb_idx)
-            elif self._grad_reduce_by == "hdmp_group_sum":
+            elif self._grad_reduce_by == "group_sum":
                 if source_group is None:
                     raise RuntimeError(
-                        "source_group is required when grad_reduce_by='hdmp_group_sum'"
+                        "source_group is required when grad_reduce_by='group_sum'"
                     )
-                embedding = GradHDMPGroupSumFunction.apply(
+                # Keep the CPU slot index for filter hooks, but enqueue the copy
+                # needed by accept_grad while forward computation can overlap it.
+                grad_emb_idx = emb_idx.to(device=embedding.device, non_blocking=True)
+                embedding = GradGroupSumFunction.apply(
                     embedding,
                     index,
                     source_group,
                     self,
-                    emb_idx,
-                    self._hdmp_group_size,
-                    math.ceil(self._worker_num / self._hdmp_group_size),
-                    self._hdmp_group_reduce_by,
+                    grad_emb_idx,
+                    self._sparse_grad_group_size,
+                    math.ceil(self._worker_num / self._sparse_grad_group_size),
+                    self._sparse_grad_group_reduce_by,
+                    self._sparse_grad_group_reduce_impl,
+                    self._sparse_grad_group_reduce_chunk_groups,
                 )
             else:
                 slice_num = torch.scalar_tensor(self._worker_num)
@@ -884,116 +916,6 @@ class GradWorkerSumFunction(torch.autograd.Function):
         # Mark gradient as handled so HashTableLookupHelpFunction.backward skips it
         grad_sum._grad_already_handled = True
         return grad_sum, None, None, None
-
-
-class GradHDMPGroupSumFunction(torch.autograd.Function):
-    """Aggregate sparse grads by HDMP source group for SparseAdagradSum.
-
-    The incoming gradients are aligned with the pre-unique request sequence.
-    ``index`` maps each request row to the unique embedding row, while
-    ``source_group`` maps each request row to its 32-worker HDMP group.
-    """
-
-    @staticmethod
-    def forward(
-        ctx,
-        embedding,
-        index,
-        source_group,
-        hashtable,
-        embedding_index,
-        group_size,
-        num_groups,
-        group_reduce_by,
-    ):
-        ctx.save_for_backward(index, source_group, embedding_index)
-        ctx.hashtable = hashtable
-        ctx.group_size = group_size
-        ctx.num_groups = num_groups
-        ctx.group_reduce_by = group_reduce_by
-        return torch.ops.recis.gather(index, embedding)
-
-    @staticmethod
-    def backward(ctx, grad_outputs):
-        grad_outputs = grad_outputs.cuda()
-        index, source_group, embedding_index = ctx.saved_tensors
-        hashtable = ctx.hashtable
-
-        if index.numel() == 0:
-            grad_sum = torch.zeros(
-                [0] + list(grad_outputs.shape)[1:], device=grad_outputs.device
-            )
-            grad_sq_sum = torch.zeros(
-                [0] + list(grad_outputs.shape)[1:], device=grad_outputs.device
-            )
-            empty_index = torch.zeros([0], dtype=torch.long, device=grad_outputs.device)
-            hashtable._hashtable_impl.accept_grad(empty_index, grad_sum)
-            hashtable._hashtable_impl.accept_grad_sq(empty_index, grad_sq_sum)
-            grad_sum._grad_already_handled = True
-            return grad_sum, None, None, None, None, None, None, None
-
-        index = index.to(device=grad_outputs.device, dtype=torch.long)
-        source_group = source_group.to(device=grad_outputs.device, dtype=torch.long)
-        source_group = source_group.view(-1)
-        index = index.view(-1)
-
-        if source_group.numel() != index.numel():
-            raise RuntimeError(
-                "source_group must align with the original request sequence: "
-                f"source_group={source_group.numel()}, index={index.numel()}"
-            )
-
-        num_unique = int(embedding_index.numel())
-        num_groups = int(ctx.num_groups)
-        group_size = int(ctx.group_size)
-        group_reduce_by = ctx.group_reduce_by
-
-        if source_group.numel() > 0:
-            max_group = int(source_group.max().item())
-            if max_group >= num_groups:
-                raise RuntimeError(
-                    f"source_group contains group {max_group}, "
-                    f"but num_groups={num_groups}"
-                )
-
-        flat_group_index = source_group * num_unique + index
-        grouped_shape = [num_groups * num_unique] + list(grad_outputs.shape)[1:]
-        group_grad = torch.zeros(
-            grouped_shape, dtype=grad_outputs.dtype, device=grad_outputs.device
-        )
-        group_grad.index_add_(0, flat_group_index, grad_outputs)
-
-        if group_reduce_by == "id":
-            counts = torch.zeros(
-                [num_groups * num_unique],
-                dtype=grad_outputs.dtype,
-                device=grad_outputs.device,
-            )
-            ones = torch.ones(
-                [flat_group_index.numel()],
-                dtype=grad_outputs.dtype,
-                device=grad_outputs.device,
-            )
-            counts.index_add_(0, flat_group_index, ones)
-            counts = counts.clamp_min_(1).view(
-                [num_groups * num_unique] + [1] * (grad_outputs.dim() - 1)
-            )
-            group_grad = group_grad / counts
-        elif group_reduce_by == "worker":
-            group_grad = group_grad / group_size
-
-        group_grad = group_grad.view(
-            [num_groups, num_unique] + list(grad_outputs.shape)[1:]
-        )
-        grad_sum = group_grad.sum(dim=0)
-        grad_sq_sum = (group_grad * group_grad).sum(dim=0)
-
-        index_cuda = embedding_index.to(device=grad_outputs.device)
-        hashtable._hashtable_impl.accept_grad(index_cuda, grad_sum)
-        hashtable._hashtable_impl.accept_grad_sq(index_cuda, grad_sq_sum)
-
-        grad_sum._grad_already_handled = True
-        return grad_sum, None, None, None, None, None, None, None
 
 
 def is_hashtable(obj):

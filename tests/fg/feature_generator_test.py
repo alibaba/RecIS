@@ -81,7 +81,10 @@ class TestFG(unittest.TestCase):
             emb_conf.pop("initializer")
             emb_conf["device"] = str(emb_conf["device"].type)
             emb_conf["dtype"] = str(emb_conf["dtype"])
-            for optional_key in ("hdmp_group_size", "hdmp_group_reduce_by"):
+            for optional_key in (
+                "sparse_grad_group_size",
+                "sparse_grad_group_reduce_by",
+            ):
                 if emb_conf.get(optional_key) is None:
                     emb_conf.pop(optional_key)
             self.assertTrue(emb_conf == expect_emb_conf[emb_name])
@@ -89,6 +92,23 @@ class TestFG(unittest.TestCase):
                 print(emb_conf)
                 print(expect_emb_conf[emb_name])
                 raise RuntimeError("!!!")
+
+    def test_sparse_grad_group_reduce_impl_is_fg_scoped(self):
+        fg = FG(
+            self.fg_parser_no_io_hash,
+            self.shape_manager_no_io_hash,
+            sparse_grad_group_reduce_impl="chunk_compact",
+            sparse_grad_group_reduce_chunk_groups=2,
+        )
+
+        self.assertEqual(fg.sparse_grad_group_reduce_impl, "chunk_compact")
+        self.assertEqual(fg.sparse_grad_group_reduce_chunk_groups, 2)
+        for emb_conf in fg.get_emb_confs().values():
+            self.assertFalse(hasattr(emb_conf, "sparse_grad_group_reduce_impl"))
+            self.assertFalse(hasattr(emb_conf, "sparse_grad_group_reduce_chunk_groups"))
+            coalesced_info = json.loads(emb_conf.coalesced_info())
+            self.assertNotIn("sparse_grad_group_reduce_impl", coalesced_info)
+            self.assertNotIn("sparse_grad_group_reduce_chunk_groups", coalesced_info)
 
     def test_get_feature_confs_no_io_hash(self):
         expect_fea_conf_file = os.path.join(

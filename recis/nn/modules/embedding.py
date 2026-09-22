@@ -259,8 +259,8 @@ class EmbeddingOption:
     combiner: Optional[str] = "sum"
     combiner_kwargs: Optional[dict] = None
     grad_reduce_by: Optional[str] = "worker"
-    hdmp_group_size: Optional[int] = None
-    hdmp_group_reduce_by: Optional[str] = None
+    sparse_grad_group_size: Optional[int] = None
+    sparse_grad_group_reduce_by: Optional[str] = None
     filter_hook: Optional[FilterHook] = None
     admit_hook: Optional[AdmitHook] = None
     # Convert embeddings of int8 type to fp16; otherwise, convert them to fp32
@@ -308,8 +308,8 @@ class EmbeddingOption:
             "device": str(self.device.type),
             "initializer": str(self.initializer),
             "grad_reduce_by": self.grad_reduce_by,
-            "hdmp_group_size": self.hdmp_group_size,
-            "hdmp_group_reduce_by": self.hdmp_group_reduce_by,
+            "sparse_grad_group_size": self.sparse_grad_group_size,
+            "sparse_grad_group_reduce_by": self.sparse_grad_group_reduce_by,
             "filter_hook": str(self.filter_hook),
         }
         return json.dumps(info)
@@ -392,6 +392,8 @@ class DynamicEmbedding(torch.nn.Module):
         emb_opt: EmbeddingOption,
         pg: dist.ProcessGroup = None,
         use_pinned_memory: bool = False,
+        sparse_grad_group_reduce_impl: Optional[str] = None,
+        sparse_grad_group_reduce_chunk_groups: Optional[int] = None,
     ):
         """Initialize dynamic embedding module.
 
@@ -402,6 +404,10 @@ class DynamicEmbedding(torch.nn.Module):
             use_pinned_memory (bool, optional): Whether to use pinned memory for
                 CPU intermediate tensors to accelerate H2D/D2H transfers.
                 Defaults to False. Set to True to enable pinned memory.
+            sparse_grad_group_reduce_impl (str, optional): Sparse gradient group
+                reduction implementation shared by the owning EmbeddingEngine.
+            sparse_grad_group_reduce_chunk_groups (int, optional): Number of source
+                groups processed per chunk by "chunk_compact".
         """
         super().__init__()
         self._emb_opt = emb_opt
@@ -428,8 +434,12 @@ class DynamicEmbedding(torch.nn.Module):
             coalesced=self._emb_opt.coalesced,
             slice=gen_slice(shard_index=self._rank, shard_num=self._world_size),
             grad_reduce_by=self._emb_opt.grad_reduce_by,
-            hdmp_group_size=self._emb_opt.hdmp_group_size,
-            hdmp_group_reduce_by=self._emb_opt.hdmp_group_reduce_by,
+            sparse_grad_group_size=self._emb_opt.sparse_grad_group_size,
+            sparse_grad_group_reduce_by=self._emb_opt.sparse_grad_group_reduce_by,
+            sparse_grad_group_reduce_impl=sparse_grad_group_reduce_impl,
+            sparse_grad_group_reduce_chunk_groups=(
+                sparse_grad_group_reduce_chunk_groups
+            ),
             filter_hook=self._emb_opt.filter_hook,
             use_pinned_memory=use_pinned_memory,
             requires_optimizer_state=self._emb_opt.trainable,
@@ -631,10 +641,12 @@ class DynamicEmbedding(torch.nn.Module):
             async_op=True,
         )
         source_group = None
-        if self._emb_opt.grad_reduce_by == "hdmp_group_sum":
-            group_size = self._emb_opt.hdmp_group_size
+        if self._emb_opt.grad_reduce_by == "group_sum":
+            group_size = self._emb_opt.sparse_grad_group_size
             if group_size is None or group_size <= 0:
-                raise ValueError(f"hdmp_group_size must be positive, got {group_size}")
+                raise ValueError(
+                    f"sparse_grad_group_size must be positive, got {group_size}"
+                )
             source_worker = torch.repeat_interleave(
                 torch.arange(self._world_size, dtype=torch.long, device=ids.device),
                 torch.tensor(ids_parts_reverse, dtype=torch.long, device=ids.device),

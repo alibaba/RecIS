@@ -6,8 +6,9 @@ from recis.optim.sparse_optim import SparseOptimizer
 class SparseRowWiseAdagradSum(SparseOptimizer):
     """Sparse row-wise Adagrad using externally supplied gradient-square sums.
 
-    This optimizer is intended for HDMP sparse training. HashTable backward
-    provides both ``Grad()`` and ``GradSq()``:
+    This optimizer is intended for grouped sparse-gradient training. HashTable
+    backward with ``grad_reduce_by="group_sum"`` provides both ``Grad()`` and
+    ``GradSq()``:
 
     - ``Grad()`` is ``sum_k(group_grad_k)`` and is used for parameter updates.
     - ``GradSq()`` is ``sum_k(group_grad_k ** 2)`` and is used for the row-wise
